@@ -1,0 +1,11 @@
+# Flutter/Dart transient outputs
+.dart_tool/
+**/.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.metadata
+build/
+**/build/
+
+# IDE noise
+.DS_Store

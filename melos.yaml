@@ -1,0 +1,18 @@
+name: simple_query_workspace
+
+packages:
+  - packages/**
+  - example
+
+scripts:
+  analyze:
+    run: dart run melos exec --fail-fast -- flutter analyze --no-fatal-infos
+    description: Run static analysis across the workspace.
+  test:
+    run: dart run melos exec --fail-fast --dir-exists=test -- flutter test
+    description: Run package and example tests across the workspace.
+  verify:
+    run: |
+      dart run melos run analyze
+      dart run melos run test
+    description: Run the canonical workspace verification suite.

@@ -1,0 +1,45 @@
+# iOS Extensions
+
+- Namespace `ios.contacts`
+  - `listContainers`
+    - required args: none
+    - optional args: none
+    - response shape: `{ containers: List<Map<String,Object?>>, authorizationStatus: String }`
+  - `listGroups`
+    - required args: none
+    - optional args: none
+    - response shape: `{ groups: List<Map<String,Object?>>, authorizationStatus: String }`
+  - `listUnifiedSources`
+    - required args: none
+    - optional args: none
+    - response shape: `{ sources: List<Map<String,Object?>>, authorizationStatus: String }`
+  - `requestScopedAccess`
+    - required args: none
+    - optional args: `scope`
+    - response shape: `{ granted: bool, status: String, reason?: String }`
+- Namespace `ios.calendar`
+  - `listCalendars`
+    - required args: none
+    - optional args: none
+    - response shape: `{ calendars: List<Map<String,Object?>>, authorizationStatus: String }`
+  - `getDefaultTimeZone`
+    - required args: none
+    - optional args: none
+    - response shape: `{ timeZone: String }`
+- Namespace `ios.photos`
+  - `fetchAssetResources`
+    - required args: none
+    - optional args: `rootPath`, `limit`
+    - response shape: `{ resources: List<Map<String,Object?>> }`
+  - `listMediaTypes`
+    - required args: none
+    - optional args: none
+    - response shape: `{ mediaTypes: List<String> }`
+
+
+Note: Some extension responses include an `implementation` field. `diagnostic_synthetic` means the response is metadata, not live data from the native backend. `filesystem_fallback` means the data came from local filesystem enumeration. See `docs/API_SEMANTICS.md` for details.
+
+Error mapping:
+- invalid args -> `invalidQuery`
+- unknown method/namespace -> `notSupported`
+- native framework unavailable -> `unavailable`

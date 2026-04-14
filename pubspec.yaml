@@ -1,0 +1,11 @@
+name: simple_query_workspace
+publish_to: none
+description: Workspace root for the simple_query federated plugin.
+version: 0.0.0
+
+environment:
+  sdk: ^3.6.0
+
+dev_dependencies:
+  flutter_lints: ^5.0.0
+  melos: ^6.3.2

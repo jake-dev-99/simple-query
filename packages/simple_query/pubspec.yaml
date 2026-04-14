@@ -1,0 +1,53 @@
+name: simple_query
+description: Cross-platform typed query API for device data (contacts, media, files, calendar, messages, calls).
+version: 0.2.0
+homepage: https://github.com/simplezen/simple-query
+repository: https://github.com/simplezen/simple-query
+issue_tracker: https://github.com/simplezen/simple-query/issues
+
+topics:
+  - flutter
+  - plugin
+  - contacts
+  - query
+  - files
+
+environment:
+  sdk: ^3.6.0
+  flutter: '>=3.24.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  simple_query_platform_interface:
+    path: ../simple_query_platform_interface
+  simple_query_android:
+    path: ../simple_query_android
+  simple_query_ios:
+    path: ../simple_query_ios
+  simple_query_macos:
+    path: ../simple_query_macos
+  simple_query_linux:
+    path: ../simple_query_linux
+  simple_query_windows:
+    path: ../simple_query_windows
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+  plugin_platform_interface: ^2.1.8
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        default_package: simple_query_android
+      ios:
+        default_package: simple_query_ios
+      macos:
+        default_package: simple_query_macos
+      linux:
+        default_package: simple_query_linux
+      windows:
+        default_package: simple_query_windows
