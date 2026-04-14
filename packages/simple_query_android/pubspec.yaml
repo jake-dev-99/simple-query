@@ -1,6 +1,6 @@
 name: simple_query_android
 description: Android implementation for the simple_query federated plugin.
-version: 0.2.0
+version: 0.2.1
 homepage: https://github.com/simplezen/simple-query
 repository: https://github.com/simplezen/simple-query
 issue_tracker: https://github.com/simplezen/simple-query/issues
@@ -21,7 +21,7 @@ dependencies:
     sdk: flutter
   simple_query_platform_interface:
     path: ../simple_query_platform_interface
-  simple_permissions_native: ^0.0.1
+  simple_permissions_native: ^1.2.0
 
 dev_dependencies:
   flutter_test:
