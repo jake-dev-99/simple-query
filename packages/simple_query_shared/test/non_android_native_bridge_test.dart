@@ -2,8 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:simple_query_shared/simple_query_shared.dart';
 import 'package:simple_query_platform_interface/simple_query_platform_interface.dart';
+import 'package:simple_query_shared/simple_query_shared.dart';
 
 void main() {
   test('observeOrFallback cancels fallback subscription on cancel', () async {
