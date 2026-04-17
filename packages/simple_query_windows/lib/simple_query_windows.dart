@@ -2,8 +2,8 @@ library;
 
 import 'dart:io';
 
-import 'package:simple_query_shared/simple_query_shared.dart';
 import 'package:simple_query_platform_interface/simple_query_platform_interface.dart';
+import 'package:simple_query_shared/simple_query_shared.dart';
 import 'package:simple_query_windows/src/generated/native_query.g.dart'
     as native;
 
