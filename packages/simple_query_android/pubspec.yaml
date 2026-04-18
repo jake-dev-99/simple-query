@@ -1,6 +1,6 @@
 name: simple_query_android
 description: Android implementation for the simple_query federated plugin.
-version: 0.3.0
+version: 0.3.1
 homepage: https://github.com/simplezen/simple-query
 repository: https://github.com/simplezen/simple-query
 issue_tracker: https://github.com/simplezen/simple-query/issues

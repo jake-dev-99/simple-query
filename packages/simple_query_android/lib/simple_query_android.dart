@@ -11,7 +11,17 @@ class SimpleQueryAndroid extends SimpleQueryPlatform {
     SimpleQueryPlatform.instance = SimpleQueryAndroid();
   }
 
-  final _api = SimpleQueryAndroidApi();
+  // Lazy: `SimpleQueryAndroidApi`'s constructor calls
+  // `QueryFlutterApi.setUp(this)`, which touches the default binary
+  // messenger. `registerWith` is invoked from Flutter's generated Dart
+  // plugin registrant *before* `WidgetsFlutterBinding.ensureInitialized()`,
+  // so eagerly constructing here throws "Binding has not yet been
+  // initialized" — the try/catch in the registrant swallows it and the
+  // platform impl silently falls back to the unsupported stub. Deferring
+  // until first API call lets registration succeed; by the time any
+  // `SimpleQuery.query(...)` / `observe(...)` fires, `runApp` has run
+  // and the binding is ready.
+  late final SimpleQueryAndroidApi _api = SimpleQueryAndroidApi();
 
   @override
   Future<BatchResult> batch(BatchRequest request) => _api.batch(request);
