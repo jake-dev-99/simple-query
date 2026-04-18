@@ -16,7 +16,14 @@ jobs:
     if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
     runs-on: ubuntu-latest
     permissions:
+      # `contents: write` — commit pubspec bump + push tags.
+      # `actions:  write` — dispatch publish.yml via
+      #   `gh workflow run` after tags land. Required because
+      #   GitHub suppresses `push: tags` workflow triggers when
+      #   the pusher is the default GITHUB_TOKEN, so we wake
+      #   publish.yml through `workflow_dispatch` instead.
       contents: write
+      actions: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -124,3 +131,17 @@ jobs:
           if [ "$touched_any" = "true" ] || [ "${#tags_to_push[@]}" -gt 0 ]; then
             git push --atomic origin HEAD "${tags_to_push[@]}"
           fi
+
+          # Expose pushed tags to the dispatch step below.
+          printf 'new_tags=%s\n' "${tags_to_push[*]}" >> "$GITHUB_ENV"
+
+      - name: Dispatch publish workflow per new tag
+        if: ${{ env.new_tags != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          for tag in $new_tags; do
+            echo "Dispatching publish.yml for $tag"
+            gh workflow run publish.yml -f tag="$tag"
+          done
