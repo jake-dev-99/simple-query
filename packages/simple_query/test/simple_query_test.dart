@@ -64,8 +64,7 @@ void main() {
     final batch = await SimpleQuery.instance.batch(
       const BatchRequest(
         operations: <MutationRequest>[
-          MutationRequest(
-              domain: QueryDomain.files, type: MutationType.delete),
+          MutationRequest(domain: QueryDomain.files, type: MutationType.delete),
         ],
       ),
     );
@@ -163,8 +162,7 @@ void main() {
       final request = QueryBuilder(QueryDomain.contacts)
           .where('name', QueryFilterOperator.equals, 'test')
           .orderBy('name')
-          .platformData({'key': 'value'})
-          .build();
+          .platformData({'key': 'value'}).build();
 
       // Unmodifiable lists/maps throw when mutated.
       expect(
@@ -204,8 +202,7 @@ void main() {
 
     test('platformData() sets platform data', () {
       final request = QueryBuilder(QueryDomain.files)
-          .platformData({'rootPath': '/tmp'})
-          .build();
+          .platformData({'rootPath': '/tmp'}).build();
 
       expect(request.platformData, {'rootPath': '/tmp'});
     });
@@ -299,8 +296,7 @@ class _FakePlatform extends SimpleQueryPlatform
   }
 
   @override
-  Future<QueryResult> query(QueryRequest request) async =>
-      const QueryResult(
+  Future<QueryResult> query(QueryRequest request) async => const QueryResult(
         records: <QueryRecord>[
           <String, Object?>{'id': 1}
         ],

@@ -26,8 +26,7 @@ void main() {
       query: (_) async => <String?, Object?>{'records': const <Object?>[]},
       mutate: (_) async => <String?, Object?>{},
       batch: (_) async => <String?, Object?>{'results': const <Object?>[]},
-      observeStart: (_) async =>
-          throw PlatformException(code: 'not-supported'),
+      observeStart: (_) async => throw PlatformException(code: 'not-supported'),
       observeStop: (_) async {},
       openBinary: (_) async => <String?, Object?>{
         'handleId': 'h',
