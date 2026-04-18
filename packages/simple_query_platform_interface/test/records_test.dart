@@ -94,8 +94,7 @@ void main() {
     });
 
     test('handles missing fields with defaults', () {
-      final record =
-          CalendarEventRecord.fromRecord(const <String, Object?>{});
+      final record = CalendarEventRecord.fromRecord(const <String, Object?>{});
       expect(record.id, '');
       expect(record.title, '');
       expect(record.startAt, '');

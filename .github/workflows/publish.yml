@@ -17,17 +17,23 @@ name: Publish to pub.dev
 on:
   push:
     tags:
-      - 'simple_query-v[0-9]+.[0-9]+.[0-9]+*'
-      - 'simple_query_platform_interface-v[0-9]+.[0-9]+.[0-9]+*'
-      - 'simple_query_android-v[0-9]+.[0-9]+.[0-9]+*'
-      - 'simple_query_ios-v[0-9]+.[0-9]+.[0-9]+*'
-      - 'simple_query_macos-v[0-9]+.[0-9]+.[0-9]+*'
-      - 'simple_query_linux-v[0-9]+.[0-9]+.[0-9]+*'
-      - 'simple_query_windows-v[0-9]+.[0-9]+.[0-9]+*'
-      - 'simple_query_shared-v[0-9]+.[0-9]+.[0-9]+*'
+      # GitHub Actions uses glob syntax here (not regex); the
+      # verify-version step validates the exact semver.
+      - 'simple_query-v*'
+      - 'simple_query_platform_interface-v*'
+      - 'simple_query_android-v*'
+      - 'simple_query_ios-v*'
+      - 'simple_query_macos-v*'
+      - 'simple_query_linux-v*'
+      - 'simple_query_windows-v*'
+      - 'simple_query_shared-v*'
 
 jobs:
   publish:
+    # Job-level `if:` picks exactly one matrix entry whose prefix
+    # matches the incoming tag, so non-matching packages never
+    # spin up a runner.
+    if: startsWith(github.ref, format('refs/tags/{0}-v', matrix.package.name))
     permissions:
       id-token: write
     runs-on: ubuntu-latest
@@ -55,18 +61,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        if: startsWith(github.ref, format('refs/tags/{0}-v', matrix.package.name))
 
       - uses: dart-lang/setup-dart@v1
-        if: startsWith(github.ref, format('refs/tags/{0}-v', matrix.package.name))
 
       - name: Install dependencies
-        if: startsWith(github.ref, format('refs/tags/{0}-v', matrix.package.name))
         working-directory: ${{ matrix.package.path }}
         run: dart pub get
 
       - name: Verify pubspec version matches tag
-        if: startsWith(github.ref, format('refs/tags/{0}-v', matrix.package.name))
         working-directory: ${{ matrix.package.path }}
         run: |
           tag_ref="${GITHUB_REF#refs/tags/}"
@@ -78,6 +80,5 @@ jobs:
           fi
 
       - name: Publish
-        if: startsWith(github.ref, format('refs/tags/{0}-v', matrix.package.name))
         working-directory: ${{ matrix.package.path }}
         run: dart pub publish --force

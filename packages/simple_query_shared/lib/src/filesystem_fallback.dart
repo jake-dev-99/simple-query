@@ -432,8 +432,7 @@ class LocalFileSystemFallback {
 
     final records = <QueryRecord>[];
 
-    await for (final entity
-        in root.list(recursive: true, followLinks: false)) {
+    await for (final entity in root.list(recursive: true, followLinks: false)) {
       final stat = await entity.stat();
       final type =
           stat.type == FileSystemEntityType.directory ? 'directory' : 'file';
