@@ -1,0 +1,57 @@
+name: CI
+
+# Runs on every PR against the three promotion-flow branches
+# (develop -> staging -> main). CD (publish.yml) handles the
+# merge + tag side.
+on:
+  pull_request:
+    branches: [develop, staging, main]
+
+jobs:
+  package-tests:
+    name: Analyze + test (${{ matrix.package }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - packages/simple_query
+          - packages/simple_query_platform_interface
+          - packages/simple_query_android
+          - packages/simple_query_ios
+          - packages/simple_query_macos
+          - packages/simple_query_linux
+          - packages/simple_query_windows
+          - packages/simple_query_shared
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install dependencies
+        working-directory: ${{ matrix.package }}
+        run: flutter pub get
+
+      - name: Analyze
+        working-directory: ${{ matrix.package }}
+        # invalid_dependency warning on path-overrides between
+        # federated platform packages is expected during
+        # pre-publish development; drop warning fatality so it
+        # doesn't block the gate.
+        run: flutter analyze --no-fatal-warnings
+
+      - name: Run tests
+        working-directory: ${{ matrix.package }}
+        # Several of the platform packages are native-surface-only
+        # with no Dart tests. Tolerate missing test/ rather than
+        # fail, mirroring simple-telephony's CI pattern.
+        run: |
+          if [ -d test ]; then
+            flutter test
+          else
+            echo "No test/ directory — skipping."
+          fi
+

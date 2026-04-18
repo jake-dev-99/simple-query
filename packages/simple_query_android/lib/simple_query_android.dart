@@ -48,8 +48,7 @@ class SimpleQueryAndroid extends SimpleQueryPlatform {
       _api.mutate(request);
 
   @override
-  Stream<ObserveEvent> observe(ObserveRequest request) =>
-      _api.observe(request);
+  Stream<ObserveEvent> observe(ObserveRequest request) => _api.observe(request);
 
   @override
   Future<BinaryContentHandle> openBinary(BinaryRequest request) =>

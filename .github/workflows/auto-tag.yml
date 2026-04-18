@@ -1,0 +1,126 @@
+name: Auto-tag on merge
+
+# Runs when a PR merges to `main`. Computes next versions per
+# changed package, commits pubspec bumps, and pushes tags —
+# which trigger publish.yml.
+#
+# See simple-permissions' auto-tag.yml for the canonical
+# write-up of the versioning rule.
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  autotag:
+    if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Compute + apply version bumps
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA:  ${{ github.event.after }}
+        run: |
+          set -euo pipefail
+
+          # Federated packages under packages/. Keep in sync
+          # with publish.yml's matrix + RELEASE.md's table.
+          declare -A pkgs=(
+            [simple_query]="packages/simple_query"
+            [simple_query_platform_interface]="packages/simple_query_platform_interface"
+            [simple_query_android]="packages/simple_query_android"
+            [simple_query_ios]="packages/simple_query_ios"
+            [simple_query_macos]="packages/simple_query_macos"
+            [simple_query_linux]="packages/simple_query_linux"
+            [simple_query_windows]="packages/simple_query_windows"
+            [simple_query_shared]="packages/simple_query_shared"
+          )
+
+          touched_any=false
+          pending_tags=()
+
+          if [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            BEFORE_SHA="$(git hash-object -t tree /dev/null)"
+          fi
+
+          changed_files="$(git diff --name-only "$BEFORE_SHA" "$AFTER_SHA")"
+
+          next_patch() {
+            local v="$1"
+            local base="${v%%-*}"
+            IFS='.' read -r major minor patch <<< "$base"
+            echo "${major}.${minor}.$((patch + 1))"
+          }
+
+          version_gt() {
+            local a="${1%%-*}" b="${2%%-*}"
+            [ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | tail -1)" = "$a" ] \
+              && [ "$a" != "$b" ]
+          }
+
+          for pkg in "${!pkgs[@]}"; do
+            dir="${pkgs[$pkg]}"
+            if ! echo "$changed_files" | grep -q "^${dir}/"; then
+              continue
+            fi
+
+            pubspec_path="${dir}/pubspec.yaml"
+            pubspec_v="$(grep '^version:' "$pubspec_path" \
+              | sed 's/version:[[:space:]]*//' | tr -d '\r')"
+
+            last_tag="$(git tag --list "${pkg}-v*" \
+              | sed "s/^${pkg}-v//" \
+              | sort -V | tail -1 || true)"
+
+            if [ -z "$last_tag" ]; then
+              candidate="$pubspec_v"
+            else
+              candidate="$(next_patch "$last_tag")"
+            fi
+
+            if version_gt "$pubspec_v" "$candidate"; then
+              next="$pubspec_v"
+            else
+              next="$candidate"
+            fi
+
+            echo "::notice::$pkg pubspec=$pubspec_v last_tag=${last_tag:-<none>} next=$next"
+
+            if [ "$pubspec_v" != "$next" ]; then
+              sed -i -E "s/^version:[[:space:]]*.*$/version: $next/" "$pubspec_path"
+              git add "$pubspec_path"
+              touched_any=true
+            fi
+
+            pending_tags+=("${pkg}-v${next}")
+          done
+
+          if [ "$touched_any" = "true" ]; then
+            git commit -m "chore(release): auto-bump pubspec versions [skip ci]"
+          fi
+
+          tags_to_push=()
+          for tag in "${pending_tags[@]}"; do
+            if git rev-parse "$tag" >/dev/null 2>&1; then
+              echo "::notice::tag $tag already exists — skipping"
+              continue
+            fi
+            git tag "$tag"
+            tags_to_push+=("$tag")
+          done
+
+          if [ "$touched_any" = "true" ] || [ "${#tags_to_push[@]}" -gt 0 ]; then
+            git push --atomic origin HEAD "${tags_to_push[@]}"
+          fi

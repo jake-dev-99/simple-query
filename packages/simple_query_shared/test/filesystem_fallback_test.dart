@@ -267,8 +267,7 @@ void main() {
       expect(result.records[1]['id'], 'd');
     });
 
-    test('applyPaging with cursor returns nextCursor as last record id',
-        () {
+    test('applyPaging with cursor returns nextCursor as last record id', () {
       final records = <QueryRecord>[
         {'id': 'a', 'name': 'first'},
         {'id': 'b', 'name': 'second'},

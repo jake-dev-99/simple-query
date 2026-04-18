@@ -172,7 +172,9 @@ class QuerySort {
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is QuerySort && field == other.field && direction == other.direction;
+      other is QuerySort &&
+          field == other.field &&
+          direction == other.direction;
 
   @override
   int get hashCode => Object.hash(field, direction);
@@ -419,8 +421,7 @@ class MutationRequest {
       );
 
   @override
-  String toString() =>
-      'MutationRequest(domain: $domain, type: $type)';
+  String toString() => 'MutationRequest(domain: $domain, type: $type)';
 }
 
 /// The outcome of a mutation, including how many records were affected.
@@ -498,8 +499,7 @@ class BatchRequest {
       );
 
   @override
-  String toString() =>
-      'BatchRequest(operations: ${operations.length})';
+  String toString() => 'BatchRequest(operations: ${operations.length})';
 }
 
 /// The combined outcome of a [BatchRequest], with one result per operation.

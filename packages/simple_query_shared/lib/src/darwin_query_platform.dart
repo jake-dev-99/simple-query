@@ -124,8 +124,7 @@ abstract class DarwinQueryPlatform extends BaseNonAndroidSimpleQueryPlatform {
               canWrite: false,
               canObserve: false,
               canStream: false,
-              reason:
-                  'simple_query: extension methods are read-only currently',
+              reason: 'simple_query: extension methods are read-only currently',
             ),
           ],
           platformExtensions: <String, Object?>{
@@ -135,8 +134,12 @@ abstract class DarwinQueryPlatform extends BaseNonAndroidSimpleQueryPlatform {
             'batchSemantics': 'sequentialBestEffort',
             'fallbackDomains': const <String>['files', 'media'],
             'capabilityPrerequisites': const <String, Object?>{
-              'files': <String>['platformData.rootPath (optional, defaults to platform directory)'],
-              'media': <String>['platformData.rootPath (optional, defaults to platform directory)'],
+              'files': <String>[
+                'platformData.rootPath (optional, defaults to platform directory)'
+              ],
+              'media': <String>[
+                'platformData.rootPath (optional, defaults to platform directory)'
+              ],
             },
             'queryFieldStability': const <String, String>{
               'entityType': 'stable',
