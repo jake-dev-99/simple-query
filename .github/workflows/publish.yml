@@ -102,13 +102,22 @@ jobs:
         with:
           ref: ${{ steps.resolve.outputs.ref }}
 
-      - uses: dart-lang/setup-dart@v1
+      # Flutter plugin packages (pubspec pins `sdk: flutter`), so
+      # `dart pub` can't resolve — pub reports:
+      #   "Because <pkg> requires the Flutter SDK, version solving
+      #    failed. Flutter users should use `flutter pub` instead
+      #    of `dart pub`."
+      # Use the Flutter toolchain and call `flutter pub ...`
+      # throughout. pub.dev's OIDC publish works identically.
+      - uses: subosito/flutter-action@v2
         if: startsWith(steps.resolve.outputs.tag, format('{0}-v', matrix.package.name))
+        with:
+          channel: stable
 
       - name: Install dependencies
         if: startsWith(steps.resolve.outputs.tag, format('{0}-v', matrix.package.name))
         working-directory: ${{ matrix.package.path }}
-        run: dart pub get
+        run: flutter pub get
 
       - name: Verify pubspec version matches tag
         if: startsWith(steps.resolve.outputs.tag, format('{0}-v', matrix.package.name))
@@ -125,4 +134,4 @@ jobs:
       - name: Publish
         if: startsWith(steps.resolve.outputs.tag, format('{0}-v', matrix.package.name))
         working-directory: ${{ matrix.package.path }}
-        run: dart pub publish --force
+        run: flutter pub publish --force
