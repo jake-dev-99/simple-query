@@ -10,7 +10,8 @@ class SimpleQueryIos extends DarwinQueryPlatform
     implements native.NativeQueryFlutterApi {
   SimpleQueryIos() : this._withHostApi(native.NativeQueryHostApi());
 
-  SimpleQueryIos._withHostApi(native.NativeQueryHostApi hostApi) : super.create(
+  SimpleQueryIos._withHostApi(native.NativeQueryHostApi hostApi)
+      : super.create(
           bindings: NonAndroidHostBindings(
             setupFlutterApi: () {},
             getCapabilities: hostApi.getCapabilities,

@@ -751,8 +751,7 @@ void main() {
           ],
         ),
       );
-      expect(
-          host.lastQueryRequest!.selection, 'address = ? AND type != ?');
+      expect(host.lastQueryRequest!.selection, 'address = ? AND type != ?');
       expect(host.lastQueryRequest!.selectionArgs, ['+1555', '3']);
     });
 
@@ -1008,7 +1007,8 @@ void main() {
       expect(record['calendarId'], '2');
     });
 
-    test('messages domain maps date to timestamp and type to direction', () async {
+    test('messages domain maps date to timestamp and type to direction',
+        () async {
       host.queryResponse = p.QueryResponse(
         rows: [
           {'_id': 1, 'date': 123456, 'type': 1, 'body': 'hi', 'read': 1},
@@ -1062,14 +1062,38 @@ void main() {
     test('media domain maps media_type int codes to string types', () async {
       host.queryResponse = p.QueryResponse(
         rows: [
-          {'_id': 1, '_data': '/a.jpg', 'media_type': 1, '_size': 100,
-           'mime_type': 'image/jpeg', 'date_added': 111},
-          {'_id': 2, '_data': '/a.mp3', 'media_type': 2, '_size': 200,
-           'mime_type': 'audio/mpeg', 'date_added': 222},
-          {'_id': 3, '_data': '/a.mp4', 'media_type': 3, '_size': 300,
-           'mime_type': 'video/mp4', 'date_added': 333},
-          {'_id': 4, '_data': '/a.bin', 'media_type': 99, '_size': 400,
-           'mime_type': 'application/octet-stream', 'date_added': 444},
+          {
+            '_id': 1,
+            '_data': '/a.jpg',
+            'media_type': 1,
+            '_size': 100,
+            'mime_type': 'image/jpeg',
+            'date_added': 111
+          },
+          {
+            '_id': 2,
+            '_data': '/a.mp3',
+            'media_type': 2,
+            '_size': 200,
+            'mime_type': 'audio/mpeg',
+            'date_added': 222
+          },
+          {
+            '_id': 3,
+            '_data': '/a.mp4',
+            'media_type': 3,
+            '_size': 300,
+            'mime_type': 'video/mp4',
+            'date_added': 333
+          },
+          {
+            '_id': 4,
+            '_data': '/a.bin',
+            'media_type': 99,
+            '_size': 400,
+            'mime_type': 'application/octet-stream',
+            'date_added': 444
+          },
         ],
         rowCount: 4,
         columnNames: const [],

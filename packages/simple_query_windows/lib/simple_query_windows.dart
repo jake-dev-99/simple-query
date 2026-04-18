@@ -15,9 +15,8 @@ class SimpleQueryWindows extends BaseNonAndroidSimpleQueryPlatform
       fallbackSource: 'simple_query_windows.polling',
       unsupportedReasonFor: _localUnsupportedReason,
       nativeDomainSupported: _nativeDomainSupported,
-      defaultRootPath: Platform.isWindows
-          ? Platform.environment['USERPROFILE']
-          : null,
+      defaultRootPath:
+          Platform.isWindows ? Platform.environment['USERPROFILE'] : null,
       bindings: NonAndroidHostBindings(
         setupFlutterApi: () => native.NativeQueryFlutterApi.setUp(this),
         getCapabilities: _nativeHostApi.getCapabilities,
@@ -127,8 +126,7 @@ class SimpleQueryWindows extends BaseNonAndroidSimpleQueryPlatform
               canWrite: false,
               canObserve: false,
               canStream: false,
-              reason:
-                  'simple_query: extension methods are read-only currently',
+              reason: 'simple_query: extension methods are read-only currently',
             ),
           ],
           platformExtensions: <String, Object?>{

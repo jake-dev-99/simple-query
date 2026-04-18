@@ -15,7 +15,6 @@ void main() {
   }
 
   testWidgets('capability snapshot is exhaustive', (tester) async {
-
     final capabilities = await SimpleQuery.instance.getCapabilities();
     final capabilityDomains = capabilities.capabilities
         .map((descriptor) => descriptor.domain)
@@ -28,7 +27,6 @@ void main() {
   testWidgets('query path executes with typed result or mapped error', (
     tester,
   ) async {
-
     try {
       final response = await SimpleQuery.instance.query(
         const QueryRequest(
@@ -45,8 +43,6 @@ void main() {
   });
 
   testWidgets('batch path executes with mapped outcome', (tester) async {
-
-
     try {
       final result = await SimpleQuery.instance.batch(
         const BatchRequest(
@@ -72,8 +68,6 @@ void main() {
   });
 
   testWidgets('binary open/close call path', (tester) async {
-
-
     BinaryContentHandle? handle;
     try {
       handle = await SimpleQuery.instance.openBinary(
@@ -98,8 +92,6 @@ void main() {
   });
 
   testWidgets('observe subscribe + cancel lifecycle', (tester) async {
-
-
     StreamSubscription<ObserveEvent>? subscription;
     try {
       subscription = SimpleQuery.instance
