@@ -229,15 +229,21 @@ void main() {
 
     test('QueryResult with nextCursor field equality', () {
       const a = QueryResult(
-        records: [<String, Object?>{'id': '1'}],
+        records: [
+          <String, Object?>{'id': '1'}
+        ],
         nextCursor: 'cursor1',
       );
       const b = QueryResult(
-        records: [<String, Object?>{'id': '1'}],
+        records: [
+          <String, Object?>{'id': '1'}
+        ],
         nextCursor: 'cursor1',
       );
       const c = QueryResult(
-        records: [<String, Object?>{'id': '1'}],
+        records: [
+          <String, Object?>{'id': '1'}
+        ],
         nextCursor: 'cursor2',
       );
       expect(a, equals(b));
@@ -352,7 +358,9 @@ void main() {
 
     test('QueryResult copyWith preserves nextCursor', () {
       const original = QueryResult(
-        records: [<String, Object?>{'id': '1'}],
+        records: [
+          <String, Object?>{'id': '1'}
+        ],
         nextCursor: 'cur1',
         totalCount: 100,
       );
@@ -483,8 +491,7 @@ class _TestPlatform extends SimpleQueryPlatform {
       const MutationResult(affectedCount: 0);
 
   @override
-  Stream<ObserveEvent> observe(ObserveRequest request) =>
-      const Stream.empty();
+  Stream<ObserveEvent> observe(ObserveRequest request) => const Stream.empty();
 
   @override
   Future<BinaryContentHandle> openBinary(BinaryRequest request) async =>

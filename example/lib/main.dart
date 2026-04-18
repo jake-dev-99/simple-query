@@ -52,8 +52,7 @@ class _ExampleAppState extends State<ExampleApp> {
           page: QueryPage(limit: 5),
         ),
       );
-      final contacts =
-          response.records.map(ContactRecord.fromRecord).toList();
+      final contacts = response.records.map(ContactRecord.fromRecord).toList();
       setState(() {
         _result = contacts.isEmpty
             ? 'No contacts found.'
@@ -81,8 +80,7 @@ class _ExampleAppState extends State<ExampleApp> {
         ),
       );
       setState(() {
-        _result =
-            'Messages query returned ${response.records.length} records.';
+        _result = 'Messages query returned ${response.records.length} records.';
       });
     } on SimpleQueryError catch (e) {
       setState(() => _result = _describeError(e));

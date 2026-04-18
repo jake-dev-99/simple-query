@@ -58,8 +58,8 @@ class NonAndroidNativeBridge {
       <String, StreamController<ObserveEvent>>{};
   final Map<StreamController<ObserveEvent>, String> _nativeObserverIds =
       <StreamController<ObserveEvent>, String>{};
-  final Map<StreamController<ObserveEvent>,
-          StreamSubscription<ObserveEvent>> _fallbackSubscriptions =
+  final Map<StreamController<ObserveEvent>, StreamSubscription<ObserveEvent>>
+      _fallbackSubscriptions =
       <StreamController<ObserveEvent>, StreamSubscription<ObserveEvent>>{};
 
   void ensureFlutterApiSetup() {

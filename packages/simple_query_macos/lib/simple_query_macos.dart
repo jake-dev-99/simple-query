@@ -10,7 +10,8 @@ class SimpleQueryMacos extends DarwinQueryPlatform
     implements native.NativeQueryFlutterApi {
   SimpleQueryMacos() : this._withHostApi(native.NativeQueryHostApi());
 
-  SimpleQueryMacos._withHostApi(native.NativeQueryHostApi hostApi) : super.create(
+  SimpleQueryMacos._withHostApi(native.NativeQueryHostApi hostApi)
+      : super.create(
           bindings: NonAndroidHostBindings(
             setupFlutterApi: () {},
             getCapabilities: hostApi.getCapabilities,
@@ -28,9 +29,7 @@ class SimpleQueryMacos extends DarwinQueryPlatform
             prefix: 'macos',
             fallbackSource: 'simple_query_macos.polling',
             contactsExtensionMethods: _handleMacosContactsExtension,
-            defaultRootPath: Platform.isMacOS
-                ? _defaultRootPath()
-                : null,
+            defaultRootPath: Platform.isMacOS ? _defaultRootPath() : null,
           ),
         );
 

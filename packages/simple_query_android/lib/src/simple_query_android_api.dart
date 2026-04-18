@@ -624,18 +624,16 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
 
   String? _sortOrderFrom(List<iface.QuerySort> sort) {
     if (sort.isEmpty) return null;
-    return sort
-        .map(
-          (item) {
-            if (!_validFieldName.hasMatch(item.field)) {
-              throw _invalidQuery(
-                'sort field name contains invalid characters: ${item.field}',
-              );
-            }
-            return '${item.field} ${item.direction == iface.QuerySortDirection.descending ? 'DESC' : 'ASC'}';
-          },
-        )
-        .join(', ');
+    return sort.map(
+      (item) {
+        if (!_validFieldName.hasMatch(item.field)) {
+          throw _invalidQuery(
+            'sort field name contains invalid characters: ${item.field}',
+          );
+        }
+        return '${item.field} ${item.direction == iface.QuerySortDirection.descending ? 'DESC' : 'ASC'}';
+      },
+    ).join(', ');
   }
 
   iface.ObserveChangeType _observeType(p.ContentChangeType type) {
