@@ -1,0 +1,83 @@
+name: Publish to pub.dev
+
+# Triggered by tag pushes on `main` matching one of the eight
+# federated packages' tag prefixes. Each package has its own
+# tag pattern so a release event publishes exactly one package
+# at a time — consistent with pub.dev's automated-publishing
+# contract (one tag pattern per package registration).
+#
+# Tag examples:
+#   simple_query-v0.3.0
+#   simple_query_android-v0.3.0
+#   simple_query_platform_interface-v0.3.0
+#
+# See docs/RELEASE.md for the cut-a-release runbook + the
+# required one-time pub.dev "Automated publishing" setup per
+# package.
+on:
+  push:
+    tags:
+      - 'simple_query-v[0-9]+.[0-9]+.[0-9]+*'
+      - 'simple_query_platform_interface-v[0-9]+.[0-9]+.[0-9]+*'
+      - 'simple_query_android-v[0-9]+.[0-9]+.[0-9]+*'
+      - 'simple_query_ios-v[0-9]+.[0-9]+.[0-9]+*'
+      - 'simple_query_macos-v[0-9]+.[0-9]+.[0-9]+*'
+      - 'simple_query_linux-v[0-9]+.[0-9]+.[0-9]+*'
+      - 'simple_query_windows-v[0-9]+.[0-9]+.[0-9]+*'
+      - 'simple_query_shared-v[0-9]+.[0-9]+.[0-9]+*'
+
+jobs:
+  publish:
+    permissions:
+      id-token: write
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - name: simple_query
+            path: packages/simple_query
+          - name: simple_query_platform_interface
+            path: packages/simple_query_platform_interface
+          - name: simple_query_android
+            path: packages/simple_query_android
+          - name: simple_query_ios
+            path: packages/simple_query_ios
+          - name: simple_query_macos
+            path: packages/simple_query_macos
+          - name: simple_query_linux
+            path: packages/simple_query_linux
+          - name: simple_query_windows
+            path: packages/simple_query_windows
+          - name: simple_query_shared
+            path: packages/simple_query_shared
+
+    steps:
+      - uses: actions/checkout@v4
+        if: startsWith(github.ref, format('refs/tags/{0}-v', matrix.package.name))
+
+      - uses: dart-lang/setup-dart@v1
+        if: startsWith(github.ref, format('refs/tags/{0}-v', matrix.package.name))
+
+      - name: Install dependencies
+        if: startsWith(github.ref, format('refs/tags/{0}-v', matrix.package.name))
+        working-directory: ${{ matrix.package.path }}
+        run: dart pub get
+
+      - name: Verify pubspec version matches tag
+        if: startsWith(github.ref, format('refs/tags/{0}-v', matrix.package.name))
+        working-directory: ${{ matrix.package.path }}
+        run: |
+          tag_ref="${GITHUB_REF#refs/tags/}"
+          expected="${tag_ref#${{ matrix.package.name }}-v}"
+          actual="$(grep '^version:' pubspec.yaml | sed 's/version:[[:space:]]*//')"
+          if [ "$expected" != "$actual" ]; then
+            echo "::error::Tag ${tag_ref} does not match pubspec version ${actual} (expected ${expected})"
+            exit 1
+          fi
+
+      - name: Publish
+        if: startsWith(github.ref, format('refs/tags/{0}-v', matrix.package.name))
+        working-directory: ${{ matrix.package.path }}
+        run: dart pub publish --force
