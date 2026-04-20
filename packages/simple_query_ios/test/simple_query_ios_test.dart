@@ -263,7 +263,7 @@ void main() {
     );
 
     expect(result, isNotNull);
-    expect(result!['resources'], isA<List>());
+    expect(result!['resources'], isA<List<Object?>>());
   });
 
   test('callExtension supports ios.photos listMediaTypes', () async {
@@ -275,7 +275,7 @@ void main() {
     );
 
     expect(result, isNotNull);
-    expect(result!['mediaTypes'], isA<List>());
+    expect(result!['mediaTypes'], isA<List<Object?>>());
   });
 
   test('callExtension unknown method returns deterministic notSupported',

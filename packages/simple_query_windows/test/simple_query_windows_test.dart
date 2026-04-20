@@ -338,7 +338,7 @@ void main() {
     );
 
     expect(result, isNotNull);
-    expect(result!['folders'], isA<List>());
+    expect(result!['folders'], isA<List<Object?>>());
   });
 
   test('callExtension supports windows.storage listLibraries', () async {
@@ -350,7 +350,7 @@ void main() {
     );
 
     expect(result, isNotNull);
-    expect(result!['libraries'], isA<List>());
+    expect(result!['libraries'], isA<List<Object?>>());
   });
 
   test('callExtension unknown method returns deterministic notSupported',

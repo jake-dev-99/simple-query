@@ -1,7 +1,6 @@
 import 'package:simple_query_platform_interface/simple_query_platform_interface.dart';
 
 import 'base_non_android_platform.dart';
-import 'non_android_native_bridge.dart';
 
 /// Configuration that differs between iOS and macOS.
 class DarwinPlatformConfig {
