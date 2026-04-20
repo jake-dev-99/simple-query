@@ -585,6 +585,103 @@ void main() {
     });
   });
 
+  group('QueryFieldCatalog', () {
+    test('canonicalFields returns required ∪ optional for each domain', () {
+      for (final domain in QueryDomain.values) {
+        if (domain == QueryDomain.platformSpecific) continue;
+        final canonical = QueryFieldCatalog.canonicalFields(domain);
+        final allowed = QueryDomainContracts.allowedKeysFor(domain);
+        expect(canonical, allowed, reason: 'mismatch for ${domain.name}');
+      }
+    });
+
+    test('canonicalFields is empty for platformSpecific', () {
+      expect(
+        QueryFieldCatalog.canonicalFields(QueryDomain.platformSpecific),
+        isEmpty,
+      );
+    });
+
+    test('ensureKnown passes for valid canonical field', () {
+      QueryFieldCatalog.ensureKnown(
+        domain: QueryDomain.calls,
+        canonical: 'callType',
+      );
+      // No throw.
+    });
+
+    test('ensureKnown throws invalidQuery for unknown canonical field', () {
+      expect(
+        () => QueryFieldCatalog.ensureKnown(
+          domain: QueryDomain.calls,
+          canonical: 'type', // raw Android column name, not canonical
+        ),
+        throwsA(
+          isA<SimpleQueryError>()
+              .having((e) => e.code, 'code', SimpleQueryErrorCode.invalidQuery)
+              .having(
+                (e) => e.details?['field'],
+                'details.field',
+                'type',
+              )
+              .having(
+                (e) => e.details?['domain'],
+                'details.domain',
+                'calls',
+              ),
+        ),
+      );
+    });
+
+    test('ensureKnown is a no-op for platformSpecific', () {
+      QueryFieldCatalog.ensureKnown(
+        domain: QueryDomain.platformSpecific,
+        canonical: 'whatever_you_want',
+      );
+      // No throw.
+    });
+
+    test('ensureAllKnown throws on the first unknown field', () {
+      expect(
+        () => QueryFieldCatalog.ensureAllKnown(
+          domain: QueryDomain.files,
+          fields: const <String>['path', 'unknown_field', 'name'],
+        ),
+        throwsA(
+          isA<SimpleQueryError>().having(
+            (e) => e.details?['field'],
+            'details.field',
+            'unknown_field',
+          ),
+        ),
+      );
+    });
+
+    test('calls domain gains isNew/isRead/geocodedLocation/subscriptionId', () {
+      final canonical = QueryFieldCatalog.canonicalFields(QueryDomain.calls);
+      expect(canonical, containsAll(<String>[
+        'isNew',
+        'isRead',
+        'geocodedLocation',
+        'subscriptionId',
+      ]));
+    });
+
+    test('error message lists allowed fields for the domain', () {
+      try {
+        QueryFieldCatalog.ensureKnown(
+          domain: QueryDomain.files,
+          canonical: 'not_a_real_field',
+        );
+        fail('expected throw');
+      } on SimpleQueryError catch (e) {
+        expect(e.message, contains('files'));
+        expect(e.message, contains('not_a_real_field'));
+        expect(e.details?['allowed'], isA<List<String>>());
+      }
+    });
+  });
+
   group('model equality (full coverage)', () {
     test('MutationRequest equality and hashCode', () {
       const a = MutationRequest(

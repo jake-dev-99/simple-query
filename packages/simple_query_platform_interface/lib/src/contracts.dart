@@ -74,6 +74,13 @@ abstract final class QueryDomainContracts {
       'number',
       'durationSec',
       'name',
+      // Added in 0.4.0 — see plan Section 0. Populated by Android from
+      // CallLog columns `new`, `is_read`, `geocoded_location`,
+      // `subscription_id`. iOS/macOS/desktop leave these absent.
+      'isNew',
+      'isRead',
+      'geocodedLocation',
+      'subscriptionId',
     },
     QueryDomain.platformSpecific: <String>{},
   };
