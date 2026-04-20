@@ -109,7 +109,8 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
 
     await _ensurePermission(contentUri, write: false);
 
-    final selection = _selectionFromFilters(request.filters);
+    final selection =
+        _selectionFromFilters(request.filters, domain: request.domain);
     final cursor = request.page?.cursor;
 
     // When a cursor is present, inject a WHERE clause for cursor-based
@@ -130,10 +131,14 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
     final response = await _hostApi.query(
       p.QueryRequest(
         contentUri: contentUri,
-        projection: request.projection,
+        projection: _AndroidFieldAliases.translateProjection(
+          domain: request.domain,
+          projection: request.projection,
+        ),
         selection: effectiveSelection,
         selectionArgs: effectiveArgs,
-        sortOrder: _sortOrderFrom(request.sort) ?? '_id ASC',
+        sortOrder: _sortOrderFrom(request.sort, domain: request.domain) ??
+            '_id ASC',
         limit: request.page?.limit,
         offset: effectiveOffset,
       ),
@@ -203,7 +208,8 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
         if (values == null || values.isEmpty) {
           throw _invalidQuery('update mutation requires non-empty values');
         }
-        final selection = _selectionFromFilters(request.filters);
+        final selection =
+            _selectionFromFilters(request.filters, domain: request.domain);
         final count = await _hostApi.update(
           p.UpdateRequest(
             contentUri: contentUri,
@@ -214,7 +220,8 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
         );
         return iface.MutationResult(affectedCount: count);
       case iface.MutationType.delete:
-        final selection = _selectionFromFilters(request.filters);
+        final selection =
+            _selectionFromFilters(request.filters, domain: request.domain);
         final count = await _hostApi.delete(
           p.DeleteRequest(
             contentUri: contentUri,
@@ -259,7 +266,8 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
     for (var i = 0; i < request.operations.length; i += 1) {
       final operation = request.operations[i];
       final uri = resolved[i];
-      final selection = _selectionFromFilters(operation.filters);
+      final selection =
+          _selectionFromFilters(operation.filters, domain: operation.domain);
 
       pigeonOperations.add(
         p.BatchOperation(
@@ -565,7 +573,10 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
 
   static final _validFieldName = RegExp(r'^[a-zA-Z_][a-zA-Z0-9_.]*$');
 
-  _Selection _selectionFromFilters(List<iface.QueryFilterCondition> filters) {
+  _Selection _selectionFromFilters(
+    List<iface.QueryFilterCondition> filters, {
+    required iface.QueryDomain domain,
+  }) {
     if (filters.isEmpty) {
       return const _Selection(selection: null, args: null);
     }
@@ -574,7 +585,10 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
     final args = <String>[];
 
     for (final filter in filters) {
-      final field = filter.field;
+      final field = _AndroidFieldAliases.toNativeColumn(
+        domain: domain,
+        canonical: filter.field,
+      );
       if (!_validFieldName.hasMatch(field)) {
         throw _invalidQuery(
           'filter field name contains invalid characters: $field',
@@ -622,16 +636,23 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
     );
   }
 
-  String? _sortOrderFrom(List<iface.QuerySort> sort) {
+  String? _sortOrderFrom(
+    List<iface.QuerySort> sort, {
+    required iface.QueryDomain domain,
+  }) {
     if (sort.isEmpty) return null;
     return sort.map(
       (item) {
-        if (!_validFieldName.hasMatch(item.field)) {
+        final column = _AndroidFieldAliases.toNativeColumn(
+          domain: domain,
+          canonical: item.field,
+        );
+        if (!_validFieldName.hasMatch(column)) {
           throw _invalidQuery(
-            'sort field name contains invalid characters: ${item.field}',
+            'sort field name contains invalid characters: $column',
           );
         }
-        return '${item.field} ${item.direction == iface.QuerySortDirection.descending ? 'DESC' : 'ASC'}';
+        return '$column ${item.direction == iface.QuerySortDirection.descending ? 'DESC' : 'ASC'}';
       },
     ).join(', ');
   }
@@ -742,6 +763,8 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
           'read': _firstInt(row, const <String>['read']) == 1,
         };
       case iface.QueryDomain.calls:
+        final isNewRaw = _firstInt(row, const <String>['new', 'isNew']);
+        final isReadRaw = _firstInt(row, const <String>['is_read', 'isRead']);
         return <String, Object?>{
           'id': _firstString(row, const <String>['_id', 'id']) ?? '',
           'number': _firstString(row, const <String>['number']),
@@ -752,6 +775,23 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
           'timestamp':
               _firstString(row, const <String>['date', 'timestamp']) ?? '',
           'name': _firstString(row, const <String>['name', 'cached_name']),
+          // Optional canonical fields added in 0.4.0. Absent (not false/0)
+          // when the native column isn't present so consumers can detect
+          // "device doesn't surface this" via `record.containsKey`.
+          if (isNewRaw != null) 'isNew': isNewRaw == 1,
+          if (isReadRaw != null) 'isRead': isReadRaw == 1,
+          if (row.containsKey('geocoded_location') ||
+              row.containsKey('geocodedLocation'))
+            'geocodedLocation': _firstString(
+              row,
+              const <String>['geocoded_location', 'geocodedLocation'],
+            ),
+          if (row.containsKey('subscription_id') ||
+              row.containsKey('subscriptionId'))
+            'subscriptionId': _firstInt(
+              row,
+              const <String>['subscription_id', 'subscriptionId'],
+            ),
         };
       case iface.QueryDomain.platformSpecific:
         return row;
@@ -985,6 +1025,119 @@ abstract final class AndroidQueryPermissionResolver {
     }
 
     return null;
+  }
+}
+
+/// Canonical-to-Android-column translation for filters, sort, and
+/// projection. Consumers of simple_query pass canonical field names
+/// (`callType`, `timestamp`, `durationSec`, ...); the Android ContentResolver
+/// uses its own column names (`type`, `date`, `duration`, ...). This helper
+/// keeps the two vocabularies connected in one place.
+///
+/// Output records are normalised back to canonical keys by
+/// [SimpleQueryAndroidApi._normalizeRecord], which reads native columns
+/// directly. This table is the inverse — used before the native call when
+/// the caller supplies a field name in filters / sort / projection.
+///
+/// For [iface.QueryDomain.platformSpecific] no translation happens — field
+/// names pass through unchanged. For any named domain, an unknown canonical
+/// field throws `SimpleQueryError(invalidQuery)` via
+/// [iface.QueryFieldCatalog.ensureKnown].
+abstract final class _AndroidFieldAliases {
+  static const Map<iface.QueryDomain, Map<String, String>> _aliases =
+      <iface.QueryDomain, Map<String, String>>{
+    iface.QueryDomain.contacts: <String, String>{
+      'id': '_id',
+      'displayName': 'display_name',
+      'organization': 'company',
+      'updatedAt': 'contact_last_updated_timestamp',
+      // 'phones' / 'emails' are not single-column on Android contacts —
+      // filtering/sorting by them requires a join. Callers that need this
+      // should use callExtension('android.provider', 'queryWithJoins') or
+      // QueryDomain.platformSpecific with a raw contentUri.
+    },
+    iface.QueryDomain.calendar: <String, String>{
+      'id': '_id',
+      'title': 'title',
+      'startAt': 'dtstart',
+      'endAt': 'dtend',
+      'isAllDay': 'allDay',
+      'calendarId': 'calendar_id',
+      'updatedAt': 'lastDate',
+    },
+    iface.QueryDomain.media: <String, String>{
+      'id': '_id',
+      'uriOrPath': '_data',
+      'mediaType': 'media_type',
+      'mimeType': 'mime_type',
+      'size': '_size',
+      'createdAt': 'date_added',
+      'modifiedAt': 'date_modified',
+    },
+    iface.QueryDomain.files: <String, String>{
+      'id': '_id',
+      'path': '_data',
+      'name': '_display_name',
+      'size': '_size',
+      'mimeType': 'mime_type',
+      'modifiedAt': 'date_modified',
+      'modifiedEpochMs': 'date_modified',
+    },
+    iface.QueryDomain.messages: <String, String>{
+      'id': '_id',
+      'threadId': 'thread_id',
+      'address': 'address',
+      'body': 'body',
+      'timestamp': 'date',
+      'read': 'read',
+      // 'direction' is canonical-only; it derives from native `type` with a
+      // value-level mapping. Filtering/sorting by direction is not yet
+      // supported — callers should filter by `type` via platformSpecific.
+    },
+    iface.QueryDomain.calls: <String, String>{
+      'id': '_id',
+      'number': 'number',
+      'callType': 'type',
+      'durationSec': 'duration',
+      'timestamp': 'date',
+      'name': 'name',
+      'isNew': 'new',
+      'isRead': 'is_read',
+      'geocodedLocation': 'geocoded_location',
+      'subscriptionId': 'subscription_id',
+    },
+  };
+
+  /// Translates [canonical] into the Android ContentResolver column name for
+  /// [domain]. Validates that [canonical] is a known canonical field first
+  /// (throws `invalidQuery` if not). If no explicit alias is defined, the
+  /// canonical name is returned unchanged — reasonable for fields that match
+  /// their native column (e.g. `number` on calls, `address` on messages).
+  static String toNativeColumn({
+    required iface.QueryDomain domain,
+    required String canonical,
+  }) {
+    if (domain == iface.QueryDomain.platformSpecific) return canonical;
+    iface.QueryFieldCatalog.ensureKnown(
+      domain: domain,
+      canonical: canonical,
+    );
+    return _aliases[domain]?[canonical] ?? canonical;
+  }
+
+  /// Translates a projection list: each entry is validated and mapped to its
+  /// native column. Returns null (pass-through) for null/empty projections
+  /// and platformSpecific domains.
+  static List<String>? translateProjection({
+    required iface.QueryDomain domain,
+    required List<String>? projection,
+  }) {
+    if (projection == null || projection.isEmpty) return projection;
+    if (domain == iface.QueryDomain.platformSpecific) return projection;
+    return <String>[
+      for (final field in projection)
+        toNativeColumn(domain: domain, canonical: field),
+    ];
   }
 }
 

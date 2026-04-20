@@ -597,13 +597,18 @@ void main() {
       );
     });
 
+    // Tests below pass canonical field names (per Section 0 / P1) and
+    // assert the *native* column names appear in the resulting SQL —
+    // proving the canonical-to-native translation in
+    // _AndroidFieldAliases.toNativeColumn fires symmetrically.
+
     test('equals operator generates = ? clause', () async {
       await api.query(
         const iface.QueryRequest(
           domain: iface.QueryDomain.messages,
           filters: [
             iface.QueryFilterCondition(
-              field: 'address',
+              field: 'address', // canonical == native
               operator: iface.QueryFilterOperator.equals,
               value: '+15551234567',
             ),
@@ -617,10 +622,10 @@ void main() {
     test('notEquals operator generates != ? clause', () async {
       await api.query(
         const iface.QueryRequest(
-          domain: iface.QueryDomain.messages,
+          domain: iface.QueryDomain.calls,
           filters: [
             iface.QueryFilterCondition(
-              field: 'type',
+              field: 'callType', // canonical → native `type`
               operator: iface.QueryFilterOperator.notEquals,
               value: '3',
             ),
@@ -634,10 +639,10 @@ void main() {
     test('greaterThan operator generates > ? clause', () async {
       await api.query(
         const iface.QueryRequest(
-          domain: iface.QueryDomain.messages,
+          domain: iface.QueryDomain.calls,
           filters: [
             iface.QueryFilterCondition(
-              field: 'date',
+              field: 'timestamp', // canonical → native `date`
               operator: iface.QueryFilterOperator.greaterThan,
               value: '1000',
             ),
@@ -651,10 +656,10 @@ void main() {
     test('greaterThanOrEqual operator generates >= ? clause', () async {
       await api.query(
         const iface.QueryRequest(
-          domain: iface.QueryDomain.messages,
+          domain: iface.QueryDomain.calls,
           filters: [
             iface.QueryFilterCondition(
-              field: 'date',
+              field: 'timestamp',
               operator: iface.QueryFilterOperator.greaterThanOrEqual,
               value: '500',
             ),
@@ -668,10 +673,10 @@ void main() {
     test('lessThan operator generates < ? clause', () async {
       await api.query(
         const iface.QueryRequest(
-          domain: iface.QueryDomain.messages,
+          domain: iface.QueryDomain.calls,
           filters: [
             iface.QueryFilterCondition(
-              field: '_id',
+              field: 'id', // canonical → native `_id`
               operator: iface.QueryFilterOperator.lessThan,
               value: '99',
             ),
@@ -685,10 +690,10 @@ void main() {
     test('lessThanOrEqual operator generates <= ? clause', () async {
       await api.query(
         const iface.QueryRequest(
-          domain: iface.QueryDomain.messages,
+          domain: iface.QueryDomain.calls,
           filters: [
             iface.QueryFilterCondition(
-              field: '_id',
+              field: 'id',
               operator: iface.QueryFilterOperator.lessThanOrEqual,
               value: '50',
             ),
@@ -705,7 +710,7 @@ void main() {
           domain: iface.QueryDomain.messages,
           filters: [
             iface.QueryFilterCondition(
-              field: 'body',
+              field: 'body', // canonical == native
               operator: iface.QueryFilterOperator.contains,
               value: 'hello',
             ),
@@ -719,10 +724,10 @@ void main() {
     test('inList operator generates IN (...) clause', () async {
       await api.query(
         const iface.QueryRequest(
-          domain: iface.QueryDomain.messages,
+          domain: iface.QueryDomain.calls,
           filters: [
             iface.QueryFilterCondition(
-              field: 'type',
+              field: 'callType',
               operator: iface.QueryFilterOperator.inList,
               value: ['1', '2', '4'],
             ),
@@ -736,30 +741,63 @@ void main() {
     test('multiple filters are joined with AND', () async {
       await api.query(
         const iface.QueryRequest(
-          domain: iface.QueryDomain.messages,
+          domain: iface.QueryDomain.calls,
           filters: [
             iface.QueryFilterCondition(
-              field: 'address',
+              field: 'number',
               operator: iface.QueryFilterOperator.equals,
               value: '+1555',
             ),
             iface.QueryFilterCondition(
-              field: 'type',
+              field: 'callType',
               operator: iface.QueryFilterOperator.notEquals,
               value: '3',
             ),
           ],
         ),
       );
-      expect(host.lastQueryRequest!.selection, 'address = ? AND type != ?');
+      expect(host.lastQueryRequest!.selection, 'number = ? AND type != ?');
       expect(host.lastQueryRequest!.selectionArgs, ['+1555', '3']);
     });
 
-    test('invalid field name throws invalidQuery', () async {
+    test('non-canonical field name throws invalidQuery', () async {
+      // After Section 0, raw native column names are no longer accepted on
+      // named domains — they must come in via QueryDomain.platformSpecific
+      // or the typed canonical alias.
       await expectLater(
         api.query(
           const iface.QueryRequest(
-            domain: iface.QueryDomain.messages,
+            domain: iface.QueryDomain.calls,
+            filters: [
+              iface.QueryFilterCondition(
+                field: 'type', // raw Android column, not canonical
+                operator: iface.QueryFilterOperator.equals,
+                value: '1',
+              ),
+            ],
+          ),
+        ),
+        throwsA(
+          isA<iface.SimpleQueryError>()
+              .having((e) => e.code, 'code',
+                  iface.SimpleQueryErrorCode.invalidQuery)
+              .having((e) => e.details?['field'], 'details.field', 'type')
+              .having((e) => e.details?['domain'], 'details.domain', 'calls'),
+        ),
+      );
+    });
+
+    test('SQL injection in platformSpecific is rejected by the regex',
+        () async {
+      // platformSpecific bypasses canonical validation, so the
+      // _validFieldName regex remains the last line of defence.
+      await expectLater(
+        api.query(
+          const iface.QueryRequest(
+            domain: iface.QueryDomain.platformSpecific,
+            platformData: <String, Object?>{
+              'contentUri': 'content://com.example.test/data',
+            },
             filters: [
               iface.QueryFilterCondition(
                 field: "'; DROP TABLE",
@@ -779,11 +817,15 @@ void main() {
       );
     });
 
-    test('field name with spaces throws invalidQuery', () async {
+    test('field name with spaces in platformSpecific throws invalidQuery',
+        () async {
       await expectLater(
         api.query(
           const iface.QueryRequest(
-            domain: iface.QueryDomain.messages,
+            domain: iface.QueryDomain.platformSpecific,
+            platformData: <String, Object?>{
+              'contentUri': 'content://com.example.test/data',
+            },
             filters: [
               iface.QueryFilterCondition(
                 field: 'bad field',
@@ -803,10 +845,14 @@ void main() {
       );
     });
 
-    test('valid field names with dots and underscores pass', () async {
+    test('valid field names with dots and underscores pass platformSpecific',
+        () async {
       await api.query(
         const iface.QueryRequest(
-          domain: iface.QueryDomain.messages,
+          domain: iface.QueryDomain.platformSpecific,
+          platformData: <String, Object?>{
+            'contentUri': 'content://com.example.test/data',
+          },
           filters: [
             iface.QueryFilterCondition(
               field: 'contact_info.phone_number',
@@ -842,10 +888,10 @@ void main() {
     test('ascending sort generates ASC clause', () async {
       await api.query(
         const iface.QueryRequest(
-          domain: iface.QueryDomain.messages,
+          domain: iface.QueryDomain.calls,
           sort: [
             iface.QuerySort(
-              field: 'date',
+              field: 'timestamp', // canonical → native `date`
               direction: iface.QuerySortDirection.ascending,
             ),
           ],
@@ -857,10 +903,10 @@ void main() {
     test('descending sort generates DESC clause', () async {
       await api.query(
         const iface.QueryRequest(
-          domain: iface.QueryDomain.messages,
+          domain: iface.QueryDomain.calls,
           sort: [
             iface.QuerySort(
-              field: 'date',
+              field: 'timestamp',
               direction: iface.QuerySortDirection.descending,
             ),
           ],
@@ -869,17 +915,17 @@ void main() {
       expect(host.lastQueryRequest!.sortOrder, 'date DESC');
     });
 
-    test('multiple sort fields are comma-separated', () async {
+    test('multiple sort fields are comma-separated and translated', () async {
       await api.query(
         const iface.QueryRequest(
-          domain: iface.QueryDomain.messages,
+          domain: iface.QueryDomain.calls,
           sort: [
             iface.QuerySort(
-              field: 'date',
+              field: 'timestamp',
               direction: iface.QuerySortDirection.descending,
             ),
             iface.QuerySort(
-              field: '_id',
+              field: 'id', // canonical → native `_id`
               direction: iface.QuerySortDirection.ascending,
             ),
           ],
@@ -895,11 +941,35 @@ void main() {
       expect(host.lastQueryRequest!.sortOrder, '_id ASC');
     });
 
-    test('invalid sort field name throws invalidQuery', () async {
+    test('non-canonical sort field throws invalidQuery on a named domain',
+        () async {
       await expectLater(
         api.query(
           const iface.QueryRequest(
-            domain: iface.QueryDomain.messages,
+            domain: iface.QueryDomain.calls,
+            sort: [
+              iface.QuerySort(field: 'date'), // raw, not canonical
+            ],
+          ),
+        ),
+        throwsA(
+          isA<iface.SimpleQueryError>()
+              .having((e) => e.code, 'code',
+                  iface.SimpleQueryErrorCode.invalidQuery)
+              .having((e) => e.details?['field'], 'details.field', 'date'),
+        ),
+      );
+    });
+
+    test('invalid sort field characters in platformSpecific throws invalidQuery',
+        () async {
+      await expectLater(
+        api.query(
+          const iface.QueryRequest(
+            domain: iface.QueryDomain.platformSpecific,
+            platformData: <String, Object?>{
+              'contentUri': 'content://com.example.test/data',
+            },
             sort: [
               iface.QuerySort(field: '1; DROP TABLE'),
             ],
