@@ -979,6 +979,123 @@ void main() {
       expect(request.type, MutationType.delete);
     });
 
+    test('validateQueryRequest rejects unknown filter field', () {
+      expect(
+        () => RuntimeContractValidation.validateQueryRequest(
+          const QueryRequest(
+            domain: QueryDomain.calls,
+            filters: <QueryFilterCondition>[
+              QueryFilterCondition(
+                field: 'type', // raw Android column, not canonical
+                operator: QueryFilterOperator.equals,
+                value: '1',
+              ),
+            ],
+          ),
+        ),
+        throwsA(
+          isA<SimpleQueryError>()
+              .having((e) => e.code, 'code', SimpleQueryErrorCode.invalidQuery)
+              .having((e) => e.details?['field'], 'details.field', 'type'),
+        ),
+      );
+    });
+
+    test('validateQueryRequest rejects unknown sort field', () {
+      expect(
+        () => RuntimeContractValidation.validateQueryRequest(
+          const QueryRequest(
+            domain: QueryDomain.calls,
+            sort: <QuerySort>[QuerySort(field: 'date')],
+          ),
+        ),
+        throwsA(isA<SimpleQueryError>()),
+      );
+    });
+
+    test('validateQueryRequest rejects unknown projection field', () {
+      expect(
+        () => RuntimeContractValidation.validateQueryRequest(
+          const QueryRequest(
+            domain: QueryDomain.calls,
+            projection: <String>['_id'],
+          ),
+        ),
+        throwsA(isA<SimpleQueryError>()),
+      );
+    });
+
+    test('validateQueryRequest passes for canonical fields', () {
+      RuntimeContractValidation.validateQueryRequest(
+        const QueryRequest(
+          domain: QueryDomain.calls,
+          filters: <QueryFilterCondition>[
+            QueryFilterCondition(
+              field: 'callType',
+              operator: QueryFilterOperator.equals,
+              value: '1',
+            ),
+          ],
+          sort: <QuerySort>[QuerySort(field: 'timestamp')],
+          projection: <String>['id', 'number', 'durationSec'],
+        ),
+      );
+      // No throw.
+    });
+
+    test('validateQueryRequest is a no-op for platformSpecific', () {
+      RuntimeContractValidation.validateQueryRequest(
+        const QueryRequest(
+          domain: QueryDomain.platformSpecific,
+          filters: <QueryFilterCondition>[
+            QueryFilterCondition(
+              field: 'anything_goes',
+              operator: QueryFilterOperator.equals,
+              value: 'x',
+            ),
+          ],
+        ),
+      );
+      // No throw.
+    });
+
+    test('validateMutationRequest rejects unknown filter field', () {
+      expect(
+        () => RuntimeContractValidation.validateMutationRequest(
+          const MutationRequest(
+            domain: QueryDomain.calls,
+            type: MutationType.delete,
+            filters: <QueryFilterCondition>[
+              QueryFilterCondition(
+                field: 'date',
+                operator: QueryFilterOperator.equals,
+                value: '0',
+              ),
+            ],
+          ),
+        ),
+        throwsA(isA<SimpleQueryError>()),
+      );
+    });
+
+    test('validateObserveRequest rejects unknown filter field', () {
+      expect(
+        () => RuntimeContractValidation.validateObserveRequest(
+          const ObserveRequest(
+            domain: QueryDomain.calls,
+            filters: <QueryFilterCondition>[
+              QueryFilterCondition(
+                field: 'date',
+                operator: QueryFilterOperator.equals,
+                value: '0',
+              ),
+            ],
+          ),
+        ),
+        throwsA(isA<SimpleQueryError>()),
+      );
+    });
+
     test('validateBatchRequest rejects empty operations', () {
       expect(
         () => RuntimeContractValidation.validateBatchRequest(
@@ -988,20 +1105,24 @@ void main() {
       );
     });
 
-    test('validateBatchRequest cascades mutation validation', () {
-      expect(
-        () => RuntimeContractValidation.validateBatchRequest(
-          const BatchRequest(
-            operations: <MutationRequest>[
-              MutationRequest(
-                domain: QueryDomain.files,
-                type: MutationType.update,
-              ),
-            ],
-          ),
+    test(
+        'validateBatchRequest does NOT cascade per-op validation '
+        '(sequentialBestEffort)', () {
+      // A malformed operation (insert without values) must not abort the
+      // whole batch at validation time — the batch runner records the
+      // per-op failure in metadata.error and continues with the rest.
+      final validated = RuntimeContractValidation.validateBatchRequest(
+        const BatchRequest(
+          operations: <MutationRequest>[
+            MutationRequest(
+              domain: QueryDomain.files,
+              type: MutationType.update,
+              // no `values` — would fail validateMutationRequest on its own
+            ),
+          ],
         ),
-        throwsA(isA<SimpleQueryError>()),
       );
+      expect(validated.operations, hasLength(1));
     });
 
     test('validateObserveRequest rejects non-positive pollingInterval', () {
