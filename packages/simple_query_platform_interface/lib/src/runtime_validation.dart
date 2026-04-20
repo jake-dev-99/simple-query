@@ -97,11 +97,12 @@ abstract final class RuntimeContractValidation {
   /// Enforces that a batch carries at least one operation.
   static BatchRequest validateBatchRequest(BatchRequest request) {
     if (request.operations.isEmpty) {
-      throw SimpleQueryError(
+      throw const SimpleQueryError(
         code: SimpleQueryErrorCode.invalidQuery,
-        message: 'simple_query: batch request must contain at least one operation',
+        message:
+            'simple_query: batch request must contain at least one operation',
         operation: QueryOperation.write,
-        details: const <String, Object?>{'operationsCount': 0},
+        details: <String, Object?>{'operationsCount': 0},
       );
     }
     for (var index = 0; index < request.operations.length; index += 1) {

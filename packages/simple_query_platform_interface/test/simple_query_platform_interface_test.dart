@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:simple_query_platform_interface/simple_query_platform_interface.dart';
+import 'package:simple_query_platform_interface/testing.dart';
 
 void main() {
   final original = SimpleQueryPlatform.instance;
@@ -45,7 +46,7 @@ void main() {
   });
 
   test('token verification accepts valid platform', () {
-    final platform = _TestPlatform();
+    final platform = FakeSimpleQueryPlatform();
     SimpleQueryPlatform.instance = platform;
     expect(SimpleQueryPlatform.instance, same(platform));
   });
@@ -759,52 +760,3 @@ void main() {
   });
 }
 
-class _TestPlatform extends SimpleQueryPlatform {
-  @override
-  Future<BatchResult> batch(BatchRequest request) async =>
-      const BatchResult(results: <MutationResult>[]);
-
-  @override
-  Future<void> closeBinary(String handleId) async {}
-
-  @override
-  Future<Map<String, Object?>?> callExtension({
-    required String namespace,
-    required String method,
-    Map<String, Object?>? args,
-  }) async =>
-      null;
-
-  @override
-  Future<void> dispose() async {}
-
-  @override
-  Future<CapabilitySnapshot> getCapabilities() async => CapabilitySnapshot(
-        capabilities: QueryDomain.values
-            .map(
-              (domain) => CapabilityDescriptor(
-                domain: domain,
-                canRead: true,
-                canWrite: true,
-                canObserve: true,
-                canStream: true,
-              ),
-            )
-            .toList(growable: false),
-      );
-
-  @override
-  Future<MutationResult> mutate(MutationRequest request) async =>
-      const MutationResult(affectedCount: 0);
-
-  @override
-  Stream<ObserveEvent> observe(ObserveRequest request) => const Stream.empty();
-
-  @override
-  Future<BinaryContentHandle> openBinary(BinaryRequest request) async =>
-      const BinaryContentHandle(handleId: 'h', localPath: '/tmp/h');
-
-  @override
-  Future<QueryResult> query(QueryRequest request) async =>
-      const QueryResult(records: <QueryRecord>[]);
-}

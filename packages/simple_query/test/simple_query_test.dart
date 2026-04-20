@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 import 'package:simple_query/simple_query.dart';
 import 'package:simple_query_platform_interface/simple_query_platform_interface.dart';
+import 'package:simple_query_platform_interface/testing.dart';
 
 void main() {
   final original = SimpleQueryPlatform.instance;
@@ -10,12 +10,34 @@ void main() {
     SimpleQueryPlatform.instance = original;
   });
 
+  FakeSimpleQueryPlatform makeFake() => FakeSimpleQueryPlatform(
+        queryResult: const QueryResult(
+          records: <QueryRecord>[<String, Object?>{'id': 1}],
+        ),
+        mutationResult: const MutationResult(affectedCount: 1),
+        batchResult: const BatchResult(
+          results: <MutationResult>[MutationResult(affectedCount: 1)],
+        ),
+        binaryContentHandle: const BinaryContentHandle(
+          handleId: 'h1',
+          localPath: '/tmp/h1',
+        ),
+        observeStream: Stream<ObserveEvent>.fromIterable(<ObserveEvent>[
+          ObserveEvent(
+            domain: QueryDomain.files,
+            changeType: ObserveChangeType.unknown,
+            timestamp: DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
+          ),
+        ]),
+        extensionResult: const <String, Object?>{'ok': true},
+      );
+
   test('exposes singleton instance', () {
     expect(SimpleQuery.instance, isA<SimpleQuery>());
   });
 
   test('delegates query to platform', () async {
-    final platform = _FakePlatform();
+    final platform = makeFake();
     SimpleQueryPlatform.instance = platform;
 
     final result = await SimpleQuery.instance.query(
@@ -27,7 +49,7 @@ void main() {
   });
 
   test('supports capability lookup', () async {
-    SimpleQueryPlatform.instance = _FakePlatform();
+    SimpleQueryPlatform.instance = makeFake();
 
     final capabilities = await SimpleQuery.instance.getCapabilities();
 
@@ -41,7 +63,7 @@ void main() {
   });
 
   test('dispose delegates to platform', () async {
-    SimpleQueryPlatform.instance = _FakePlatform();
+    SimpleQueryPlatform.instance = makeFake();
 
     await SimpleQuery.instance.dispose();
 
@@ -49,7 +71,7 @@ void main() {
   });
 
   test('delegates mutate, batch, binary, extension and observe', () async {
-    final platform = _FakePlatform();
+    final platform = makeFake();
     SimpleQueryPlatform.instance = platform;
 
     final mutation = await SimpleQuery.instance.mutate(
@@ -209,7 +231,7 @@ void main() {
   });
 
   test('queryTyped maps records', () async {
-    SimpleQueryPlatform.instance = _FakePlatform();
+    SimpleQueryPlatform.instance = makeFake();
 
     final ids = await SimpleQuery.instance.queryTyped<int>(
       const QueryRequest(domain: QueryDomain.contacts),
@@ -220,7 +242,7 @@ void main() {
   });
 
   test('queryTyped wraps fromRecord failures in SimpleQueryError', () async {
-    SimpleQueryPlatform.instance = _FakePlatform();
+    SimpleQueryPlatform.instance = makeFake();
 
     await expectLater(
       () => SimpleQuery.instance.queryTyped<String>(
@@ -244,7 +266,7 @@ void main() {
 
   test('queryTyped passes SimpleQueryError from fromRecord through unwrapped',
       () async {
-    SimpleQueryPlatform.instance = _FakePlatform();
+    SimpleQueryPlatform.instance = makeFake();
 
     await expectLater(
       () => SimpleQuery.instance.queryTyped<String>(
@@ -265,85 +287,3 @@ void main() {
   });
 }
 
-class _FakePlatform extends SimpleQueryPlatform
-    with MockPlatformInterfaceMixin {
-  int mutateCalls = 0;
-  int batchCalls = 0;
-  int openBinaryCalls = 0;
-  int closeBinaryCalls = 0;
-  int callExtensionCalls = 0;
-  int observeCalls = 0;
-
-  @override
-  Future<BatchResult> batch(BatchRequest request) async {
-    batchCalls += 1;
-    return const BatchResult(
-      results: <MutationResult>[MutationResult(affectedCount: 1)],
-    );
-  }
-
-  @override
-  Future<void> closeBinary(String handleId) async {
-    closeBinaryCalls += 1;
-  }
-
-  @override
-  Future<Map<String, Object?>?> callExtension({
-    required String namespace,
-    required String method,
-    Map<String, Object?>? args,
-  }) async {
-    callExtensionCalls += 1;
-    return <String, Object?>{'ok': true};
-  }
-
-  @override
-  Future<void> dispose() async {}
-
-  @override
-  Future<CapabilitySnapshot> getCapabilities() async => CapabilitySnapshot(
-        capabilities: QueryDomain.values
-            .map(
-              (domain) => CapabilityDescriptor(
-                domain: domain,
-                canRead: true,
-                canWrite: true,
-                canObserve: true,
-                canStream: true,
-              ),
-            )
-            .toList(growable: false),
-      );
-
-  @override
-  Future<MutationResult> mutate(MutationRequest request) async {
-    mutateCalls += 1;
-    return const MutationResult(affectedCount: 1);
-  }
-
-  @override
-  Stream<ObserveEvent> observe(ObserveRequest request) =>
-      Stream<ObserveEvent>.fromIterable(<ObserveEvent>[
-        ObserveEvent(
-          domain: request.domain,
-          changeType: ObserveChangeType.unknown,
-          timestamp: DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
-        ),
-      ]).map((event) {
-        observeCalls += 1;
-        return event;
-      });
-
-  @override
-  Future<BinaryContentHandle> openBinary(BinaryRequest request) async {
-    openBinaryCalls += 1;
-    return const BinaryContentHandle(handleId: 'h1', localPath: '/tmp/h1');
-  }
-
-  @override
-  Future<QueryResult> query(QueryRequest request) async => const QueryResult(
-        records: <QueryRecord>[
-          <String, Object?>{'id': 1}
-        ],
-      );
-}
