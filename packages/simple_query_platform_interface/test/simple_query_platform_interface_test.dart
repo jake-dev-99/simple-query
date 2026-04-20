@@ -439,20 +439,20 @@ void main() {
   });
 
   group('copyWith null clears nullable fields', () {
-    test('QueryPage clears offset and cursor independently', () {
-      const page = QueryPage(limit: 10, offset: 5, cursor: 'c');
-      final clearedOffset = page.copyWith(offset: null);
+    test('QueryPage offset-mode clears offset, cursor-mode clears cursor', () {
+      const offsetPage = QueryPage.offset(limit: 10, offset: 5);
+      final clearedOffset = offsetPage.copyWith(offset: null);
       expect(clearedOffset.offset, isNull);
-      expect(clearedOffset.cursor, 'c');
       expect(clearedOffset.limit, 10);
 
-      final clearedCursor = page.copyWith(cursor: null);
+      const cursorPage = QueryPage.cursor(limit: 10, cursor: 'c');
+      final clearedCursor = cursorPage.copyWith(cursor: null);
       expect(clearedCursor.cursor, isNull);
-      expect(clearedCursor.offset, 5);
+      expect(clearedCursor.limit, 10);
 
       // Omitted params preserve existing values.
-      final untouched = page.copyWith();
-      expect(untouched, equals(page));
+      expect(offsetPage.copyWith(), equals(offsetPage));
+      expect(cursorPage.copyWith(), equals(cursorPage));
     });
 
     test('QueryResult clears nextOffset/nextCursor/metadata independently',
@@ -581,6 +581,45 @@ void main() {
         value: 'v',
       );
       expect(condition.copyWith(value: null).value, isNull);
+    });
+  });
+
+  group('Constructor guards', () {
+    test('QueryPage rejects simultaneous offset and cursor', () {
+      expect(
+        () => QueryPage(limit: 10, offset: 0, cursor: 'abc'),
+        throwsA(isA<AssertionError>()),
+      );
+    });
+
+    test('QueryPage.offset builds an offset-mode page', () {
+      const page = QueryPage.offset(limit: 10, offset: 20);
+      expect(page.offset, 20);
+      expect(page.cursor, isNull);
+    });
+
+    test('QueryPage.cursor builds a cursor-mode page', () {
+      const page = QueryPage.cursor(limit: 10, cursor: 'abc');
+      expect(page.cursor, 'abc');
+      expect(page.offset, isNull);
+    });
+
+    test('QueryFilterCondition asserts inList value is a List', () {
+      expect(
+        () => QueryFilterCondition(
+          field: 'id',
+          operator: QueryFilterOperator.inList,
+          value: 'not-a-list',
+        ),
+        throwsA(isA<AssertionError>()),
+      );
+      // Valid: value is a List.
+      const valid = QueryFilterCondition(
+        field: 'id',
+        operator: QueryFilterOperator.inList,
+        value: <String>['1', '2'],
+      );
+      expect(valid.value, <String>['1', '2']);
     });
   });
 

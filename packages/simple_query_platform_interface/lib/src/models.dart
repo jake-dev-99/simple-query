@@ -126,7 +126,10 @@ class QueryFilterCondition {
     required this.field,
     required this.operator,
     this.value,
-  });
+  }) : assert(
+          operator != QueryFilterOperator.inList || value is List,
+          'QueryFilterOperator.inList requires value to be a List',
+        );
 
   final String field;
   final QueryFilterOperator operator;
@@ -201,11 +204,29 @@ class QuerySort {
 /// query resumes from where the cursor left off. Get the next cursor from
 /// [QueryResult.nextCursor].
 class QueryPage {
+  /// Construct a page with optional [limit] only. Prefer [QueryPage.offset]
+  /// or [QueryPage.cursor] when paginating.
   const QueryPage({
     this.limit,
     this.offset,
     this.cursor,
-  });
+  }) : assert(
+          offset == null || cursor == null,
+          'QueryPage cannot set both offset and cursor; use QueryPage.offset '
+          'or QueryPage.cursor to pick one pagination mode.',
+        );
+
+  /// Offset-based pagination. The next page is requested via
+  /// [QueryResult.nextOffset].
+  const QueryPage.offset({this.limit, required int offset})
+      : offset = offset,
+        cursor = null;
+
+  /// Cursor-based pagination. The next page is requested by passing
+  /// [QueryResult.nextCursor] back as [cursor].
+  const QueryPage.cursor({this.limit, required String cursor})
+      : offset = null,
+        cursor = cursor;
 
   final int? limit;
   final int? offset;
