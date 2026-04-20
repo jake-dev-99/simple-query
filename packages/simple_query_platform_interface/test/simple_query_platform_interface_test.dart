@@ -584,6 +584,128 @@ void main() {
     });
   });
 
+  group('SimpleQueryError.toString', () {
+    test('includes code, message, domain, operation, and details', () {
+      const error = SimpleQueryError(
+        code: SimpleQueryErrorCode.invalidQuery,
+        message: 'bad request',
+        domain: QueryDomain.files,
+        operation: QueryOperation.read,
+        details: <String, Object?>{'recordIndex': 3, 'field': 'path'},
+      );
+      final text = error.toString();
+      expect(text, contains('invalidQuery'));
+      expect(text, contains('bad request'));
+      expect(text, contains('domain=files'));
+      expect(text, contains('operation=read'));
+      expect(text, contains('recordIndex'));
+      expect(text, contains('path'));
+    });
+
+    test('omits details when absent', () {
+      const error = SimpleQueryError(
+        code: SimpleQueryErrorCode.notSupported,
+        message: 'nope',
+      );
+      expect(error.toString(), isNot(contains('details=')));
+    });
+  });
+
+  group('RuntimeContractValidation extra validators', () {
+    test('validateMutationRequest rejects empty insert values', () {
+      expect(
+        () => RuntimeContractValidation.validateMutationRequest(
+          const MutationRequest(
+            domain: QueryDomain.files,
+            type: MutationType.insert,
+          ),
+        ),
+        throwsA(
+          isA<SimpleQueryError>()
+              .having((e) => e.code, 'code', SimpleQueryErrorCode.invalidQuery)
+              .having((e) => e.details?['type'], 'details.type', 'insert'),
+        ),
+      );
+    });
+
+    test('validateMutationRequest accepts delete without values', () {
+      final request = RuntimeContractValidation.validateMutationRequest(
+        const MutationRequest(
+          domain: QueryDomain.files,
+          type: MutationType.delete,
+        ),
+      );
+      expect(request.type, MutationType.delete);
+    });
+
+    test('validateBatchRequest rejects empty operations', () {
+      expect(
+        () => RuntimeContractValidation.validateBatchRequest(
+          const BatchRequest(operations: <MutationRequest>[]),
+        ),
+        throwsA(isA<SimpleQueryError>()),
+      );
+    });
+
+    test('validateBatchRequest cascades mutation validation', () {
+      expect(
+        () => RuntimeContractValidation.validateBatchRequest(
+          const BatchRequest(
+            operations: <MutationRequest>[
+              MutationRequest(
+                domain: QueryDomain.files,
+                type: MutationType.update,
+              ),
+            ],
+          ),
+        ),
+        throwsA(isA<SimpleQueryError>()),
+      );
+    });
+
+    test('validateObserveRequest rejects non-positive pollingInterval', () {
+      expect(
+        () => RuntimeContractValidation.validateObserveRequest(
+          const ObserveRequest(
+            domain: QueryDomain.files,
+            pollingInterval: Duration.zero,
+          ),
+        ),
+        throwsA(isA<SimpleQueryError>()),
+      );
+    });
+
+    test('validateBinaryRequest requires recordId or platformData', () {
+      expect(
+        () => RuntimeContractValidation.validateBinaryRequest(
+          const BinaryRequest(domain: QueryDomain.files),
+        ),
+        throwsA(isA<SimpleQueryError>()),
+      );
+      // recordId alone is sufficient.
+      RuntimeContractValidation.validateBinaryRequest(
+        const BinaryRequest(domain: QueryDomain.files, recordId: 'r'),
+      );
+    });
+
+    test('validateQueryResult includes domain in details', () {
+      try {
+        RuntimeContractValidation.validateQueryResult(
+          domain: QueryDomain.files,
+          result: const QueryResult(
+            records: <QueryRecord>[
+              <String, Object?>{'id': '1'}, // missing required keys
+            ],
+          ),
+        );
+        fail('expected throw');
+      } on SimpleQueryError catch (error) {
+        expect(error.details?['domain'], 'files');
+        expect(error.details?['recordIndex'], 0);
+      }
+    });
+  });
+
   test('runtime validation allows platformSpecific records', () {
     final result = RuntimeContractValidation.validateQueryResult(
       domain: QueryDomain.platformSpecific,

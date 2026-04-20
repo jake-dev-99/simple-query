@@ -218,6 +218,51 @@ void main() {
 
     expect(ids, <int>[1]);
   });
+
+  test('queryTyped wraps fromRecord failures in SimpleQueryError', () async {
+    SimpleQueryPlatform.instance = _FakePlatform();
+
+    await expectLater(
+      () => SimpleQuery.instance.queryTyped<String>(
+        const QueryRequest(domain: QueryDomain.contacts),
+        (record) =>
+            throw StateError('synthetic mapping failure'),
+      ),
+      throwsA(
+        isA<SimpleQueryError>()
+            .having((e) => e.code, 'code', SimpleQueryErrorCode.invalidQuery)
+            .having((e) => e.details?['recordIndex'], 'recordIndex', 0)
+            .having((e) => e.details?['domain'], 'domain', 'contacts')
+            .having(
+              (e) => e.details?['cause'],
+              'cause',
+              contains('synthetic mapping failure'),
+            ),
+      ),
+    );
+  });
+
+  test('queryTyped passes SimpleQueryError from fromRecord through unwrapped',
+      () async {
+    SimpleQueryPlatform.instance = _FakePlatform();
+
+    await expectLater(
+      () => SimpleQuery.instance.queryTyped<String>(
+        const QueryRequest(domain: QueryDomain.contacts),
+        (record) => throw const SimpleQueryError(
+          code: SimpleQueryErrorCode.permissionDenied,
+          message: 'nope',
+        ),
+      ),
+      throwsA(
+        isA<SimpleQueryError>().having(
+          (e) => e.code,
+          'code',
+          SimpleQueryErrorCode.permissionDenied,
+        ),
+      ),
+    );
+  });
 }
 
 class _FakePlatform extends SimpleQueryPlatform
