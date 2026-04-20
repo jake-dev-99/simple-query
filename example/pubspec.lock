@@ -237,14 +237,14 @@ packages:
       path: "../packages/simple_query"
       relative: true
     source: path
-    version: "0.2.0"
+    version: "0.3.0"
   simple_query_android:
     dependency: transitive
     description:
       path: "../packages/simple_query_android"
       relative: true
     source: path
-    version: "0.2.1"
+    version: "0.3.1"
   simple_query_ios:
     dependency: transitive
     description:
@@ -272,7 +272,7 @@ packages:
       path: "../packages/simple_query_platform_interface"
       relative: true
     source: path
-    version: "0.2.0"
+    version: "0.3.0"
   simple_query_shared:
     dependency: transitive
     description:

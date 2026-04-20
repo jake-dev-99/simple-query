@@ -38,22 +38,41 @@ void main() {
       expect(record.id, '123');
     });
 
-    test('parses non-list phones/emails as empty list', () {
-      final record = ContactRecord.fromRecord(const <String, Object?>{
-        'id': '1',
-        'phones': 'not-a-list',
-        'emails': 42,
-      });
-      // _toStringList returns empty for non-List values? Let's check.
-      // Actually _toStringList: if value is List => map; else => <String>[]
-      // 'not-a-list' is not a List, so should be empty.
-      // But wait: the code says if value is List => map. 'not-a-list' is String,
-      // not List. So => [].
-      expect(record.phones, isEmpty);
-      expect(record.emails, isEmpty);
+    test('throws on non-list phones', () {
+      expect(
+        () => ContactRecord.fromRecord(
+          const <String, Object?>{'id': '1', 'phones': 'not-a-list'},
+        ),
+        throwsA(
+          isA<SimpleQueryError>()
+              .having((e) => e.code, 'code', SimpleQueryErrorCode.invalidQuery)
+              .having((e) => e.message, 'message', contains('phones')),
+        ),
+      );
     });
 
-    test('parses list of mixed types to string list', () {
+    test('throws on scalar emails', () {
+      expect(
+        () => ContactRecord.fromRecord(
+          const <String, Object?>{'id': '1', 'emails': 42},
+        ),
+        throwsA(isA<SimpleQueryError>()),
+      );
+    });
+
+    test('throws on complex value for a string field', () {
+      expect(
+        () => ContactRecord.fromRecord(<String, Object?>{
+          'id': <String, Object?>{'nested': 'map'},
+        }),
+        throwsA(
+          isA<SimpleQueryError>()
+              .having((e) => e.code, 'code', SimpleQueryErrorCode.invalidQuery),
+        ),
+      );
+    });
+
+    test('parses list of primitives to string list', () {
       final record = ContactRecord.fromRecord(const <String, Object?>{
         'id': '1',
         'phones': [123, 'text', true],
@@ -61,6 +80,14 @@ void main() {
       });
       expect(record.phones, ['123', 'text', 'true']);
       expect(record.emails, ['a@b.com']);
+    });
+
+    test('list with null entries drops them', () {
+      final record = ContactRecord.fromRecord(const <String, Object?>{
+        'id': '1',
+        'phones': <Object?>['+1', null, '+2'],
+      });
+      expect(record.phones, ['+1', '+2']);
     });
 
     test('toString includes id and displayName', () {
@@ -104,29 +131,44 @@ void main() {
       expect(record.updatedAt, isNull);
     });
 
-    test('boolean coercion for isAllDay - false for non-true values', () {
-      final record = CalendarEventRecord.fromRecord(const <String, Object?>{
-        'id': '1',
-        'isAllDay': 'yes',
-      });
-      expect(record.isAllDay, false);
-    });
-
-    test('boolean coercion for isAllDay - true for literal true', () {
-      final record = CalendarEventRecord.fromRecord(const <String, Object?>{
-        'id': '1',
-        'isAllDay': true,
-      });
-      expect(record.isAllDay, true);
-    });
-
-    test('boolean coercion for isAllDay - false for 1', () {
+    test('isAllDay coerces 1 to true (Android integer boolean)', () {
       final record = CalendarEventRecord.fromRecord(const <String, Object?>{
         'id': '1',
         'isAllDay': 1,
       });
-      // record['isAllDay'] == true => 1 == true is false in Dart
+      expect(record.isAllDay, true);
+    });
+
+    test('isAllDay coerces 0 to false', () {
+      final record = CalendarEventRecord.fromRecord(const <String, Object?>{
+        'id': '1',
+        'isAllDay': 0,
+      });
       expect(record.isAllDay, false);
+    });
+
+    test('isAllDay coerces "true"/"false" strings', () {
+      expect(
+        CalendarEventRecord.fromRecord(
+          const <String, Object?>{'id': '1', 'isAllDay': 'true'},
+        ).isAllDay,
+        true,
+      );
+      expect(
+        CalendarEventRecord.fromRecord(
+          const <String, Object?>{'id': '1', 'isAllDay': 'FALSE'},
+        ).isAllDay,
+        false,
+      );
+    });
+
+    test('isAllDay throws on uncoercible value', () {
+      expect(
+        () => CalendarEventRecord.fromRecord(
+          const <String, Object?>{'id': '1', 'isAllDay': 'yes'},
+        ),
+        throwsA(isA<SimpleQueryError>()),
+      );
     });
   });
 
@@ -167,7 +209,7 @@ void main() {
       expect(record.size, 8192);
     });
 
-    test('int parsing for size from double', () {
+    test('int parsing for size from double truncates', () {
       final record = MediaRecord.fromRecord(const <String, Object?>{
         'id': '1',
         'size': 1024.7,
@@ -181,6 +223,15 @@ void main() {
         'size': 'not-a-number',
       });
       expect(record.size, isNull);
+    });
+
+    test('size throws for complex value', () {
+      expect(
+        () => MediaRecord.fromRecord(
+          <String, Object?>{'id': '1', 'size': <int>[1, 2]},
+        ),
+        throwsA(isA<SimpleQueryError>()),
+      );
     });
   });
 
@@ -210,22 +261,34 @@ void main() {
       expect(record.modifiedEpochMs, 1704067200000);
     });
 
-    test('boolean for isDirectory - true only for literal true', () {
-      final trueRecord = FileRecord.fromRecord(const <String, Object?>{
-        'id': '1',
-        'path': '/tmp/dir',
-        'name': 'dir',
-        'isDirectory': true,
-      });
-      expect(trueRecord.isDirectory, true);
-
-      final falseRecord = FileRecord.fromRecord(const <String, Object?>{
-        'id': '1',
-        'path': '/tmp/dir',
-        'name': 'dir',
-        'isDirectory': 'true',
-      });
-      expect(falseRecord.isDirectory, false);
+    test('isDirectory accepts bool, int, and string', () {
+      expect(
+        FileRecord.fromRecord(const <String, Object?>{
+          'id': '1',
+          'path': '/d',
+          'name': 'd',
+          'isDirectory': true,
+        }).isDirectory,
+        true,
+      );
+      expect(
+        FileRecord.fromRecord(const <String, Object?>{
+          'id': '1',
+          'path': '/d',
+          'name': 'd',
+          'isDirectory': 'true',
+        }).isDirectory,
+        true,
+      );
+      expect(
+        FileRecord.fromRecord(const <String, Object?>{
+          'id': '1',
+          'path': '/d',
+          'name': 'd',
+          'isDirectory': 0,
+        }).isDirectory,
+        false,
+      );
     });
 
     test('handles missing optional fields', () {
@@ -272,22 +335,18 @@ void main() {
       expect(record.read, true);
     });
 
-    test('boolean for read - false for non-true values', () {
+    test('read field coerces 1 to true', () {
       final record = MessageRecord.fromRecord(const <String, Object?>{
         'id': '1',
         'timestamp': '0',
         'read': 1,
       });
-      expect(record.read, false);
+      expect(record.read, true);
     });
 
-    test('boolean for read - true only for literal true', () {
-      final record = MessageRecord.fromRecord(const <String, Object?>{
-        'id': '1',
-        'timestamp': '0',
-        'read': true,
-      });
-      expect(record.read, true);
+    test('read field is null when absent', () {
+      final record = MessageRecord.fromRecord(const <String, Object?>{});
+      expect(record.read, isNull);
     });
 
     test('handles missing optional fields', () {
@@ -298,7 +357,6 @@ void main() {
       expect(record.address, isNull);
       expect(record.body, isNull);
       expect(record.direction, isNull);
-      expect(record.read, false);
     });
   });
 

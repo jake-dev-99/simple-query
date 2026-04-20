@@ -198,49 +198,49 @@ packages:
       path: "../simple_query_android"
       relative: true
     source: path
-    version: "0.2.1"
+    version: "0.3.1"
   simple_query_ios:
     dependency: "direct main"
     description:
       path: "../simple_query_ios"
       relative: true
     source: path
-    version: "0.2.0"
+    version: "0.3.1"
   simple_query_linux:
     dependency: "direct main"
     description:
       path: "../simple_query_linux"
       relative: true
     source: path
-    version: "0.2.0"
+    version: "0.3.1"
   simple_query_macos:
     dependency: "direct main"
     description:
       path: "../simple_query_macos"
       relative: true
     source: path
-    version: "0.2.0"
+    version: "0.3.1"
   simple_query_platform_interface:
     dependency: "direct main"
     description:
       path: "../simple_query_platform_interface"
       relative: true
     source: path
-    version: "0.2.0"
+    version: "0.3.1"
   simple_query_shared:
     dependency: transitive
     description:
       path: "../simple_query_shared"
       relative: true
     source: path
-    version: "0.2.0"
+    version: "0.3.1"
   simple_query_windows:
     dependency: "direct main"
     description:
       path: "../simple_query_windows"
       relative: true
     source: path
-    version: "0.2.0"
+    version: "0.3.1"
   sky_engine:
     dependency: transitive
     description: flutter
