@@ -1,3 +1,4 @@
+import 'exceptions.dart';
 import 'models.dart';
 
 /// Typed view over a [QueryRecord] from the [QueryDomain.contacts] domain.
@@ -13,12 +14,12 @@ class ContactRecord {
 
   factory ContactRecord.fromRecord(QueryRecord record) {
     return ContactRecord._(
-      id: record['id']?.toString() ?? '',
-      displayName: record['displayName']?.toString() ?? '',
-      phones: _toStringList(record['phones']),
-      emails: _toStringList(record['emails']),
-      organization: record['organization']?.toString(),
-      updatedAt: record['updatedAt']?.toString(),
+      id: _requiredString(record, 'id'),
+      displayName: _requiredString(record, 'displayName'),
+      phones: _stringList(record, 'phones'),
+      emails: _stringList(record, 'emails'),
+      organization: _optionalString(record, 'organization'),
+      updatedAt: _optionalString(record, 'updatedAt'),
     );
   }
 
@@ -47,13 +48,13 @@ class CalendarEventRecord {
 
   factory CalendarEventRecord.fromRecord(QueryRecord record) {
     return CalendarEventRecord._(
-      id: record['id']?.toString() ?? '',
-      title: record['title']?.toString() ?? '',
-      startAt: record['startAt']?.toString() ?? '',
-      endAt: record['endAt']?.toString() ?? '',
-      isAllDay: record['isAllDay'] == true,
-      calendarId: record['calendarId']?.toString() ?? '',
-      updatedAt: record['updatedAt']?.toString(),
+      id: _requiredString(record, 'id'),
+      title: _requiredString(record, 'title'),
+      startAt: _requiredString(record, 'startAt'),
+      endAt: _requiredString(record, 'endAt'),
+      isAllDay: _boolOrFalse(record, 'isAllDay'),
+      calendarId: _requiredString(record, 'calendarId'),
+      updatedAt: _optionalString(record, 'updatedAt'),
     );
   }
 
@@ -83,13 +84,13 @@ class MediaRecord {
 
   factory MediaRecord.fromRecord(QueryRecord record) {
     return MediaRecord._(
-      id: record['id']?.toString() ?? '',
-      uriOrPath: record['uriOrPath']?.toString() ?? '',
-      mediaType: record['mediaType']?.toString() ?? 'other',
-      mimeType: record['mimeType']?.toString(),
-      size: _asInt(record['size']),
-      createdAt: record['createdAt']?.toString(),
-      modifiedAt: record['modifiedAt']?.toString(),
+      id: _requiredString(record, 'id'),
+      uriOrPath: _requiredString(record, 'uriOrPath'),
+      mediaType: _requiredString(record, 'mediaType', fallback: 'other'),
+      mimeType: _optionalString(record, 'mimeType'),
+      size: _optionalInt(record, 'size'),
+      createdAt: _optionalString(record, 'createdAt'),
+      modifiedAt: _optionalString(record, 'modifiedAt'),
     );
   }
 
@@ -122,16 +123,16 @@ class FileRecord {
 
   factory FileRecord.fromRecord(QueryRecord record) {
     return FileRecord._(
-      id: record['id']?.toString() ?? '',
-      path: record['path']?.toString() ?? '',
-      name: record['name']?.toString() ?? '',
-      isDirectory: record['isDirectory'] == true,
-      size: _asInt(record['size']),
-      modifiedAt: record['modifiedAt']?.toString(),
-      mimeType: record['mimeType']?.toString(),
-      type: record['type']?.toString(),
-      extension: record['extension']?.toString(),
-      modifiedEpochMs: _asInt(record['modifiedEpochMs']),
+      id: _requiredString(record, 'id'),
+      path: _requiredString(record, 'path'),
+      name: _requiredString(record, 'name'),
+      isDirectory: _boolOrFalse(record, 'isDirectory'),
+      size: _optionalInt(record, 'size'),
+      modifiedAt: _optionalString(record, 'modifiedAt'),
+      mimeType: _optionalString(record, 'mimeType'),
+      type: _optionalString(record, 'type'),
+      extension: _optionalString(record, 'extension'),
+      modifiedEpochMs: _optionalInt(record, 'modifiedEpochMs'),
     );
   }
 
@@ -164,13 +165,13 @@ class MessageRecord {
 
   factory MessageRecord.fromRecord(QueryRecord record) {
     return MessageRecord._(
-      id: record['id']?.toString() ?? '',
-      timestamp: record['timestamp']?.toString() ?? '',
-      threadId: record['threadId']?.toString(),
-      address: record['address']?.toString(),
-      body: record['body']?.toString(),
-      direction: record['direction']?.toString(),
-      read: record['read'] == true,
+      id: _requiredString(record, 'id'),
+      timestamp: _requiredString(record, 'timestamp'),
+      threadId: _optionalString(record, 'threadId'),
+      address: _optionalString(record, 'address'),
+      body: _optionalString(record, 'body'),
+      direction: _optionalString(record, 'direction'),
+      read: _optionalBool(record, 'read'),
     );
   }
 
@@ -199,12 +200,12 @@ class CallRecord {
 
   factory CallRecord.fromRecord(QueryRecord record) {
     return CallRecord._(
-      id: record['id']?.toString() ?? '',
-      callType: record['callType']?.toString() ?? 'unknown',
-      timestamp: record['timestamp']?.toString() ?? '',
-      number: record['number']?.toString(),
-      durationSec: _asInt(record['durationSec']),
-      name: record['name']?.toString(),
+      id: _requiredString(record, 'id'),
+      callType: _requiredString(record, 'callType', fallback: 'unknown'),
+      timestamp: _requiredString(record, 'timestamp'),
+      number: _optionalString(record, 'number'),
+      durationSec: _optionalInt(record, 'durationSec'),
+      name: _optionalString(record, 'name'),
     );
   }
 
@@ -219,16 +220,97 @@ class CallRecord {
   String toString() => 'CallRecord(id: $id, callType: $callType)';
 }
 
-List<String> _toStringList(Object? value) {
-  if (value is List) {
-    return value.map((item) => item.toString()).toList(growable: false);
-  }
-  return const <String>[];
+// ---------------------------------------------------------------------------
+// Coercion helpers.
+//
+// The platform channel delivers records as `Map<String, Object?>` with values
+// whose runtime types vary by platform (Kotlin, Swift, C++). These helpers
+// normalise primitives consistently and throw [SimpleQueryError] with
+// [SimpleQueryErrorCode.invalidQuery] when a field is present but has a shape
+// the contract does not allow — surfacing backend contract violations loudly
+// instead of silently coercing garbage.
+// ---------------------------------------------------------------------------
+
+String _requiredString(QueryRecord record, String field, {String fallback = ''}) {
+  final value = record[field];
+  if (value == null) return fallback;
+  return _coerceString(value, field);
 }
 
-int? _asInt(Object? value) {
+String? _optionalString(QueryRecord record, String field) {
+  final value = record[field];
+  if (value == null) return null;
+  return _coerceString(value, field);
+}
+
+String _coerceString(Object value, String field) {
+  if (value is String) return value;
+  if (value is num || value is bool) return value.toString();
+  throw SimpleQueryError(
+    code: SimpleQueryErrorCode.invalidQuery,
+    message:
+        'Record field "$field" expected a String/num/bool, got ${value.runtimeType}',
+    details: <String, Object?>{'field': field, 'runtimeType': '${value.runtimeType}'},
+  );
+}
+
+bool _boolOrFalse(QueryRecord record, String field) {
+  return _optionalBool(record, field) ?? false;
+}
+
+bool? _optionalBool(QueryRecord record, String field) {
+  final value = record[field];
+  if (value == null) return null;
+  if (value is bool) return value;
+  if (value is num) {
+    if (value == 0) return false;
+    if (value == 1) return true;
+  }
+  if (value is String) {
+    switch (value.toLowerCase()) {
+      case 'true':
+      case '1':
+        return true;
+      case 'false':
+      case '0':
+        return false;
+    }
+  }
+  throw SimpleQueryError(
+    code: SimpleQueryErrorCode.invalidQuery,
+    message:
+        'Record field "$field" expected a bool-coercible value, got ${value.runtimeType}',
+    details: <String, Object?>{'field': field, 'value': '$value'},
+  );
+}
+
+int? _optionalInt(QueryRecord record, String field) {
+  final value = record[field];
+  if (value == null) return null;
   if (value is int) return value;
   if (value is num) return value.toInt();
   if (value is String) return int.tryParse(value);
-  return null;
+  throw SimpleQueryError(
+    code: SimpleQueryErrorCode.invalidQuery,
+    message:
+        'Record field "$field" expected an int-coercible value, got ${value.runtimeType}',
+    details: <String, Object?>{'field': field, 'runtimeType': '${value.runtimeType}'},
+  );
+}
+
+List<String> _stringList(QueryRecord record, String field) {
+  final value = record[field];
+  if (value == null) return const <String>[];
+  if (value is! List) {
+    throw SimpleQueryError(
+      code: SimpleQueryErrorCode.invalidQuery,
+      message:
+          'Record field "$field" expected a List, got ${value.runtimeType}',
+      details: <String, Object?>{'field': field, 'runtimeType': '${value.runtimeType}'},
+    );
+  }
+  return <String>[
+    for (final item in value)
+      if (item != null) _coerceString(item, '$field[]'),
+  ];
 }
