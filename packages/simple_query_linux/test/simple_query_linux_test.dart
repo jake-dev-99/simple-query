@@ -338,7 +338,7 @@ void main() {
     );
 
     expect(result, isNotNull);
-    expect(result!['scopes'], isA<List>());
+    expect(result!['scopes'], isA<List<Object?>>());
   });
 
   test('callExtension supports linux.tracker listGraphNames', () async {
@@ -350,7 +350,7 @@ void main() {
     );
 
     expect(result, isNotNull);
-    expect(result!['graphs'], isA<List>());
+    expect(result!['graphs'], isA<List<Object?>>());
   });
 
   test('callExtension unknown method returns deterministic notSupported',

@@ -832,7 +832,7 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
           final value = entry.value;
           if (value is List) {
             relatedMap[joinName] = value
-                .whereType<Map>()
+                .whereType<Map<Object?, Object?>>()
                 .map(
                   (item) => item.map(
                       (key, value) => MapEntry(key?.toString() ?? '', value)),

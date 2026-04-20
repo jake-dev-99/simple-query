@@ -484,7 +484,7 @@ void main() {
     );
 
     expect(result!['rowCount'], 1);
-    expect(result['rows'], isA<List>());
+    expect(result['rows'], isA<List<Object?>>());
   });
 
   test('callExtension extractToFile returns path result', () async {
