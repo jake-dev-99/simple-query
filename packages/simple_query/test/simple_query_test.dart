@@ -228,6 +228,42 @@ void main() {
 
       expect(request.platformData, {'rootPath': '/tmp'});
     });
+
+    test('execute() forwards the built request to the platform', () async {
+      final fake = makeFake();
+      SimpleQueryPlatform.instance = fake;
+
+      final result = await QueryBuilder(QueryDomain.contacts)
+          .entityType('people')
+          .where('name', QueryFilterOperator.equals, 'Alice')
+          .orderBy('name')
+          .page(limit: 5)
+          .execute();
+
+      expect(result.records, hasLength(1));
+      expect(fake.queryCalls, 1);
+      final captured = fake.queryRequests.single;
+      expect(captured.domain, QueryDomain.contacts);
+      expect(captured.entityType, 'people');
+      expect(captured.filters.single.field, 'name');
+      expect(captured.sort.single.field, 'name');
+      expect(captured.page?.limit, 5);
+    });
+
+    test('executeTyped() maps records and surfaces mapping failures', () async {
+      SimpleQueryPlatform.instance = makeFake();
+
+      final ids = await QueryBuilder(QueryDomain.contacts)
+          .executeTyped<int>((record) => (record['id'] as int?) ?? -1);
+      expect(ids, <int>[1]);
+
+      await expectLater(
+        () => QueryBuilder(QueryDomain.contacts).executeTyped<String>(
+          (record) => throw StateError('boom'),
+        ),
+        throwsA(isA<SimpleQueryError>()),
+      );
+    });
   });
 
   test('queryTyped maps records', () async {

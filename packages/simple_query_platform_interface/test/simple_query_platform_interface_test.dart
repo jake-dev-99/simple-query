@@ -585,6 +585,210 @@ void main() {
     });
   });
 
+  group('model equality (full coverage)', () {
+    test('MutationRequest equality and hashCode', () {
+      const a = MutationRequest(
+        domain: QueryDomain.files,
+        type: MutationType.insert,
+        values: <String, Object?>{'k': 'v'},
+      );
+      const b = MutationRequest(
+        domain: QueryDomain.files,
+        type: MutationType.insert,
+        values: <String, Object?>{'k': 'v'},
+      );
+      const c = MutationRequest(
+        domain: QueryDomain.files,
+        type: MutationType.delete,
+      );
+      expect(a, equals(b));
+      expect(a.hashCode, b.hashCode);
+      expect(a, isNot(equals(c)));
+    });
+
+    test('MutationResult equality and hashCode', () {
+      const a = MutationResult(affectedCount: 1, insertedId: 'x');
+      const b = MutationResult(affectedCount: 1, insertedId: 'x');
+      const c = MutationResult(affectedCount: 2);
+      expect(a, equals(b));
+      expect(a.hashCode, b.hashCode);
+      expect(a, isNot(equals(c)));
+    });
+
+    test('BatchRequest equality and hashCode', () {
+      const op =
+          MutationRequest(domain: QueryDomain.files, type: MutationType.delete);
+      const a = BatchRequest(operations: <MutationRequest>[op]);
+      const b = BatchRequest(operations: <MutationRequest>[op]);
+      const c = BatchRequest(operations: <MutationRequest>[op, op]);
+      expect(a, equals(b));
+      expect(a.hashCode, b.hashCode);
+      expect(a, isNot(equals(c)));
+    });
+
+    test('BatchResult equality and hashCode', () {
+      const a = BatchResult(
+        results: <MutationResult>[MutationResult(affectedCount: 1)],
+      );
+      const b = BatchResult(
+        results: <MutationResult>[MutationResult(affectedCount: 1)],
+      );
+      const c = BatchResult(
+        results: <MutationResult>[MutationResult(affectedCount: 2)],
+      );
+      expect(a, equals(b));
+      expect(a.hashCode, b.hashCode);
+      expect(a, isNot(equals(c)));
+    });
+
+    test('ObserveRequest equality and hashCode', () {
+      const a = ObserveRequest(
+        domain: QueryDomain.files,
+        pollingInterval: Duration(seconds: 1),
+      );
+      const b = ObserveRequest(
+        domain: QueryDomain.files,
+        pollingInterval: Duration(seconds: 1),
+      );
+      const c = ObserveRequest(domain: QueryDomain.calendar);
+      expect(a, equals(b));
+      expect(a.hashCode, b.hashCode);
+      expect(a, isNot(equals(c)));
+    });
+
+    test('ObserveEvent equality and hashCode', () {
+      final timestamp = DateTime.utc(2024);
+      final a = ObserveEvent(
+        domain: QueryDomain.files,
+        changeType: ObserveChangeType.update,
+        timestamp: timestamp,
+        ids: const <String>['1', '2'],
+      );
+      final b = ObserveEvent(
+        domain: QueryDomain.files,
+        changeType: ObserveChangeType.update,
+        timestamp: timestamp,
+        ids: const <String>['1', '2'],
+      );
+      final c = ObserveEvent(
+        domain: QueryDomain.files,
+        changeType: ObserveChangeType.insert,
+        timestamp: timestamp,
+      );
+      expect(a, equals(b));
+      expect(a.hashCode, b.hashCode);
+      expect(a, isNot(equals(c)));
+    });
+
+    test('BinaryRequest equality and hashCode', () {
+      const a = BinaryRequest(domain: QueryDomain.files, recordId: 'r');
+      const b = BinaryRequest(domain: QueryDomain.files, recordId: 'r');
+      const c = BinaryRequest(domain: QueryDomain.media, recordId: 'r');
+      expect(a, equals(b));
+      expect(a.hashCode, b.hashCode);
+      expect(a, isNot(equals(c)));
+    });
+
+    test('BinaryContentHandle equality and hashCode', () {
+      const a = BinaryContentHandle(
+        handleId: 'h',
+        localPath: '/tmp/h',
+        size: 100,
+      );
+      const b = BinaryContentHandle(
+        handleId: 'h',
+        localPath: '/tmp/h',
+        size: 100,
+      );
+      const c = BinaryContentHandle(handleId: 'h2', localPath: '/tmp/h');
+      expect(a, equals(b));
+      expect(a.hashCode, b.hashCode);
+      expect(a, isNot(equals(c)));
+    });
+  });
+
+  group('domain contract ↔ record alignment', () {
+    // Every required key in QueryDomainContracts must be read by the
+    // corresponding *Record.fromRecord. Prevents drift between the contract
+    // and the Dart typed view.
+    test('ContactRecord covers all required contacts keys', () {
+      const record = <String, Object?>{
+        'id': '1',
+        'displayName': 'n',
+        'phones': <String>[],
+        'emails': <String>[],
+      };
+      final parsed = ContactRecord.fromRecord(record);
+      expect(parsed.id, '1');
+      expect(parsed.displayName, 'n');
+      for (final key in QueryDomainContracts.requiredKeys[QueryDomain.contacts]!) {
+        expect(record.containsKey(key), isTrue, reason: 'missing $key');
+      }
+    });
+
+    test('CalendarEventRecord covers all required calendar keys', () {
+      const record = <String, Object?>{
+        'id': '1',
+        'title': 't',
+        'startAt': '0',
+        'endAt': '0',
+        'isAllDay': false,
+        'calendarId': 'c',
+      };
+      CalendarEventRecord.fromRecord(record);
+      for (final key
+          in QueryDomainContracts.requiredKeys[QueryDomain.calendar]!) {
+        expect(record.containsKey(key), isTrue, reason: 'missing $key');
+      }
+    });
+
+    test('MediaRecord covers all required media keys', () {
+      const record = <String, Object?>{
+        'id': '1',
+        'uriOrPath': '/p',
+        'mediaType': 'image',
+      };
+      MediaRecord.fromRecord(record);
+      for (final key in QueryDomainContracts.requiredKeys[QueryDomain.media]!) {
+        expect(record.containsKey(key), isTrue, reason: 'missing $key');
+      }
+    });
+
+    test('FileRecord covers all required files keys', () {
+      const record = <String, Object?>{
+        'id': '1',
+        'path': '/p',
+        'name': 'n',
+        'isDirectory': false,
+      };
+      FileRecord.fromRecord(record);
+      for (final key in QueryDomainContracts.requiredKeys[QueryDomain.files]!) {
+        expect(record.containsKey(key), isTrue, reason: 'missing $key');
+      }
+    });
+
+    test('MessageRecord covers all required messages keys', () {
+      const record = <String, Object?>{'id': '1', 'timestamp': '0'};
+      MessageRecord.fromRecord(record);
+      for (final key
+          in QueryDomainContracts.requiredKeys[QueryDomain.messages]!) {
+        expect(record.containsKey(key), isTrue, reason: 'missing $key');
+      }
+    });
+
+    test('CallRecord covers all required calls keys', () {
+      const record = <String, Object?>{
+        'id': '1',
+        'callType': 'incoming',
+        'timestamp': '0',
+      };
+      CallRecord.fromRecord(record);
+      for (final key in QueryDomainContracts.requiredKeys[QueryDomain.calls]!) {
+        expect(record.containsKey(key), isTrue, reason: 'missing $key');
+      }
+    });
+  });
+
   group('Constructor guards', () {
     test('QueryPage rejects simultaneous offset and cursor', () {
       expect(
