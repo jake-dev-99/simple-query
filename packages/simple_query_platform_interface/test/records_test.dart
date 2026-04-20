@@ -360,6 +360,101 @@ void main() {
     });
   });
 
+  group('raw + extras (P4)', () {
+    test('ContactRecord.raw is the unmodified source map', () {
+      final source = <String, Object?>{
+        'id': '1',
+        'displayName': 'Alice',
+        'phones': <String>['+1'],
+        'emails': <String>['a@b.com'],
+        'sec_one_ui_only': 'samsung-thing',
+        'oem_extension': 42,
+      };
+      final record = ContactRecord.fromRecord(source);
+      expect(record.raw['id'], '1');
+      expect(record.raw['sec_one_ui_only'], 'samsung-thing');
+      expect(record.raw['oem_extension'], 42);
+      expect(record.raw, hasLength(source.length));
+      expect(
+        () => record.raw['mutate'] = 'x',
+        throwsA(isA<UnsupportedError>()),
+      );
+    });
+
+    test('ContactRecord.extras excludes canonical contract keys', () {
+      final record = ContactRecord.fromRecord(<String, Object?>{
+        'id': '1',
+        'displayName': 'Alice',
+        'phones': <String>['+1'],
+        'emails': <String>['a@b.com'],
+        'organization': 'Acme',
+        'updatedAt': '0',
+        'sec_one_ui_only': 'samsung-thing',
+        'oem_extension': 42,
+      });
+      // Canonical keys absent.
+      expect(record.extras.containsKey('id'), isFalse);
+      expect(record.extras.containsKey('displayName'), isFalse);
+      expect(record.extras.containsKey('phones'), isFalse);
+      expect(record.extras.containsKey('emails'), isFalse);
+      expect(record.extras.containsKey('organization'), isFalse);
+      expect(record.extras.containsKey('updatedAt'), isFalse);
+      // Non-canonical keys present.
+      expect(record.extras['sec_one_ui_only'], 'samsung-thing');
+      expect(record.extras['oem_extension'], 42);
+      expect(record.extras, hasLength(2));
+    });
+
+    test('CallRecord.extras surfaces Samsung OEM columns', () {
+      // Sampled from a real Samsung call_log_calls row in the Prospector dump.
+      final record = CallRecord.fromRecord(<String, Object?>{
+        'id': '1016',
+        'callType': 'incoming',
+        'timestamp': '1776467753909',
+        'number': '6165891932',
+        'durationSec': 0,
+        'name': 'Judy',
+        'is_business_call': 0,
+        'composer_photo_uri': '',
+        'phone_account_hidden': 0,
+        'asserted_display_name': '',
+        'missed_reason': 524288,
+      });
+      expect(record.extras['is_business_call'], 0);
+      expect(record.extras['composer_photo_uri'], '');
+      expect(record.extras['phone_account_hidden'], 0);
+      expect(record.extras['asserted_display_name'], '');
+      expect(record.extras['missed_reason'], 524288);
+      // Canonical fields not duplicated.
+      expect(record.extras.containsKey('callType'), isFalse);
+      expect(record.extras.containsKey('number'), isFalse);
+    });
+
+    test('FileRecord with no extras returns an empty map', () {
+      final record = FileRecord.fromRecord(const <String, Object?>{
+        'id': '1',
+        'path': '/p',
+        'name': 'p',
+        'isDirectory': false,
+      });
+      expect(record.extras, isEmpty);
+    });
+
+    test('extras map is unmodifiable', () {
+      final record = ContactRecord.fromRecord(<String, Object?>{
+        'id': '1',
+        'displayName': 'A',
+        'phones': <String>[],
+        'emails': <String>[],
+        'sec_extra': 'x',
+      });
+      expect(
+        () => record.extras['mutate'] = 'x',
+        throwsA(isA<UnsupportedError>()),
+      );
+    });
+  });
+
   group('CallRecord.fromRecord', () {
     test('parses complete record', () {
       final record = CallRecord.fromRecord(const <String, Object?>{
