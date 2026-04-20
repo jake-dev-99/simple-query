@@ -438,6 +438,152 @@ void main() {
     });
   });
 
+  group('copyWith null clears nullable fields', () {
+    test('QueryPage clears offset and cursor independently', () {
+      const page = QueryPage(limit: 10, offset: 5, cursor: 'c');
+      final clearedOffset = page.copyWith(offset: null);
+      expect(clearedOffset.offset, isNull);
+      expect(clearedOffset.cursor, 'c');
+      expect(clearedOffset.limit, 10);
+
+      final clearedCursor = page.copyWith(cursor: null);
+      expect(clearedCursor.cursor, isNull);
+      expect(clearedCursor.offset, 5);
+
+      // Omitted params preserve existing values.
+      final untouched = page.copyWith();
+      expect(untouched, equals(page));
+    });
+
+    test('QueryResult clears nextOffset/nextCursor/metadata independently',
+        () {
+      const result = QueryResult(
+        records: <QueryRecord>[],
+        totalCount: 1,
+        nextOffset: 10,
+        nextCursor: 'k',
+        metadata: <String, Object?>{'x': 1},
+      );
+      expect(result.copyWith(nextOffset: null).nextOffset, isNull);
+      expect(result.copyWith(nextOffset: null).nextCursor, 'k');
+      expect(result.copyWith(nextCursor: null).nextCursor, isNull);
+      expect(result.copyWith(metadata: null).metadata, isNull);
+    });
+
+    test('QueryRequest clears projection/page/platformData independently', () {
+      const request = QueryRequest(
+        domain: QueryDomain.files,
+        entityType: 'e',
+        projection: <String>['a'],
+        page: QueryPage(limit: 1),
+        platformData: <String, Object?>{'k': 'v'},
+      );
+      expect(request.copyWith(entityType: null).entityType, isNull);
+      expect(request.copyWith(projection: null).projection, isNull);
+      expect(request.copyWith(page: null).page, isNull);
+      expect(request.copyWith(platformData: null).platformData, isNull);
+    });
+
+    test('MutationRequest clears optional fields', () {
+      const mutation = MutationRequest(
+        domain: QueryDomain.files,
+        type: MutationType.insert,
+        entityType: 'e',
+        values: <String, Object?>{'k': 'v'},
+        platformData: <String, Object?>{'p': 1},
+      );
+      expect(mutation.copyWith(entityType: null).entityType, isNull);
+      expect(mutation.copyWith(values: null).values, isNull);
+      expect(mutation.copyWith(platformData: null).platformData, isNull);
+    });
+
+    test('MutationResult clears optional fields', () {
+      const result = MutationResult(
+        affectedCount: 1,
+        insertedId: 'id',
+        metadata: <String, Object?>{'k': 'v'},
+      );
+      expect(result.copyWith(affectedCount: null).affectedCount, isNull);
+      expect(result.copyWith(insertedId: null).insertedId, isNull);
+      expect(result.copyWith(metadata: null).metadata, isNull);
+    });
+
+    test('ObserveRequest clears optional fields', () {
+      const request = ObserveRequest(
+        domain: QueryDomain.files,
+        entityType: 'e',
+        pollingInterval: Duration(seconds: 1),
+        platformData: <String, Object?>{'k': 'v'},
+      );
+      expect(request.copyWith(entityType: null).entityType, isNull);
+      expect(
+        request.copyWith(pollingInterval: null).pollingInterval,
+        isNull,
+      );
+      expect(request.copyWith(platformData: null).platformData, isNull);
+    });
+
+    test('ObserveEvent clears optional fields', () {
+      final event = ObserveEvent(
+        domain: QueryDomain.files,
+        changeType: ObserveChangeType.update,
+        timestamp: DateTime.utc(2024),
+        entityType: 'e',
+        source: 's',
+        metadata: const <String, Object?>{'k': 'v'},
+      );
+      expect(event.copyWith(entityType: null).entityType, isNull);
+      expect(event.copyWith(source: null).source, isNull);
+      expect(event.copyWith(metadata: null).metadata, isNull);
+    });
+
+    test('BinaryRequest clears optional fields', () {
+      const request = BinaryRequest(
+        domain: QueryDomain.files,
+        entityType: 'e',
+        recordId: 'r',
+        platformData: <String, Object?>{'k': 'v'},
+      );
+      expect(request.copyWith(entityType: null).entityType, isNull);
+      expect(request.copyWith(recordId: null).recordId, isNull);
+      expect(request.copyWith(platformData: null).platformData, isNull);
+    });
+
+    test('BinaryContentHandle clears optional fields', () {
+      const handle = BinaryContentHandle(
+        handleId: 'h',
+        localPath: '/p',
+        mimeType: 'image/jpeg',
+        size: 10,
+        metadata: <String, Object?>{'k': 'v'},
+      );
+      expect(handle.copyWith(mimeType: null).mimeType, isNull);
+      expect(handle.copyWith(size: null).size, isNull);
+      expect(handle.copyWith(metadata: null).metadata, isNull);
+    });
+
+    test('CapabilityDescriptor clears reason', () {
+      const cap = CapabilityDescriptor(
+        domain: QueryDomain.files,
+        canRead: true,
+        canWrite: false,
+        canObserve: false,
+        canStream: false,
+        reason: 'because',
+      );
+      expect(cap.copyWith(reason: null).reason, isNull);
+    });
+
+    test('QueryFilterCondition clears value', () {
+      const condition = QueryFilterCondition(
+        field: 'f',
+        operator: QueryFilterOperator.equals,
+        value: 'v',
+      );
+      expect(condition.copyWith(value: null).value, isNull);
+    });
+  });
+
   test('runtime validation allows platformSpecific records', () {
     final result = RuntimeContractValidation.validateQueryResult(
       domain: QueryDomain.platformSpecific,
