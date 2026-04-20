@@ -1,5 +1,8 @@
 ## 0.3.1
 
+### Coordinated release
+- Part of the lock-step 0.3.1 release across all `simple_query_*` packages. See the matching entry in `simple_query` and `simple_query_platform_interface` for the cross-package work (strict record type coercion, extended runtime validation, `copyWith` null-clearing, constructor guards on `QueryPage` / `QueryFilterCondition`, shared `FakeSimpleQueryPlatform`).
+
 ### Fixed
 - `SimpleQueryAndroid.registerWith()` no longer throws
   `"Binding has not yet been initialized"` when called from Flutter's
