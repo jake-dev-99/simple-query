@@ -1,5 +1,31 @@
 ## Unreleased
 
+## 0.6.0
+
+Documentation and developer-experience release. Strictly additive — no public-API changes from 0.5.0.
+
+### Added
+- `docs/DESIGN.md` — codifies the seven design principles (P1–P7 plus the permissions rule) that govern the public API. Read before contributing.
+- `docs/EXTENSIONS.md` — single index linking the five per-platform extension docs with a usage example and stability policy.
+- `tool/regen_pigeon.sh` already landed in 0.5.0; documented here for completeness.
+- Every package's `CHANGELOG.md` now leads with a `## Unreleased` section. `tool/publish.sh` warns when the section is still present during a live publish.
+
+### Changed
+- Root `README.md` now links every doc (DESIGN, API_SEMANTICS, ERROR_MAPPING, MIGRATION, PLATFORM_SUPPORT_MATRIX, EXTENSIONS, RELEASE) in a navigation table. "Highlights" expanded to cover the 0.4.0 / 0.5.0 additions.
+- `docs/MIGRATION.md` rewritten to cover iOS / macOS / desktop migrations alongside Android. Includes the column-name → canonical-field translation table for 0.4.0's symmetric vocabulary.
+- `docs/API_SEMANTICS.md` — "`include` reserved for future use" replaced with a clear non-goal statement and pointer to `callExtension('android.provider', 'queryWithJoins')`.
+- `docs/RELEASE.md` — adds a "CHANGELOG discipline" section documenting the Unreleased → release promotion flow.
+- `SimpleQueryPlatform` (platform interface) now has class-level and per-method dartdoc. Documents that `instance =` is not thread-safe.
+- `SimpleQuery` (facade) class doc calls out the singleton contract explicitly and explains how tests swap the backend (via `SimpleQueryPlatform.instance`, not the facade).
+- Every facade passthrough (`query`, `mutate`, `batch`, `observe`, `callExtension`, `dispose`) now has a dartdoc block with cross-links.
+- `QueryDomainContracts` and `CapabilityContracts` have class-level dartdoc.
+
+### Example app
+- Rewritten to showcase the full 0.5.0 API: `queryBuilder`, `queryPaginated`, `mutate` round-trip, `observe` with live filesystem events, `withBinaryContent`, `callExtension` (platform-aware), and `queryRaw` (Android). Buttons are capability-gated; a refresh button re-probes.
+
+### Migration
+None required — docs/example/dartdoc changes only.
+
 ## 0.5.0
 
 Consumer-ergonomics release. Additive — no breaking changes from 0.4.0.
