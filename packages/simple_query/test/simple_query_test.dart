@@ -266,6 +266,159 @@ void main() {
     });
   });
 
+  group('queryPaginated', () {
+    test('walks cursor-based pagination to exhaustion', () async {
+      final fake = makeFake()
+        ..queryResultsByCall = const <QueryResult>[
+          QueryResult(
+            records: <QueryRecord>[
+              <String, Object?>{'id': 1},
+              <String, Object?>{'id': 2},
+            ],
+            nextCursor: 'a',
+          ),
+          QueryResult(
+            records: <QueryRecord>[
+              <String, Object?>{'id': 3},
+            ],
+            nextCursor: 'b',
+          ),
+          QueryResult(
+            records: <QueryRecord>[
+              <String, Object?>{'id': 4},
+            ],
+          ),
+        ];
+      SimpleQueryPlatform.instance = fake;
+
+      final pages = await SimpleQuery.instance
+          .queryPaginated(const QueryRequest(domain: QueryDomain.contacts))
+          .toList();
+
+      expect(pages, hasLength(3));
+      expect(pages[0].records.length, 2);
+      expect(pages[2].nextCursor, isNull);
+      expect(fake.queryCalls, 3);
+
+      // Subsequent requests carry the cursor from the previous result.
+      expect(fake.queryRequests[1].page?.cursor, 'a');
+      expect(fake.queryRequests[2].page?.cursor, 'b');
+      expect(fake.queryRequests[1].page?.offset, isNull);
+    });
+
+    test('walks offset-based pagination to exhaustion', () async {
+      final fake = makeFake()
+        ..queryResultsByCall = const <QueryResult>[
+          QueryResult(
+            records: <QueryRecord>[<String, Object?>{'id': 1}],
+            nextOffset: 1,
+          ),
+          QueryResult(
+            records: <QueryRecord>[<String, Object?>{'id': 2}],
+            nextOffset: 2,
+          ),
+          QueryResult(records: <QueryRecord>[<String, Object?>{'id': 3}]),
+        ];
+      SimpleQueryPlatform.instance = fake;
+
+      final pages = await SimpleQuery.instance
+          .queryPaginated(const QueryRequest(
+            domain: QueryDomain.files,
+            page: QueryPage(limit: 1),
+          ))
+          .toList();
+
+      expect(pages, hasLength(3));
+      expect(fake.queryRequests[1].page?.offset, 1);
+      expect(fake.queryRequests[1].page?.limit, 1);
+      expect(fake.queryRequests[2].page?.offset, 2);
+    });
+
+    test('cursor wins when both nextCursor and nextOffset are present',
+        () async {
+      final fake = makeFake()
+        ..queryResultsByCall = const <QueryResult>[
+          QueryResult(
+            records: <QueryRecord>[<String, Object?>{'id': 1}],
+            nextCursor: 'c',
+            nextOffset: 99,
+          ),
+          QueryResult(records: <QueryRecord>[<String, Object?>{'id': 2}]),
+        ];
+      SimpleQueryPlatform.instance = fake;
+
+      await SimpleQuery.instance
+          .queryPaginated(const QueryRequest(domain: QueryDomain.files))
+          .toList();
+
+      expect(fake.queryRequests[1].page?.cursor, 'c');
+      expect(fake.queryRequests[1].page?.offset, isNull);
+    });
+
+    test('stops on empty page even if pagination tokens are non-null',
+        () async {
+      final fake = makeFake()
+        ..queryResultsByCall = const <QueryResult>[
+          QueryResult(records: <QueryRecord>[], nextCursor: 'should-not-use'),
+        ];
+      SimpleQueryPlatform.instance = fake;
+
+      final pages = await SimpleQuery.instance
+          .queryPaginated(const QueryRequest(domain: QueryDomain.files))
+          .toList();
+
+      expect(pages, hasLength(1));
+      expect(fake.queryCalls, 1);
+    });
+
+    test('queryPaginatedTyped maps each page', () async {
+      final fake = makeFake()
+        ..queryResultsByCall = const <QueryResult>[
+          QueryResult(
+            records: <QueryRecord>[
+              <String, Object?>{'id': 1},
+              <String, Object?>{'id': 2},
+            ],
+            nextCursor: 'a',
+          ),
+          QueryResult(
+            records: <QueryRecord>[<String, Object?>{'id': 3}],
+          ),
+        ];
+      SimpleQueryPlatform.instance = fake;
+
+      final batches = await SimpleQuery.instance
+          .queryPaginatedTyped<int>(
+            const QueryRequest(domain: QueryDomain.contacts),
+            (record) => (record['id'] as int?) ?? -1,
+          )
+          .toList();
+
+      expect(batches, <List<int>>[
+        <int>[1, 2],
+        <int>[3],
+      ]);
+    });
+
+    test('queryPaginatedTyped wraps mapping failures', () async {
+      SimpleQueryPlatform.instance = makeFake();
+
+      await expectLater(
+        SimpleQuery.instance.queryPaginatedTyped<String>(
+          const QueryRequest(domain: QueryDomain.contacts),
+          (record) => throw StateError('boom'),
+        ),
+        emitsError(
+          isA<SimpleQueryError>().having(
+            (e) => e.code,
+            'code',
+            SimpleQueryErrorCode.invalidQuery,
+          ),
+        ),
+      );
+    });
+  });
+
   test('queryRaw builds a platformSpecific request with the contentUri',
       () async {
     final fake = makeFake();

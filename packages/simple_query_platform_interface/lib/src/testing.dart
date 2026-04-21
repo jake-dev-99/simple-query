@@ -59,11 +59,27 @@ class FakeSimpleQueryPlatform extends SimpleQueryPlatform {
     return _capabilities;
   }
 
+  /// When non-null, [query] returns the next entry per call (allowing
+  /// tests to script a multi-page response sequence). Last entry sticks.
+  /// When null, [query] returns the constructor's `queryResult` for every
+  /// call.
+  List<QueryResult>? queryResultsByCall;
+
   @override
   Future<QueryResult> query(QueryRequest request) async {
-    queryCalls += 1;
     queryRequests.add(request);
-    return _queryResult;
+    final scripted = queryResultsByCall;
+    final QueryResult result;
+    if (scripted != null && scripted.isNotEmpty) {
+      final index = queryCalls < scripted.length
+          ? queryCalls
+          : scripted.length - 1;
+      result = scripted[index];
+    } else {
+      result = _queryResult;
+    }
+    queryCalls += 1;
+    return result;
   }
 
   @override

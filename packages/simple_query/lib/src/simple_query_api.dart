@@ -17,6 +17,89 @@ class SimpleQuery {
     return SimpleQueryPlatform.instance.query(request);
   }
 
+  /// Walks every page of [request] to exhaustion, emitting one
+  /// [QueryResult] per page.
+  ///
+  /// Picks cursor-based pagination when the platform returns a
+  /// [QueryResult.nextCursor], otherwise falls back to offset-based via
+  /// [QueryResult.nextOffset]. Stops as soon as both are null or the
+  /// platform returns an empty page.
+  ///
+  /// Use cases:
+  /// - "Drain every record into a list":
+  ///   `await SimpleQuery.instance.queryPaginated(req).expand((r) => r.records).toList();`
+  /// - Stream-to-UI without loading every page in memory.
+  /// - Cancel mid-flight by simply cancelling the stream subscription —
+  ///   no further pages are fetched.
+  ///
+  /// Errors from any page propagate as a stream error and stop iteration.
+  /// The first page uses [request] verbatim; subsequent pages reuse
+  /// [QueryPage.limit] from the original request.
+  Stream<QueryResult> queryPaginated(QueryRequest request) async* {
+    var current = request;
+    while (true) {
+      final result = await query(current);
+      yield result;
+
+      final nextCursor = result.nextCursor;
+      final nextOffset = result.nextOffset;
+      // Defensive: an empty page with a non-null pagination token is a
+      // platform bug; treat as exhausted to avoid spinning.
+      if (result.records.isEmpty ||
+          (nextCursor == null && nextOffset == null)) {
+        return;
+      }
+
+      final limit = current.page?.limit;
+      current = current.copyWith(
+        page: nextCursor != null
+            ? QueryPage.cursor(limit: limit, cursor: nextCursor)
+            : QueryPage.offset(limit: limit, offset: nextOffset!),
+      );
+    }
+  }
+
+  /// Same shape as [queryPaginated] but maps each record through
+  /// [fromRecord] before yielding. The stream emits one batch (a
+  /// `List<T>`) per page.
+  ///
+  /// Mapping failures are wrapped in a [SimpleQueryError] with
+  /// `code: invalidQuery` and `details.recordIndex` identifying the
+  /// offending row, just like [queryTyped].
+  Stream<List<T>> queryPaginatedTyped<T>(
+    QueryRequest request,
+    T Function(Map<String, Object?> record) fromRecord,
+  ) async* {
+    await for (final page in queryPaginated(request)) {
+      final mapped = <T>[];
+      for (var index = 0; index < page.records.length; index += 1) {
+        final record = page.records[index];
+        try {
+          mapped.add(fromRecord(record));
+        } on SimpleQueryError {
+          rethrow;
+        } catch (error, stackTrace) {
+          Error.throwWithStackTrace(
+            SimpleQueryError(
+              code: SimpleQueryErrorCode.invalidQuery,
+              message:
+                  'simple_query: queryPaginatedTyped mapping failed for record at index $index',
+              domain: request.domain,
+              operation: QueryOperation.read,
+              details: <String, Object?>{
+                'domain': request.domain.name,
+                'recordIndex': index,
+                'cause': error.toString(),
+              },
+            ),
+            stackTrace,
+          );
+        }
+      }
+      yield List<T>.unmodifiable(mapped);
+    }
+  }
+
   /// Query an arbitrary content provider by URI, bypassing the canonical
   /// schema.
   ///
@@ -26,9 +109,11 @@ class SimpleQuery {
   /// names exactly as the provider returned them — no canonical field
   /// translation, no contract validation, no typed record wrapping.
   ///
-  /// Permission resolution still runs (see [simple_permissions_native] wiring
-  /// on Android), so the authority embedded in [contentUri] must map to a
-  /// granted permission.
+  /// Permission resolution still runs (Android's inline catalog maps the
+  /// authority embedded in [contentUri] to one or more raw OS permission
+  /// strings; missing grants throw `SimpleQueryError(permissionDenied,
+  /// details: {permissions: [...]})` and the caller requests the
+  /// permission via their own mechanism, then retries).
   ///
   /// Currently supported on Android only; on other platforms this throws
   /// [SimpleQueryError] with `code: notSupported`.
