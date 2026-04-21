@@ -890,7 +890,12 @@ void main() {
     test('QueryPage rejects simultaneous offset and cursor', () {
       expect(
         () => QueryPage(limit: 10, offset: 0, cursor: 'abc'),
-        throwsA(isA<AssertionError>()),
+        throwsA(
+          isA<SimpleQueryError>()
+              .having((e) => e.code, 'code', SimpleQueryErrorCode.invalidQuery)
+              .having((e) => e.details?['offset'], 'details.offset', 0)
+              .having((e) => e.details?['cursor'], 'details.cursor', 'abc'),
+        ),
       );
     });
 
@@ -906,14 +911,22 @@ void main() {
       expect(page.offset, isNull);
     });
 
-    test('QueryFilterCondition asserts inList value is a List', () {
+    test('QueryFilterCondition rejects inList value that is not a List', () {
       expect(
         () => QueryFilterCondition(
           field: 'id',
           operator: QueryFilterOperator.inList,
           value: 'not-a-list',
         ),
-        throwsA(isA<AssertionError>()),
+        throwsA(
+          isA<SimpleQueryError>()
+              .having((e) => e.code, 'code', SimpleQueryErrorCode.invalidQuery)
+              .having((e) => e.details?['field'], 'details.field', 'id')
+              .having((e) => e.details?['operator'], 'details.operator',
+                  'inList')
+              .having((e) => e.details?['runtimeType'],
+                  'details.runtimeType', 'String'),
+        ),
       );
       // Valid: value is a List.
       final valid = QueryFilterCondition(

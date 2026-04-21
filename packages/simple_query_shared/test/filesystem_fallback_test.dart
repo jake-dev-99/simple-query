@@ -259,7 +259,7 @@ void main() {
 
       final result = fallback.applyPaging(
         records,
-        const QueryPage(limit: 2, cursor: 'b'),
+        QueryPage(limit: 2, cursor: 'b'),
       );
 
       expect(result.records, hasLength(2));
@@ -277,7 +277,7 @@ void main() {
 
       final result = fallback.applyPaging(
         records,
-        const QueryPage(limit: 2, cursor: 'a'),
+        QueryPage(limit: 2, cursor: 'a'),
       );
 
       expect(result.records, hasLength(2));
@@ -294,7 +294,7 @@ void main() {
 
       final result = fallback.applyPaging(
         records,
-        const QueryPage(limit: 2, cursor: 'b'),
+        QueryPage(limit: 2, cursor: 'b'),
       );
 
       expect(result.records, isEmpty);
@@ -311,7 +311,7 @@ void main() {
 
       final result = fallback.applyPaging(
         records,
-        const QueryPage(limit: 10, cursor: 'nonexistent'),
+        QueryPage(limit: 10, cursor: 'nonexistent'),
       );
 
       expect(result.records, isEmpty);
@@ -343,7 +343,7 @@ void main() {
 
       final result = fallback.applyPaging(
         records,
-        const QueryPage(limit: 10, cursor: 'a'),
+        QueryPage(limit: 10, cursor: 'a'),
       );
 
       expect(result.records, hasLength(2));
@@ -363,7 +363,7 @@ void main() {
 
       final result = fallback.applyPaging(
         records,
-        const QueryPage(limit: 2, offset: 1),
+        QueryPage(limit: 2, offset: 1),
       );
 
       expect(result.records, hasLength(2));

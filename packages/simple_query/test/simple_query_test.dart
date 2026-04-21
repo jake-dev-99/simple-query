@@ -189,7 +189,7 @@ void main() {
       // Unmodifiable lists/maps throw when mutated.
       expect(
         () => (request.filters as List).add(
-          const QueryFilterCondition(
+          QueryFilterCondition(
             field: 'x',
             operator: QueryFilterOperator.equals,
           ),
@@ -356,7 +356,7 @@ void main() {
       SimpleQueryPlatform.instance = fake;
 
       final pages = await SimpleQuery.instance
-          .queryPaginated(const QueryRequest(
+          .queryPaginated(QueryRequest(
             domain: QueryDomain.files,
             page: QueryPage(limit: 1),
           ))
@@ -522,7 +522,7 @@ void main() {
 
     await SimpleQuery.instance.queryRaw(
       contentUri: 'content://com.biz.app/data',
-      filters: const <QueryFilterCondition>[
+      filters: <QueryFilterCondition>[
         QueryFilterCondition(
           field: 'my_native_column',
           operator: QueryFilterOperator.equals,

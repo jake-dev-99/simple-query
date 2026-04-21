@@ -130,7 +130,7 @@ void main() {
         },
       ],
       rowCount: 1,
-      columnNames: const [],
+      columnNames: [],
     );
     final files = await api.query(
       const iface.QueryRequest(domain: iface.QueryDomain.files),
@@ -155,7 +155,7 @@ void main() {
         },
       ],
       rowCount: 1,
-      columnNames: const [],
+      columnNames: [],
     );
     final media = await api.query(
       const iface.QueryRequest(domain: iface.QueryDomain.media),
@@ -183,7 +183,7 @@ void main() {
           },
         ],
         rowCount: 1,
-        columnNames: const [],
+        columnNames: [],
       );
 
     final api = SimpleQueryAndroidApi(
@@ -228,7 +228,7 @@ void main() {
           },
         ],
         rowCount: 1,
-        columnNames: const [],
+        columnNames: [],
       );
 
     final api = SimpleQueryAndroidApi(
@@ -365,7 +365,7 @@ void main() {
     );
 
     final response = await api.query(
-      const iface.QueryRequest(
+      iface.QueryRequest(
         domain: iface.QueryDomain.messages,
         page: iface.QueryPage(limit: 2, offset: 0),
       ),
@@ -392,7 +392,7 @@ void main() {
     );
 
     final response = await api.query(
-      const iface.QueryRequest(
+      iface.QueryRequest(
         domain: iface.QueryDomain.messages,
         page: iface.QueryPage(limit: 2, offset: 4),
       ),
@@ -411,7 +411,7 @@ void main() {
     );
 
     final stream = api.observe(
-      const iface.ObserveRequest(domain: iface.QueryDomain.messages),
+      iface.ObserveRequest(domain: iface.QueryDomain.messages),
     );
 
     final sub1 = stream.listen((_) {});
@@ -570,9 +570,9 @@ void main() {
     setUp(() {
       host = _FakeHostApi()
         ..queryResponse = p.QueryResponse(
-          rows: const [],
+          rows: [],
           rowCount: 0,
-          columnNames: const [],
+          columnNames: [],
         );
       api = SimpleQueryAndroidApi(
         hostApi: host,
@@ -588,7 +588,7 @@ void main() {
 
     test('equals operator generates = ? clause', () async {
       await api.query(
-        const iface.QueryRequest(
+        iface.QueryRequest(
           domain: iface.QueryDomain.messages,
           filters: [
             iface.QueryFilterCondition(
@@ -605,7 +605,7 @@ void main() {
 
     test('notEquals operator generates != ? clause', () async {
       await api.query(
-        const iface.QueryRequest(
+        iface.QueryRequest(
           domain: iface.QueryDomain.calls,
           filters: [
             iface.QueryFilterCondition(
@@ -622,7 +622,7 @@ void main() {
 
     test('greaterThan operator generates > ? clause', () async {
       await api.query(
-        const iface.QueryRequest(
+        iface.QueryRequest(
           domain: iface.QueryDomain.calls,
           filters: [
             iface.QueryFilterCondition(
@@ -639,7 +639,7 @@ void main() {
 
     test('greaterThanOrEqual operator generates >= ? clause', () async {
       await api.query(
-        const iface.QueryRequest(
+        iface.QueryRequest(
           domain: iface.QueryDomain.calls,
           filters: [
             iface.QueryFilterCondition(
@@ -656,7 +656,7 @@ void main() {
 
     test('lessThan operator generates < ? clause', () async {
       await api.query(
-        const iface.QueryRequest(
+        iface.QueryRequest(
           domain: iface.QueryDomain.calls,
           filters: [
             iface.QueryFilterCondition(
@@ -673,7 +673,7 @@ void main() {
 
     test('lessThanOrEqual operator generates <= ? clause', () async {
       await api.query(
-        const iface.QueryRequest(
+        iface.QueryRequest(
           domain: iface.QueryDomain.calls,
           filters: [
             iface.QueryFilterCondition(
@@ -690,7 +690,7 @@ void main() {
 
     test('contains operator generates LIKE ? clause', () async {
       await api.query(
-        const iface.QueryRequest(
+        iface.QueryRequest(
           domain: iface.QueryDomain.messages,
           filters: [
             iface.QueryFilterCondition(
@@ -707,7 +707,7 @@ void main() {
 
     test('inList operator generates IN (...) clause', () async {
       await api.query(
-        const iface.QueryRequest(
+        iface.QueryRequest(
           domain: iface.QueryDomain.calls,
           filters: [
             iface.QueryFilterCondition(
@@ -724,7 +724,7 @@ void main() {
 
     test('multiple filters are joined with AND', () async {
       await api.query(
-        const iface.QueryRequest(
+        iface.QueryRequest(
           domain: iface.QueryDomain.calls,
           filters: [
             iface.QueryFilterCondition(
@@ -750,7 +750,7 @@ void main() {
       // or the typed canonical alias.
       await expectLater(
         api.query(
-          const iface.QueryRequest(
+          iface.QueryRequest(
             domain: iface.QueryDomain.calls,
             filters: [
               iface.QueryFilterCondition(
@@ -777,7 +777,7 @@ void main() {
       // _validFieldName regex remains the last line of defence.
       await expectLater(
         api.query(
-          const iface.QueryRequest(
+          iface.QueryRequest(
             domain: iface.QueryDomain.platformSpecific,
             platformData: <String, Object?>{
               'contentUri': 'content://com.example.test/data',
@@ -805,7 +805,7 @@ void main() {
         () async {
       await expectLater(
         api.query(
-          const iface.QueryRequest(
+          iface.QueryRequest(
             domain: iface.QueryDomain.platformSpecific,
             platformData: <String, Object?>{
               'contentUri': 'content://com.example.test/data',
@@ -832,7 +832,7 @@ void main() {
     test('valid field names with dots and underscores pass platformSpecific',
         () async {
       await api.query(
-        const iface.QueryRequest(
+        iface.QueryRequest(
           domain: iface.QueryDomain.platformSpecific,
           platformData: <String, Object?>{
             'contentUri': 'content://com.example.test/data',
