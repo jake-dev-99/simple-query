@@ -121,21 +121,21 @@ void main() {
     test('builder chains produce correct QueryRequest', () {
       final request = QueryBuilder(QueryDomain.contacts)
           .entityType('people')
-          .where('name', QueryFilterOperator.equals, 'Alice')
-          .select(['id', 'name', 'email'])
-          .orderBy('name')
-          .page(limit: 20, offset: 0)
+          .where('displayName', QueryFilterOperator.equals, 'Alice')
+          .select(['id', 'displayName', 'organization'])
+          .orderBy('displayName')
+          .pageOffset(limit: 20, offset: 0)
           .build();
 
       expect(request.domain, QueryDomain.contacts);
       expect(request.entityType, 'people');
       expect(request.filters, hasLength(1));
-      expect(request.filters.first.field, 'name');
+      expect(request.filters.first.field, 'displayName');
       expect(request.filters.first.operator, QueryFilterOperator.equals);
       expect(request.filters.first.value, 'Alice');
-      expect(request.projection, ['id', 'name', 'email']);
+      expect(request.projection, ['id', 'displayName', 'organization']);
       expect(request.sort, hasLength(1));
-      expect(request.sort.first.field, 'name');
+      expect(request.sort.first.field, 'displayName');
       expect(request.sort.first.direction, QuerySortDirection.ascending);
       expect(request.page!.limit, 20);
       expect(request.page!.offset, 0);
@@ -153,15 +153,15 @@ void main() {
 
     test('where() adds multiple filters correctly', () {
       final request = QueryBuilder(QueryDomain.messages)
-          .where('type', QueryFilterOperator.equals, 1)
-          .where('date', QueryFilterOperator.greaterThan, 1000)
+          .where('read', QueryFilterOperator.equals, true)
+          .where('timestamp', QueryFilterOperator.greaterThan, 1000)
           .where('address', QueryFilterOperator.contains, '555')
           .build();
 
       expect(request.filters, hasLength(3));
-      expect(request.filters[0].field, 'type');
+      expect(request.filters[0].field, 'read');
       expect(request.filters[0].operator, QueryFilterOperator.equals);
-      expect(request.filters[1].field, 'date');
+      expect(request.filters[1].field, 'timestamp');
       expect(request.filters[1].operator, QueryFilterOperator.greaterThan);
       expect(request.filters[2].field, 'address');
       expect(request.filters[2].operator, QueryFilterOperator.contains);
@@ -182,8 +182,8 @@ void main() {
 
     test('build() returns immutable request', () {
       final request = QueryBuilder(QueryDomain.contacts)
-          .where('name', QueryFilterOperator.equals, 'test')
-          .orderBy('name')
+          .where('displayName', QueryFilterOperator.equals, 'test')
+          .orderBy('displayName')
           .platformData({'key': 'value'}).build();
 
       // Unmodifiable lists/maps throw when mutated.
@@ -235,8 +235,8 @@ void main() {
 
       final result = await QueryBuilder(QueryDomain.contacts)
           .entityType('people')
-          .where('name', QueryFilterOperator.equals, 'Alice')
-          .orderBy('name')
+          .where('displayName', QueryFilterOperator.equals, 'Alice')
+          .orderBy('displayName')
           .page(limit: 5)
           .execute();
 
@@ -245,9 +245,43 @@ void main() {
       final captured = fake.queryRequests.single;
       expect(captured.domain, QueryDomain.contacts);
       expect(captured.entityType, 'people');
-      expect(captured.filters.single.field, 'name');
-      expect(captured.sort.single.field, 'name');
+      expect(captured.filters.single.field, 'displayName');
+      expect(captured.sort.single.field, 'displayName');
       expect(captured.page?.limit, 5);
+    });
+
+    test('build() rejects unknown canonical fields', () {
+      expect(
+        () => QueryBuilder(QueryDomain.calls)
+            .where('type', QueryFilterOperator.equals, '1')
+            .build(),
+        throwsA(
+          isA<SimpleQueryError>()
+              .having((e) => e.code, 'code', SimpleQueryErrorCode.invalidQuery)
+              .having((e) => e.details?['field'], 'details.field', 'type'),
+        ),
+      );
+    });
+
+    test('SimpleQuery.queryBuilder is the facade entry point', () {
+      final builder = SimpleQuery.instance.queryBuilder(QueryDomain.calls);
+      expect(builder, isA<QueryBuilder>());
+      // Producing the same shape as direct QueryBuilder construction.
+      expect(builder.build().domain, QueryDomain.calls);
+    });
+
+    test('pageOffset / pageCursor convenience methods', () {
+      final offsetReq = QueryBuilder(QueryDomain.calls)
+          .pageOffset(limit: 5, offset: 10)
+          .build();
+      expect(offsetReq.page?.offset, 10);
+      expect(offsetReq.page?.cursor, isNull);
+
+      final cursorReq = QueryBuilder(QueryDomain.calls)
+          .pageCursor(limit: 5, cursor: 'tok')
+          .build();
+      expect(cursorReq.page?.cursor, 'tok');
+      expect(cursorReq.page?.offset, isNull);
     });
 
     test('executeTyped() maps records and surfaces mapping failures', () async {

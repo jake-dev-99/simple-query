@@ -1,6 +1,7 @@
 import 'package:simple_query_platform_interface/simple_query_platform_interface.dart';
 
 import 'binary_content.dart';
+import 'query_builder.dart';
 
 /// The main entry point for querying and modifying device data.
 ///
@@ -18,6 +19,19 @@ class SimpleQuery {
   Future<QueryResult> query(QueryRequest request) {
     return SimpleQueryPlatform.instance.query(request);
   }
+
+  /// Returns a fluent [QueryBuilder] scoped to [domain]. Sugar over
+  /// `QueryBuilder(domain)` — useful for chaining off `SimpleQuery.instance`.
+  ///
+  /// ```dart
+  /// final calls = await SimpleQuery.instance
+  ///     .queryBuilder(QueryDomain.calls)
+  ///     .where('callType', QueryFilterOperator.equals, '2')
+  ///     .orderBy('timestamp', direction: QuerySortDirection.descending)
+  ///     .page(limit: 50)
+  ///     .executeTyped(CallRecord.fromRecord);
+  /// ```
+  QueryBuilder queryBuilder(QueryDomain domain) => QueryBuilder(domain);
 
   /// Walks every page of [request] to exhaustion, emitting one
   /// [QueryResult] per page.

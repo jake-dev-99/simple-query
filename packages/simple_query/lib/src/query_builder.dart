@@ -4,8 +4,36 @@ import 'simple_query_api.dart';
 
 /// A fluent builder for constructing and executing a [QueryRequest].
 ///
-/// Use this instead of creating [QueryRequest] directly when you want a
-/// readable, chainable API (e.g. `QueryBuilder(domain).where(...).orderBy(...).execute()`).
+/// Use this instead of constructing [QueryRequest] directly when you want
+/// a readable, chainable API. Recommended chain order is loosely:
+///
+/// 1. `entityType(...)` (optional, for sub-types like contact accounts)
+/// 2. `where(...)` (zero or more)
+/// 3. `select([...])` (optional projection)
+/// 4. `orderBy(...)` (zero or more)
+/// 5. `page(limit: ...)` or `pageOffset(...)` or `pageCursor(...)`
+/// 6. `platformData({...})` (optional, for platformSpecific URIs etc.)
+/// 7. `execute()` / `executeTyped(...)` / `build()`
+///
+/// All chain methods return `this`. Order doesn't actually affect the
+/// built request, but the suggested order reads naturally.
+///
+/// Example:
+/// ```dart
+/// final calls = await SimpleQuery.instance
+///     .queryBuilder(QueryDomain.calls)
+///     .where('callType', QueryFilterOperator.equals, '2')
+///     .orderBy('timestamp', direction: QuerySortDirection.descending)
+///     .page(limit: 50)
+///     .executeTyped(CallRecord.fromRecord);
+/// ```
+///
+/// On `build()` (and therefore `execute()` / `executeTyped()`), every
+/// canonical field used in `where(...)` / `orderBy(...)` / `select(...)`
+/// is validated against [QueryFieldCatalog]. Unknown canonical fields
+/// throw `SimpleQueryError(invalidQuery, details: {field, allowed})`
+/// before any platform call. Skip this validation only by using
+/// [QueryDomain.platformSpecific] (see [SimpleQuery.queryRaw]).
 class QueryBuilder {
   QueryBuilder(this._domain);
 
@@ -51,8 +79,23 @@ class QueryBuilder {
     return this;
   }
 
+  /// Generic pagination. Caller is responsible for picking offset XOR
+  /// cursor (the underlying [QueryPage] asserts mutual exclusion). Prefer
+  /// [pageOffset] or [pageCursor] for clarity.
   QueryBuilder page({int? limit, int? offset, String? cursor}) {
     _page = QueryPage(limit: limit, offset: offset, cursor: cursor);
+    return this;
+  }
+
+  /// Offset-based pagination convenience.
+  QueryBuilder pageOffset({int? limit, required int offset}) {
+    _page = QueryPage.offset(limit: limit, offset: offset);
+    return this;
+  }
+
+  /// Cursor-based pagination convenience.
+  QueryBuilder pageCursor({int? limit, required String cursor}) {
+    _page = QueryPage.cursor(limit: limit, cursor: cursor);
     return this;
   }
 
@@ -61,8 +104,12 @@ class QueryBuilder {
     return this;
   }
 
+  /// Builds the final [QueryRequest] and validates canonical-field usage
+  /// against [QueryFieldCatalog]. Throws `SimpleQueryError(invalidQuery)`
+  /// on the first unknown field encountered (no-op for
+  /// [QueryDomain.platformSpecific]).
   QueryRequest build() {
-    return QueryRequest(
+    final request = QueryRequest(
       domain: _domain,
       entityType: _entityType,
       filters: List<QueryFilterCondition>.unmodifiable(_filters),
@@ -74,6 +121,7 @@ class QueryBuilder {
           ? null
           : Map<String, Object?>.unmodifiable(_platformData!),
     );
+    return RuntimeContractValidation.validateQueryRequest(request);
   }
 
   Future<QueryResult> execute() {
@@ -84,5 +132,10 @@ class QueryBuilder {
     T Function(Map<String, Object?> record) fromRecord,
   ) {
     return SimpleQuery.instance.queryTyped(build(), fromRecord);
+  }
+
+  /// Convenience for [SimpleQuery.queryPaginated] with the built request.
+  Stream<QueryResult> executePaginated() {
+    return SimpleQuery.instance.queryPaginated(build());
   }
 }
