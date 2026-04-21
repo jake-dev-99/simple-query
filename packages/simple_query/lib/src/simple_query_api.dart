@@ -270,7 +270,7 @@ class SimpleQuery {
   /// [withBinaryContent] for a scoped helper that closes on return.
   Future<BinaryContent> openBinaryContent(BinaryRequest request) async {
     final handle = await openBinary(request);
-    return BinaryContent.forTesting(handle: handle, facade: this);
+    return BinaryContent.fromHandle(handle: handle, facade: this);
   }
 
   /// Opens binary content for the duration of [body], guaranteeing it is
