@@ -116,24 +116,32 @@ abstract class BaseNonAndroidSimpleQueryPlatform extends SimpleQueryPlatform {
 
   @override
   Future<QueryResult> query(QueryRequest request) async {
+    RuntimeContractValidation.validateQueryRequest(request);
     final nativeResult = await _nativeBridge.queryOrNull(request);
     return nativeResult ?? _localFallback.query(request);
   }
 
   @override
   Future<MutationResult> mutate(MutationRequest request) async {
+    RuntimeContractValidation.validateMutationRequest(request);
     final nativeResult = await _nativeBridge.mutateOrNull(request);
     return nativeResult ?? _localFallback.mutate(request);
   }
 
   @override
   Future<BatchResult> batch(BatchRequest request) async {
+    RuntimeContractValidation.validateBatchRequest(request);
     final nativeResult = await _nativeBridge.batchOrNull(request);
     return nativeResult ?? _localFallback.batch(request);
   }
 
   @override
   Stream<ObserveEvent> observe(ObserveRequest request) {
+    try {
+      RuntimeContractValidation.validateObserveRequest(request);
+    } on SimpleQueryError catch (error) {
+      return Stream<ObserveEvent>.error(error);
+    }
     return _nativeBridge.observeOrFallback(
       request,
       () => _localFallback.observe(request),

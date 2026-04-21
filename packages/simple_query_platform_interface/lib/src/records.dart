@@ -1,16 +1,18 @@
+import 'contracts.dart';
 import 'exceptions.dart';
 import 'models.dart';
 
 /// Typed view over a [QueryRecord] from the [QueryDomain.contacts] domain.
 class ContactRecord {
-  const ContactRecord._({
+  ContactRecord._({
     required this.id,
     required this.displayName,
     required this.phones,
     required this.emails,
+    required this.raw,
     this.organization,
     this.updatedAt,
-  });
+  }) : extras = _extrasFor(QueryDomain.contacts, raw);
 
   factory ContactRecord.fromRecord(QueryRecord record) {
     return ContactRecord._(
@@ -20,6 +22,7 @@ class ContactRecord {
       emails: _stringList(record, 'emails'),
       organization: _optionalString(record, 'organization'),
       updatedAt: _optionalString(record, 'updatedAt'),
+      raw: Map<String, Object?>.unmodifiable(record),
     );
   }
 
@@ -30,21 +33,32 @@ class ContactRecord {
   final String? organization;
   final String? updatedAt;
 
+  /// Untouched source map exactly as the platform returned it. Use this for
+  /// full-fidelity access (e.g. OEM columns the canonical contract doesn't
+  /// promise). See also [extras].
+  final Map<String, Object?> raw;
+
+  /// [raw] with every key the canonical contract for this domain knows about
+  /// removed. Surfaces OEM and platform-specific extensions without
+  /// duplicating fields already exposed via typed getters.
+  final Map<String, Object?> extras;
+
   @override
   String toString() => 'ContactRecord(id: $id, displayName: $displayName)';
 }
 
 /// Typed view over a [QueryRecord] from the [QueryDomain.calendar] domain.
 class CalendarEventRecord {
-  const CalendarEventRecord._({
+  CalendarEventRecord._({
     required this.id,
     required this.title,
     required this.startAt,
     required this.endAt,
     required this.isAllDay,
     required this.calendarId,
+    required this.raw,
     this.updatedAt,
-  });
+  }) : extras = _extrasFor(QueryDomain.calendar, raw);
 
   factory CalendarEventRecord.fromRecord(QueryRecord record) {
     return CalendarEventRecord._(
@@ -55,6 +69,7 @@ class CalendarEventRecord {
       isAllDay: _boolOrFalse(record, 'isAllDay'),
       calendarId: _requiredString(record, 'calendarId'),
       updatedAt: _optionalString(record, 'updatedAt'),
+      raw: Map<String, Object?>.unmodifiable(record),
     );
   }
 
@@ -65,6 +80,8 @@ class CalendarEventRecord {
   final bool isAllDay;
   final String calendarId;
   final String? updatedAt;
+  final Map<String, Object?> raw;
+  final Map<String, Object?> extras;
 
   @override
   String toString() => 'CalendarEventRecord(id: $id, title: $title)';
@@ -72,15 +89,16 @@ class CalendarEventRecord {
 
 /// Typed view over a [QueryRecord] from the [QueryDomain.media] domain.
 class MediaRecord {
-  const MediaRecord._({
+  MediaRecord._({
     required this.id,
     required this.uriOrPath,
     required this.mediaType,
+    required this.raw,
     this.mimeType,
     this.size,
     this.createdAt,
     this.modifiedAt,
-  });
+  }) : extras = _extrasFor(QueryDomain.media, raw);
 
   factory MediaRecord.fromRecord(QueryRecord record) {
     return MediaRecord._(
@@ -91,6 +109,7 @@ class MediaRecord {
       size: _optionalInt(record, 'size'),
       createdAt: _optionalString(record, 'createdAt'),
       modifiedAt: _optionalString(record, 'modifiedAt'),
+      raw: Map<String, Object?>.unmodifiable(record),
     );
   }
 
@@ -101,6 +120,8 @@ class MediaRecord {
   final int? size;
   final String? createdAt;
   final String? modifiedAt;
+  final Map<String, Object?> raw;
+  final Map<String, Object?> extras;
 
   @override
   String toString() => 'MediaRecord(id: $id, mediaType: $mediaType)';
@@ -108,18 +129,19 @@ class MediaRecord {
 
 /// Typed view over a [QueryRecord] from the [QueryDomain.files] domain.
 class FileRecord {
-  const FileRecord._({
+  FileRecord._({
     required this.id,
     required this.path,
     required this.name,
     required this.isDirectory,
+    required this.raw,
     this.size,
     this.modifiedAt,
     this.mimeType,
     this.type,
     this.extension,
     this.modifiedEpochMs,
-  });
+  }) : extras = _extrasFor(QueryDomain.files, raw);
 
   factory FileRecord.fromRecord(QueryRecord record) {
     return FileRecord._(
@@ -133,6 +155,7 @@ class FileRecord {
       type: _optionalString(record, 'type'),
       extension: _optionalString(record, 'extension'),
       modifiedEpochMs: _optionalInt(record, 'modifiedEpochMs'),
+      raw: Map<String, Object?>.unmodifiable(record),
     );
   }
 
@@ -146,6 +169,8 @@ class FileRecord {
   final String? type;
   final String? extension;
   final int? modifiedEpochMs;
+  final Map<String, Object?> raw;
+  final Map<String, Object?> extras;
 
   @override
   String toString() => 'FileRecord(id: $id, path: $path)';
@@ -153,15 +178,16 @@ class FileRecord {
 
 /// Typed view over a [QueryRecord] from the [QueryDomain.messages] domain.
 class MessageRecord {
-  const MessageRecord._({
+  MessageRecord._({
     required this.id,
     required this.timestamp,
+    required this.raw,
     this.threadId,
     this.address,
     this.body,
     this.direction,
     this.read,
-  });
+  }) : extras = _extrasFor(QueryDomain.messages, raw);
 
   factory MessageRecord.fromRecord(QueryRecord record) {
     return MessageRecord._(
@@ -172,6 +198,7 @@ class MessageRecord {
       body: _optionalString(record, 'body'),
       direction: _optionalString(record, 'direction'),
       read: _optionalBool(record, 'read'),
+      raw: Map<String, Object?>.unmodifiable(record),
     );
   }
 
@@ -182,6 +209,8 @@ class MessageRecord {
   final String? body;
   final String? direction;
   final bool? read;
+  final Map<String, Object?> raw;
+  final Map<String, Object?> extras;
 
   @override
   String toString() => 'MessageRecord(id: $id, timestamp: $timestamp)';
@@ -189,14 +218,15 @@ class MessageRecord {
 
 /// Typed view over a [QueryRecord] from the [QueryDomain.calls] domain.
 class CallRecord {
-  const CallRecord._({
+  CallRecord._({
     required this.id,
     required this.callType,
     required this.timestamp,
+    required this.raw,
     this.number,
     this.durationSec,
     this.name,
-  });
+  }) : extras = _extrasFor(QueryDomain.calls, raw);
 
   factory CallRecord.fromRecord(QueryRecord record) {
     return CallRecord._(
@@ -206,6 +236,7 @@ class CallRecord {
       number: _optionalString(record, 'number'),
       durationSec: _optionalInt(record, 'durationSec'),
       name: _optionalString(record, 'name'),
+      raw: Map<String, Object?>.unmodifiable(record),
     );
   }
 
@@ -215,6 +246,8 @@ class CallRecord {
   final String? number;
   final int? durationSec;
   final String? name;
+  final Map<String, Object?> raw;
+  final Map<String, Object?> extras;
 
   @override
   String toString() => 'CallRecord(id: $id, callType: $callType)';
@@ -230,6 +263,24 @@ class CallRecord {
 // the contract does not allow — surfacing backend contract violations loudly
 // instead of silently coercing garbage.
 // ---------------------------------------------------------------------------
+
+/// Returns a copy of [raw] with every key the canonical contract for [domain]
+/// already knows about removed. Backs [ContactRecord.extras] etc.
+///
+/// Computed once at record construction and stored as an unmodifiable map.
+Map<String, Object?> _extrasFor(QueryDomain domain, Map<String, Object?> raw) {
+  final allowed = QueryDomainContracts.allowedKeysFor(domain);
+  if (allowed.isEmpty) {
+    return Map<String, Object?>.unmodifiable(raw);
+  }
+  final extras = <String, Object?>{};
+  for (final entry in raw.entries) {
+    if (!allowed.contains(entry.key)) {
+      extras[entry.key] = entry.value;
+    }
+  }
+  return Map<String, Object?>.unmodifiable(extras);
+}
 
 String _requiredString(QueryRecord record, String field, {String fallback = ''}) {
   final value = record[field];

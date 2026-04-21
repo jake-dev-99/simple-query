@@ -266,6 +266,33 @@ void main() {
     });
   });
 
+  test('queryRaw builds a platformSpecific request with the contentUri',
+      () async {
+    final fake = makeFake();
+    SimpleQueryPlatform.instance = fake;
+
+    await SimpleQuery.instance.queryRaw(
+      contentUri: 'content://com.biz.app/data',
+      filters: <QueryFilterCondition>[
+        QueryFilterCondition(
+          field: 'my_native_column',
+          operator: QueryFilterOperator.equals,
+          value: 'value',
+        ),
+      ],
+      projection: const <String>['col_a', 'col_b'],
+      platformData: const <String, Object?>{'extra': 1},
+    );
+
+    expect(fake.queryCalls, 1);
+    final captured = fake.queryRequests.single;
+    expect(captured.domain, QueryDomain.platformSpecific);
+    expect(captured.platformData?['contentUri'], 'content://com.biz.app/data');
+    expect(captured.platformData?['extra'], 1);
+    expect(captured.filters.single.field, 'my_native_column');
+    expect(captured.projection, <String>['col_a', 'col_b']);
+  });
+
   test('queryTyped maps records', () async {
     SimpleQueryPlatform.instance = makeFake();
 

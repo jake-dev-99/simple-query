@@ -1,5 +1,6 @@
 import 'contracts.dart';
 import 'exceptions.dart';
+import 'field_catalog.dart';
 import 'models.dart';
 
 /// Enforces the documented contracts of request/response models at runtime.
@@ -68,8 +69,40 @@ abstract final class RuntimeContractValidation {
     return result;
   }
 
-  /// Enforces that insert/update mutations carry non-empty `values`.
+  /// Enforces that every filter, sort, and projection field on [request] is
+  /// part of the canonical schema for its domain. Skips validation for
+  /// [QueryDomain.platformSpecific] (the escape hatch).
+  ///
+  /// Surfaces typos and raw native column names with a clear
+  /// [SimpleQueryError] instead of letting them silently produce empty
+  /// result sets (in-memory filters) or cryptic SQL errors (Android).
+  static QueryRequest validateQueryRequest(QueryRequest request) {
+    QueryFieldCatalog.ensureAllKnown(
+      domain: request.domain,
+      fields: request.filters.map((filter) => filter.field),
+    );
+    QueryFieldCatalog.ensureAllKnown(
+      domain: request.domain,
+      fields: request.sort.map((sort) => sort.field),
+    );
+    final projection = request.projection;
+    if (projection != null) {
+      QueryFieldCatalog.ensureAllKnown(
+        domain: request.domain,
+        fields: projection,
+      );
+    }
+    return request;
+  }
+
+  /// Enforces that insert/update mutations carry non-empty `values`, and
+  /// that every filter field (used by update/delete) is a canonical field
+  /// for the mutation's domain.
   static MutationRequest validateMutationRequest(MutationRequest request) {
+    QueryFieldCatalog.ensureAllKnown(
+      domain: request.domain,
+      fields: request.filters.map((filter) => filter.field),
+    );
     switch (request.type) {
       case MutationType.insert:
       case MutationType.update:
@@ -95,6 +128,13 @@ abstract final class RuntimeContractValidation {
   }
 
   /// Enforces that a batch carries at least one operation.
+  ///
+  /// Does **not** cascade to per-operation [validateMutationRequest]. Batch
+  /// semantics are "sequentialBestEffort" — a malformed operation must not
+  /// abort the whole batch; it is expected to fail at execution time and
+  /// record its error in its own result's `metadata.error`. Platforms that
+  /// want upfront per-op validation can call [validateMutationRequest]
+  /// themselves.
   static BatchRequest validateBatchRequest(BatchRequest request) {
     if (request.operations.isEmpty) {
       throw const SimpleQueryError(
@@ -105,14 +145,16 @@ abstract final class RuntimeContractValidation {
         details: <String, Object?>{'operationsCount': 0},
       );
     }
-    for (var index = 0; index < request.operations.length; index += 1) {
-      validateMutationRequest(request.operations[index]);
-    }
     return request;
   }
 
-  /// Enforces that a polling interval, when present, is strictly positive.
+  /// Enforces that a polling interval, when present, is strictly positive,
+  /// and that every filter field is canonical for the request's domain.
   static ObserveRequest validateObserveRequest(ObserveRequest request) {
+    QueryFieldCatalog.ensureAllKnown(
+      domain: request.domain,
+      fields: request.filters.map((filter) => filter.field),
+    );
     final interval = request.pollingInterval;
     if (interval != null && interval <= Duration.zero) {
       throw SimpleQueryError(

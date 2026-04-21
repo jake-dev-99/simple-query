@@ -15,8 +15,7 @@ PlatformException _createConnectionError(String channelName) {
   );
 }
 
-List<Object?> wrapResponse(
-    {Object? result, PlatformException? error, bool empty = false}) {
+List<Object?> wrapResponse({Object? result, PlatformException? error, bool empty = false}) {
   if (empty) {
     return <Object?>[];
   }
@@ -112,7 +111,7 @@ class QueryResponse {
   /// List of rows, each row is a map of column name to value.
   /// BLOB columns return null; use openStream() to retrieve binary data.
   /// Note: Uses Object? to avoid Pigeon CastList issues with nested generics.
-  /// Each row is actually Map<Object?, Object?> - convert with .cast<String?, Object?>().
+  /// Each row is actually `Map<Object?, Object?>` - convert with `.cast<String?, Object?>()`.
   List<Object?> rows;
 
   /// Total number of rows returned.
@@ -489,7 +488,7 @@ class JoinedRow {
   });
 
   /// Primary row data.
-  /// Note: Actually Map<Object?, Object?> - convert keys with .cast<String?, Object?>().
+  /// Note: Actually `Map<Object?, Object?>` - convert keys with `.cast<String?, Object?>()`.
   Object data;
 
   /// Related rows keyed by JoinSpec.name.
@@ -768,6 +767,7 @@ class ProviderCallResponse {
   }
 }
 
+
 class _PigeonCodec extends StandardMessageCodec {
   const _PigeonCodec();
   @override
@@ -775,70 +775,70 @@ class _PigeonCodec extends StandardMessageCodec {
     if (value is int) {
       buffer.putUint8(4);
       buffer.putInt64(value);
-    } else if (value is ContentChangeType) {
+    }    else if (value is ContentChangeType) {
       buffer.putUint8(129);
       writeValue(buffer, value.index);
-    } else if (value is BatchOperationType) {
+    }    else if (value is BatchOperationType) {
       buffer.putUint8(130);
       writeValue(buffer, value.index);
-    } else if (value is QueryRequest) {
+    }    else if (value is QueryRequest) {
       buffer.putUint8(131);
       writeValue(buffer, value.encode());
-    } else if (value is QueryResponse) {
+    }    else if (value is QueryResponse) {
       buffer.putUint8(132);
       writeValue(buffer, value.encode());
-    } else if (value is InsertRequest) {
+    }    else if (value is InsertRequest) {
       buffer.putUint8(133);
       writeValue(buffer, value.encode());
-    } else if (value is BulkInsertRequest) {
+    }    else if (value is BulkInsertRequest) {
       buffer.putUint8(134);
       writeValue(buffer, value.encode());
-    } else if (value is UpdateRequest) {
+    }    else if (value is UpdateRequest) {
       buffer.putUint8(135);
       writeValue(buffer, value.encode());
-    } else if (value is DeleteRequest) {
+    }    else if (value is DeleteRequest) {
       buffer.putUint8(136);
       writeValue(buffer, value.encode());
-    } else if (value is BatchOperation) {
+    }    else if (value is BatchOperation) {
       buffer.putUint8(137);
       writeValue(buffer, value.encode());
-    } else if (value is BatchRequest) {
+    }    else if (value is BatchRequest) {
       buffer.putUint8(138);
       writeValue(buffer, value.encode());
-    } else if (value is BatchOperationResult) {
+    }    else if (value is BatchOperationResult) {
       buffer.putUint8(139);
       writeValue(buffer, value.encode());
-    } else if (value is JoinSpec) {
+    }    else if (value is JoinSpec) {
       buffer.putUint8(140);
       writeValue(buffer, value.encode());
-    } else if (value is JoinQueryRequest) {
+    }    else if (value is JoinQueryRequest) {
       buffer.putUint8(141);
       writeValue(buffer, value.encode());
-    } else if (value is JoinedRow) {
+    }    else if (value is JoinedRow) {
       buffer.putUint8(142);
       writeValue(buffer, value.encode());
-    } else if (value is JoinQueryResponse) {
+    }    else if (value is JoinQueryResponse) {
       buffer.putUint8(143);
       writeValue(buffer, value.encode());
-    } else if (value is StreamDescriptor) {
+    }    else if (value is StreamDescriptor) {
       buffer.putUint8(144);
       writeValue(buffer, value.encode());
-    } else if (value is StreamError) {
+    }    else if (value is StreamError) {
       buffer.putUint8(145);
       writeValue(buffer, value.encode());
-    } else if (value is ContentChangeEvent) {
+    }    else if (value is ContentChangeEvent) {
       buffer.putUint8(146);
       writeValue(buffer, value.encode());
-    } else if (value is ObserverRequest) {
+    }    else if (value is ObserverRequest) {
       buffer.putUint8(147);
       writeValue(buffer, value.encode());
-    } else if (value is TypeResponse) {
+    }    else if (value is TypeResponse) {
       buffer.putUint8(148);
       writeValue(buffer, value.encode());
-    } else if (value is ProviderCallRequest) {
+    }    else if (value is ProviderCallRequest) {
       buffer.putUint8(149);
       writeValue(buffer, value.encode());
-    } else if (value is ProviderCallResponse) {
+    }    else if (value is ProviderCallResponse) {
       buffer.putUint8(150);
       writeValue(buffer, value.encode());
     } else {
@@ -849,51 +849,51 @@ class _PigeonCodec extends StandardMessageCodec {
   @override
   Object? readValueOfType(int type, ReadBuffer buffer) {
     switch (type) {
-      case 129:
+      case 129: 
         final int? value = readValue(buffer) as int?;
         return value == null ? null : ContentChangeType.values[value];
-      case 130:
+      case 130: 
         final int? value = readValue(buffer) as int?;
         return value == null ? null : BatchOperationType.values[value];
-      case 131:
+      case 131: 
         return QueryRequest.decode(readValue(buffer)!);
-      case 132:
+      case 132: 
         return QueryResponse.decode(readValue(buffer)!);
-      case 133:
+      case 133: 
         return InsertRequest.decode(readValue(buffer)!);
-      case 134:
+      case 134: 
         return BulkInsertRequest.decode(readValue(buffer)!);
-      case 135:
+      case 135: 
         return UpdateRequest.decode(readValue(buffer)!);
-      case 136:
+      case 136: 
         return DeleteRequest.decode(readValue(buffer)!);
-      case 137:
+      case 137: 
         return BatchOperation.decode(readValue(buffer)!);
-      case 138:
+      case 138: 
         return BatchRequest.decode(readValue(buffer)!);
-      case 139:
+      case 139: 
         return BatchOperationResult.decode(readValue(buffer)!);
-      case 140:
+      case 140: 
         return JoinSpec.decode(readValue(buffer)!);
-      case 141:
+      case 141: 
         return JoinQueryRequest.decode(readValue(buffer)!);
-      case 142:
+      case 142: 
         return JoinedRow.decode(readValue(buffer)!);
-      case 143:
+      case 143: 
         return JoinQueryResponse.decode(readValue(buffer)!);
-      case 144:
+      case 144: 
         return StreamDescriptor.decode(readValue(buffer)!);
-      case 145:
+      case 145: 
         return StreamError.decode(readValue(buffer)!);
-      case 146:
+      case 146: 
         return ContentChangeEvent.decode(readValue(buffer)!);
-      case 147:
+      case 147: 
         return ObserverRequest.decode(readValue(buffer)!);
-      case 148:
+      case 148: 
         return TypeResponse.decode(readValue(buffer)!);
-      case 149:
+      case 149: 
         return ProviderCallRequest.decode(readValue(buffer)!);
-      case 150:
+      case 150: 
         return ProviderCallResponse.decode(readValue(buffer)!);
       default:
         return super.readValueOfType(type, buffer);
@@ -905,11 +905,9 @@ class QueryHostApi {
   /// Constructor for [QueryHostApi].  The [binaryMessenger] named argument is
   /// available for dependency injection.  If it is left null, the default
   /// BinaryMessenger will be used which routes to the host platform.
-  QueryHostApi(
-      {BinaryMessenger? binaryMessenger, String messageChannelSuffix = ''})
+  QueryHostApi({BinaryMessenger? binaryMessenger, String messageChannelSuffix = ''})
       : pigeonVar_binaryMessenger = binaryMessenger,
-        pigeonVar_messageChannelSuffix =
-            messageChannelSuffix.isNotEmpty ? '.$messageChannelSuffix' : '';
+        pigeonVar_messageChannelSuffix = messageChannelSuffix.isNotEmpty ? '.$messageChannelSuffix' : '';
   final BinaryMessenger? pigeonVar_binaryMessenger;
 
   static const MessageCodec<Object?> pigeonChannelCodec = _PigeonCodec();
@@ -917,10 +915,8 @@ class QueryHostApi {
   final String pigeonVar_messageChannelSuffix;
 
   Future<QueryResponse> query(QueryRequest request) async {
-    final String pigeonVar_channelName =
-        'dev.flutter.pigeon.simple_query.QueryHostApi.query$pigeonVar_messageChannelSuffix';
-    final BasicMessageChannel<Object?> pigeonVar_channel =
-        BasicMessageChannel<Object?>(
+    final String pigeonVar_channelName = 'dev.flutter.pigeon.simple_query.QueryHostApi.query$pigeonVar_messageChannelSuffix';
+    final BasicMessageChannel<Object?> pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
       binaryMessenger: pigeonVar_binaryMessenger,
@@ -946,10 +942,8 @@ class QueryHostApi {
   }
 
   Future<JoinQueryResponse> queryWithJoins(JoinQueryRequest request) async {
-    final String pigeonVar_channelName =
-        'dev.flutter.pigeon.simple_query.QueryHostApi.queryWithJoins$pigeonVar_messageChannelSuffix';
-    final BasicMessageChannel<Object?> pigeonVar_channel =
-        BasicMessageChannel<Object?>(
+    final String pigeonVar_channelName = 'dev.flutter.pigeon.simple_query.QueryHostApi.queryWithJoins$pigeonVar_messageChannelSuffix';
+    final BasicMessageChannel<Object?> pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
       binaryMessenger: pigeonVar_binaryMessenger,
@@ -976,10 +970,8 @@ class QueryHostApi {
 
   /// Insert a row. Returns URI of inserted row.
   Future<String?> insert(InsertRequest request) async {
-    final String pigeonVar_channelName =
-        'dev.flutter.pigeon.simple_query.QueryHostApi.insert$pigeonVar_messageChannelSuffix';
-    final BasicMessageChannel<Object?> pigeonVar_channel =
-        BasicMessageChannel<Object?>(
+    final String pigeonVar_channelName = 'dev.flutter.pigeon.simple_query.QueryHostApi.insert$pigeonVar_messageChannelSuffix';
+    final BasicMessageChannel<Object?> pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
       binaryMessenger: pigeonVar_binaryMessenger,
@@ -1001,10 +993,8 @@ class QueryHostApi {
 
   /// Insert multiple rows. Returns count of inserted rows.
   Future<int> bulkInsert(BulkInsertRequest request) async {
-    final String pigeonVar_channelName =
-        'dev.flutter.pigeon.simple_query.QueryHostApi.bulkInsert$pigeonVar_messageChannelSuffix';
-    final BasicMessageChannel<Object?> pigeonVar_channel =
-        BasicMessageChannel<Object?>(
+    final String pigeonVar_channelName = 'dev.flutter.pigeon.simple_query.QueryHostApi.bulkInsert$pigeonVar_messageChannelSuffix';
+    final BasicMessageChannel<Object?> pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
       binaryMessenger: pigeonVar_binaryMessenger,
@@ -1031,10 +1021,8 @@ class QueryHostApi {
 
   /// Update rows. Returns count of updated rows.
   Future<int> update(UpdateRequest request) async {
-    final String pigeonVar_channelName =
-        'dev.flutter.pigeon.simple_query.QueryHostApi.update$pigeonVar_messageChannelSuffix';
-    final BasicMessageChannel<Object?> pigeonVar_channel =
-        BasicMessageChannel<Object?>(
+    final String pigeonVar_channelName = 'dev.flutter.pigeon.simple_query.QueryHostApi.update$pigeonVar_messageChannelSuffix';
+    final BasicMessageChannel<Object?> pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
       binaryMessenger: pigeonVar_binaryMessenger,
@@ -1061,10 +1049,8 @@ class QueryHostApi {
 
   /// Delete rows. Returns count of deleted rows.
   Future<int> delete(DeleteRequest request) async {
-    final String pigeonVar_channelName =
-        'dev.flutter.pigeon.simple_query.QueryHostApi.delete$pigeonVar_messageChannelSuffix';
-    final BasicMessageChannel<Object?> pigeonVar_channel =
-        BasicMessageChannel<Object?>(
+    final String pigeonVar_channelName = 'dev.flutter.pigeon.simple_query.QueryHostApi.delete$pigeonVar_messageChannelSuffix';
+    final BasicMessageChannel<Object?> pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
       binaryMessenger: pigeonVar_binaryMessenger,
@@ -1091,10 +1077,8 @@ class QueryHostApi {
 
   /// Apply batch operations atomically.
   Future<List<BatchOperationResult?>> applyBatch(BatchRequest request) async {
-    final String pigeonVar_channelName =
-        'dev.flutter.pigeon.simple_query.QueryHostApi.applyBatch$pigeonVar_messageChannelSuffix';
-    final BasicMessageChannel<Object?> pigeonVar_channel =
-        BasicMessageChannel<Object?>(
+    final String pigeonVar_channelName = 'dev.flutter.pigeon.simple_query.QueryHostApi.applyBatch$pigeonVar_messageChannelSuffix';
+    final BasicMessageChannel<Object?> pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
       binaryMessenger: pigeonVar_binaryMessenger,
@@ -1115,18 +1099,15 @@ class QueryHostApi {
         message: 'Host platform returned null value for non-null return value.',
       );
     } else {
-      return (pigeonVar_replyList[0] as List<Object?>?)!
-          .cast<BatchOperationResult?>();
+      return (pigeonVar_replyList[0] as List<Object?>?)!.cast<BatchOperationResult?>();
     }
   }
 
   /// Open a stream for reading binary content.
   /// Returns StreamDescriptor with pipe path for zero-copy reading.
   Future<StreamDescriptor> openStream(String contentUri) async {
-    final String pigeonVar_channelName =
-        'dev.flutter.pigeon.simple_query.QueryHostApi.openStream$pigeonVar_messageChannelSuffix';
-    final BasicMessageChannel<Object?> pigeonVar_channel =
-        BasicMessageChannel<Object?>(
+    final String pigeonVar_channelName = 'dev.flutter.pigeon.simple_query.QueryHostApi.openStream$pigeonVar_messageChannelSuffix';
+    final BasicMessageChannel<Object?> pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
       binaryMessenger: pigeonVar_binaryMessenger,
@@ -1154,10 +1135,8 @@ class QueryHostApi {
   /// Extract content to a temp file.
   /// Returns file:// URI to the temp file.
   Future<String?> extractToFile(String contentUri) async {
-    final String pigeonVar_channelName =
-        'dev.flutter.pigeon.simple_query.QueryHostApi.extractToFile$pigeonVar_messageChannelSuffix';
-    final BasicMessageChannel<Object?> pigeonVar_channel =
-        BasicMessageChannel<Object?>(
+    final String pigeonVar_channelName = 'dev.flutter.pigeon.simple_query.QueryHostApi.extractToFile$pigeonVar_messageChannelSuffix';
+    final BasicMessageChannel<Object?> pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
       binaryMessenger: pigeonVar_binaryMessenger,
@@ -1179,10 +1158,8 @@ class QueryHostApi {
 
   /// Close an open stream and release resources.
   Future<void> closeStream(String streamId) async {
-    final String pigeonVar_channelName =
-        'dev.flutter.pigeon.simple_query.QueryHostApi.closeStream$pigeonVar_messageChannelSuffix';
-    final BasicMessageChannel<Object?> pigeonVar_channel =
-        BasicMessageChannel<Object?>(
+    final String pigeonVar_channelName = 'dev.flutter.pigeon.simple_query.QueryHostApi.closeStream$pigeonVar_messageChannelSuffix';
+    final BasicMessageChannel<Object?> pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
       binaryMessenger: pigeonVar_binaryMessenger,
@@ -1204,10 +1181,8 @@ class QueryHostApi {
 
   /// Register a ContentObserver. Returns observer ID.
   Future<String> registerObserver(ObserverRequest request) async {
-    final String pigeonVar_channelName =
-        'dev.flutter.pigeon.simple_query.QueryHostApi.registerObserver$pigeonVar_messageChannelSuffix';
-    final BasicMessageChannel<Object?> pigeonVar_channel =
-        BasicMessageChannel<Object?>(
+    final String pigeonVar_channelName = 'dev.flutter.pigeon.simple_query.QueryHostApi.registerObserver$pigeonVar_messageChannelSuffix';
+    final BasicMessageChannel<Object?> pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
       binaryMessenger: pigeonVar_binaryMessenger,
@@ -1234,10 +1209,8 @@ class QueryHostApi {
 
   /// Unregister a ContentObserver.
   Future<void> unregisterObserver(String observerId) async {
-    final String pigeonVar_channelName =
-        'dev.flutter.pigeon.simple_query.QueryHostApi.unregisterObserver$pigeonVar_messageChannelSuffix';
-    final BasicMessageChannel<Object?> pigeonVar_channel =
-        BasicMessageChannel<Object?>(
+    final String pigeonVar_channelName = 'dev.flutter.pigeon.simple_query.QueryHostApi.unregisterObserver$pigeonVar_messageChannelSuffix';
+    final BasicMessageChannel<Object?> pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
       binaryMessenger: pigeonVar_binaryMessenger,
@@ -1259,10 +1232,8 @@ class QueryHostApi {
 
   /// Unregister all observers.
   Future<void> unregisterAllObservers() async {
-    final String pigeonVar_channelName =
-        'dev.flutter.pigeon.simple_query.QueryHostApi.unregisterAllObservers$pigeonVar_messageChannelSuffix';
-    final BasicMessageChannel<Object?> pigeonVar_channel =
-        BasicMessageChannel<Object?>(
+    final String pigeonVar_channelName = 'dev.flutter.pigeon.simple_query.QueryHostApi.unregisterAllObservers$pigeonVar_messageChannelSuffix';
+    final BasicMessageChannel<Object?> pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
       binaryMessenger: pigeonVar_binaryMessenger,
@@ -1284,10 +1255,8 @@ class QueryHostApi {
 
   /// Get MIME type for a content URI.
   Future<TypeResponse> getType(String contentUri) async {
-    final String pigeonVar_channelName =
-        'dev.flutter.pigeon.simple_query.QueryHostApi.getType$pigeonVar_messageChannelSuffix';
-    final BasicMessageChannel<Object?> pigeonVar_channel =
-        BasicMessageChannel<Object?>(
+    final String pigeonVar_channelName = 'dev.flutter.pigeon.simple_query.QueryHostApi.getType$pigeonVar_messageChannelSuffix';
+    final BasicMessageChannel<Object?> pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
       binaryMessenger: pigeonVar_binaryMessenger,
@@ -1314,10 +1283,8 @@ class QueryHostApi {
 
   /// Canonicalize a URI for cross-device portability.
   Future<String?> canonicalize(String contentUri) async {
-    final String pigeonVar_channelName =
-        'dev.flutter.pigeon.simple_query.QueryHostApi.canonicalize$pigeonVar_messageChannelSuffix';
-    final BasicMessageChannel<Object?> pigeonVar_channel =
-        BasicMessageChannel<Object?>(
+    final String pigeonVar_channelName = 'dev.flutter.pigeon.simple_query.QueryHostApi.canonicalize$pigeonVar_messageChannelSuffix';
+    final BasicMessageChannel<Object?> pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
       binaryMessenger: pigeonVar_binaryMessenger,
@@ -1339,10 +1306,8 @@ class QueryHostApi {
 
   /// Reverse canonicalization.
   Future<String?> uncanonicalize(String contentUri) async {
-    final String pigeonVar_channelName =
-        'dev.flutter.pigeon.simple_query.QueryHostApi.uncanonicalize$pigeonVar_messageChannelSuffix';
-    final BasicMessageChannel<Object?> pigeonVar_channel =
-        BasicMessageChannel<Object?>(
+    final String pigeonVar_channelName = 'dev.flutter.pigeon.simple_query.QueryHostApi.uncanonicalize$pigeonVar_messageChannelSuffix';
+    final BasicMessageChannel<Object?> pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
       binaryMessenger: pigeonVar_binaryMessenger,
@@ -1364,10 +1329,8 @@ class QueryHostApi {
 
   /// Call a provider-defined method.
   Future<ProviderCallResponse> call(ProviderCallRequest request) async {
-    final String pigeonVar_channelName =
-        'dev.flutter.pigeon.simple_query.QueryHostApi.call$pigeonVar_messageChannelSuffix';
-    final BasicMessageChannel<Object?> pigeonVar_channel =
-        BasicMessageChannel<Object?>(
+    final String pigeonVar_channelName = 'dev.flutter.pigeon.simple_query.QueryHostApi.call$pigeonVar_messageChannelSuffix';
+    final BasicMessageChannel<Object?> pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,
       binaryMessenger: pigeonVar_binaryMessenger,
@@ -1391,6 +1354,68 @@ class QueryHostApi {
       return (pigeonVar_replyList[0] as ProviderCallResponse?)!;
     }
   }
+
+  /// Returns true if the calling app holds [permissionName]
+  /// (a fully-qualified Android permission identifier such as
+  /// `android.permission.READ_CONTACTS`). Implemented via
+  /// `Context.checkSelfPermission`. Synchronous on the native side; pigeon
+  /// makes it async on the Dart side.
+  Future<bool> hasPermission(String permissionName) async {
+    final String pigeonVar_channelName = 'dev.flutter.pigeon.simple_query.QueryHostApi.hasPermission$pigeonVar_messageChannelSuffix';
+    final BasicMessageChannel<Object?> pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final List<Object?>? pigeonVar_replyList =
+        await pigeonVar_channel.send(<Object?>[permissionName]) as List<Object?>?;
+    if (pigeonVar_replyList == null) {
+      throw _createConnectionError(pigeonVar_channelName);
+    } else if (pigeonVar_replyList.length > 1) {
+      throw PlatformException(
+        code: pigeonVar_replyList[0]! as String,
+        message: pigeonVar_replyList[1] as String?,
+        details: pigeonVar_replyList[2],
+      );
+    } else if (pigeonVar_replyList[0] == null) {
+      throw PlatformException(
+        code: 'null-error',
+        message: 'Host platform returned null value for non-null return value.',
+      );
+    } else {
+      return (pigeonVar_replyList[0] as bool?)!;
+    }
+  }
+
+  /// Returns the device's `Build.VERSION.SDK_INT`. Used by the Dart-side
+  /// permission catalog to pick between legacy and modern media permissions
+  /// (`READ_EXTERNAL_STORAGE` vs `READ_MEDIA_*`).
+  Future<int> getAndroidSdkInt() async {
+    final String pigeonVar_channelName = 'dev.flutter.pigeon.simple_query.QueryHostApi.getAndroidSdkInt$pigeonVar_messageChannelSuffix';
+    final BasicMessageChannel<Object?> pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final List<Object?>? pigeonVar_replyList =
+        await pigeonVar_channel.send(null) as List<Object?>?;
+    if (pigeonVar_replyList == null) {
+      throw _createConnectionError(pigeonVar_channelName);
+    } else if (pigeonVar_replyList.length > 1) {
+      throw PlatformException(
+        code: pigeonVar_replyList[0]! as String,
+        message: pigeonVar_replyList[1] as String?,
+        details: pigeonVar_replyList[2],
+      );
+    } else if (pigeonVar_replyList[0] == null) {
+      throw PlatformException(
+        code: 'null-error',
+        message: 'Host platform returned null value for non-null return value.',
+      );
+    } else {
+      return (pigeonVar_replyList[0] as int?)!;
+    }
+  }
 }
 
 abstract class QueryFlutterApi {
@@ -1402,29 +1427,20 @@ abstract class QueryFlutterApi {
   /// Called when a stream encounters an error.
   void onStreamError(StreamError error);
 
-  static void setUp(
-    QueryFlutterApi? api, {
-    BinaryMessenger? binaryMessenger,
-    String messageChannelSuffix = '',
-  }) {
-    messageChannelSuffix =
-        messageChannelSuffix.isNotEmpty ? '.$messageChannelSuffix' : '';
+  static void setUp(QueryFlutterApi? api, {BinaryMessenger? binaryMessenger, String messageChannelSuffix = '',}) {
+    messageChannelSuffix = messageChannelSuffix.isNotEmpty ? '.$messageChannelSuffix' : '';
     {
-      final BasicMessageChannel<
-          Object?> pigeonVar_channel = BasicMessageChannel<
-              Object?>(
-          'dev.flutter.pigeon.simple_query.QueryFlutterApi.onContentChange$messageChannelSuffix',
-          pigeonChannelCodec,
+      final BasicMessageChannel<Object?> pigeonVar_channel = BasicMessageChannel<Object?>(
+          'dev.flutter.pigeon.simple_query.QueryFlutterApi.onContentChange$messageChannelSuffix', pigeonChannelCodec,
           binaryMessenger: binaryMessenger);
       if (api == null) {
         pigeonVar_channel.setMessageHandler(null);
       } else {
         pigeonVar_channel.setMessageHandler((Object? message) async {
           assert(message != null,
-              'Argument for dev.flutter.pigeon.simple_query.QueryFlutterApi.onContentChange was null.');
+          'Argument for dev.flutter.pigeon.simple_query.QueryFlutterApi.onContentChange was null.');
           final List<Object?> args = (message as List<Object?>?)!;
-          final ContentChangeEvent? arg_event =
-              (args[0] as ContentChangeEvent?);
+          final ContentChangeEvent? arg_event = (args[0] as ContentChangeEvent?);
           assert(arg_event != null,
               'Argument for dev.flutter.pigeon.simple_query.QueryFlutterApi.onContentChange was null, expected non-null ContentChangeEvent.');
           try {
@@ -1432,26 +1448,22 @@ abstract class QueryFlutterApi {
             return wrapResponse(empty: true);
           } on PlatformException catch (e) {
             return wrapResponse(error: e);
-          } catch (e) {
-            return wrapResponse(
-                error: PlatformException(code: 'error', message: e.toString()));
+          }          catch (e) {
+            return wrapResponse(error: PlatformException(code: 'error', message: e.toString()));
           }
         });
       }
     }
     {
-      final BasicMessageChannel<
-          Object?> pigeonVar_channel = BasicMessageChannel<
-              Object?>(
-          'dev.flutter.pigeon.simple_query.QueryFlutterApi.onStreamError$messageChannelSuffix',
-          pigeonChannelCodec,
+      final BasicMessageChannel<Object?> pigeonVar_channel = BasicMessageChannel<Object?>(
+          'dev.flutter.pigeon.simple_query.QueryFlutterApi.onStreamError$messageChannelSuffix', pigeonChannelCodec,
           binaryMessenger: binaryMessenger);
       if (api == null) {
         pigeonVar_channel.setMessageHandler(null);
       } else {
         pigeonVar_channel.setMessageHandler((Object? message) async {
           assert(message != null,
-              'Argument for dev.flutter.pigeon.simple_query.QueryFlutterApi.onStreamError was null.');
+          'Argument for dev.flutter.pigeon.simple_query.QueryFlutterApi.onStreamError was null.');
           final List<Object?> args = (message as List<Object?>?)!;
           final StreamError? arg_error = (args[0] as StreamError?);
           assert(arg_error != null,
@@ -1461,9 +1473,8 @@ abstract class QueryFlutterApi {
             return wrapResponse(empty: true);
           } on PlatformException catch (e) {
             return wrapResponse(error: e);
-          } catch (e) {
-            return wrapResponse(
-                error: PlatformException(code: 'error', message: e.toString()));
+          }          catch (e) {
+            return wrapResponse(error: PlatformException(code: 'error', message: e.toString()));
           }
         });
       }

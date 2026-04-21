@@ -512,6 +512,22 @@ abstract class QueryHostApi {
   /// Call a provider-defined method.
   @async
   ProviderCallResponse call(ProviderCallRequest request);
+
+  // --- Permissions ---
+
+  /// Returns true if the calling app holds [permissionName]
+  /// (a fully-qualified Android permission identifier such as
+  /// `android.permission.READ_CONTACTS`). Implemented via
+  /// `Context.checkSelfPermission`. Synchronous on the native side; pigeon
+  /// makes it async on the Dart side.
+  @async
+  bool hasPermission(String permissionName);
+
+  /// Returns the device's `Build.VERSION.SDK_INT`. Used by the Dart-side
+  /// permission catalog to pick between legacy and modern media permissions
+  /// (`READ_EXTERNAL_STORAGE` vs `READ_MEDIA_*`).
+  @async
+  int getAndroidSdkInt();
 }
 
 // ============================================================================

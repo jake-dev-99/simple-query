@@ -17,6 +17,50 @@ class SimpleQuery {
     return SimpleQueryPlatform.instance.query(request);
   }
 
+  /// Query an arbitrary content provider by URI, bypassing the canonical
+  /// schema.
+  ///
+  /// Use this for first-party providers (`content://com.biz.app/...`) or
+  /// Android system providers the canonical [QueryDomain]s do not cover.
+  /// Records come back as raw `Map<String, Object?>` with native column
+  /// names exactly as the provider returned them — no canonical field
+  /// translation, no contract validation, no typed record wrapping.
+  ///
+  /// Permission resolution still runs (see [simple_permissions_native] wiring
+  /// on Android), so the authority embedded in [contentUri] must map to a
+  /// granted permission.
+  ///
+  /// Currently supported on Android only; on other platforms this throws
+  /// [SimpleQueryError] with `code: notSupported`.
+  ///
+  /// This is sugar over `query(QueryRequest(domain: platformSpecific,
+  /// platformData: {'contentUri': contentUri}, ...))` — if you need finer
+  /// control (e.g. passing additional `platformData` keys), construct the
+  /// [QueryRequest] directly.
+  Future<QueryResult> queryRaw({
+    required String contentUri,
+    List<QueryFilterCondition> filters = const <QueryFilterCondition>[],
+    List<String>? projection,
+    List<QuerySort> sort = const <QuerySort>[],
+    QueryPage? page,
+    Map<String, Object?>? platformData,
+  }) {
+    final mergedPlatformData = <String, Object?>{
+      ...?platformData,
+      'contentUri': contentUri,
+    };
+    return query(
+      QueryRequest(
+        domain: QueryDomain.platformSpecific,
+        filters: filters,
+        projection: projection,
+        sort: sort,
+        page: page,
+        platformData: mergedPlatformData,
+      ),
+    );
+  }
+
   /// Runs [request] and maps each returned record through [fromRecord].
   ///
   /// If [fromRecord] throws for any record, the exception is wrapped in a

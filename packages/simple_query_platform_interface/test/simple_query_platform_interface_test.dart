@@ -585,6 +585,103 @@ void main() {
     });
   });
 
+  group('QueryFieldCatalog', () {
+    test('canonicalFields returns required ∪ optional for each domain', () {
+      for (final domain in QueryDomain.values) {
+        if (domain == QueryDomain.platformSpecific) continue;
+        final canonical = QueryFieldCatalog.canonicalFields(domain);
+        final allowed = QueryDomainContracts.allowedKeysFor(domain);
+        expect(canonical, allowed, reason: 'mismatch for ${domain.name}');
+      }
+    });
+
+    test('canonicalFields is empty for platformSpecific', () {
+      expect(
+        QueryFieldCatalog.canonicalFields(QueryDomain.platformSpecific),
+        isEmpty,
+      );
+    });
+
+    test('ensureKnown passes for valid canonical field', () {
+      QueryFieldCatalog.ensureKnown(
+        domain: QueryDomain.calls,
+        canonical: 'callType',
+      );
+      // No throw.
+    });
+
+    test('ensureKnown throws invalidQuery for unknown canonical field', () {
+      expect(
+        () => QueryFieldCatalog.ensureKnown(
+          domain: QueryDomain.calls,
+          canonical: 'type', // raw Android column name, not canonical
+        ),
+        throwsA(
+          isA<SimpleQueryError>()
+              .having((e) => e.code, 'code', SimpleQueryErrorCode.invalidQuery)
+              .having(
+                (e) => e.details?['field'],
+                'details.field',
+                'type',
+              )
+              .having(
+                (e) => e.details?['domain'],
+                'details.domain',
+                'calls',
+              ),
+        ),
+      );
+    });
+
+    test('ensureKnown is a no-op for platformSpecific', () {
+      QueryFieldCatalog.ensureKnown(
+        domain: QueryDomain.platformSpecific,
+        canonical: 'whatever_you_want',
+      );
+      // No throw.
+    });
+
+    test('ensureAllKnown throws on the first unknown field', () {
+      expect(
+        () => QueryFieldCatalog.ensureAllKnown(
+          domain: QueryDomain.files,
+          fields: const <String>['path', 'unknown_field', 'name'],
+        ),
+        throwsA(
+          isA<SimpleQueryError>().having(
+            (e) => e.details?['field'],
+            'details.field',
+            'unknown_field',
+          ),
+        ),
+      );
+    });
+
+    test('calls domain gains isNew/isRead/geocodedLocation/subscriptionId', () {
+      final canonical = QueryFieldCatalog.canonicalFields(QueryDomain.calls);
+      expect(canonical, containsAll(<String>[
+        'isNew',
+        'isRead',
+        'geocodedLocation',
+        'subscriptionId',
+      ]));
+    });
+
+    test('error message lists allowed fields for the domain', () {
+      try {
+        QueryFieldCatalog.ensureKnown(
+          domain: QueryDomain.files,
+          canonical: 'not_a_real_field',
+        );
+        fail('expected throw');
+      } on SimpleQueryError catch (e) {
+        expect(e.message, contains('files'));
+        expect(e.message, contains('not_a_real_field'));
+        expect(e.details?['allowed'], isA<List<String>>());
+      }
+    });
+  });
+
   group('model equality (full coverage)', () {
     test('MutationRequest equality and hashCode', () {
       const a = MutationRequest(
@@ -882,6 +979,123 @@ void main() {
       expect(request.type, MutationType.delete);
     });
 
+    test('validateQueryRequest rejects unknown filter field', () {
+      expect(
+        () => RuntimeContractValidation.validateQueryRequest(
+          const QueryRequest(
+            domain: QueryDomain.calls,
+            filters: <QueryFilterCondition>[
+              QueryFilterCondition(
+                field: 'type', // raw Android column, not canonical
+                operator: QueryFilterOperator.equals,
+                value: '1',
+              ),
+            ],
+          ),
+        ),
+        throwsA(
+          isA<SimpleQueryError>()
+              .having((e) => e.code, 'code', SimpleQueryErrorCode.invalidQuery)
+              .having((e) => e.details?['field'], 'details.field', 'type'),
+        ),
+      );
+    });
+
+    test('validateQueryRequest rejects unknown sort field', () {
+      expect(
+        () => RuntimeContractValidation.validateQueryRequest(
+          const QueryRequest(
+            domain: QueryDomain.calls,
+            sort: <QuerySort>[QuerySort(field: 'date')],
+          ),
+        ),
+        throwsA(isA<SimpleQueryError>()),
+      );
+    });
+
+    test('validateQueryRequest rejects unknown projection field', () {
+      expect(
+        () => RuntimeContractValidation.validateQueryRequest(
+          const QueryRequest(
+            domain: QueryDomain.calls,
+            projection: <String>['_id'],
+          ),
+        ),
+        throwsA(isA<SimpleQueryError>()),
+      );
+    });
+
+    test('validateQueryRequest passes for canonical fields', () {
+      RuntimeContractValidation.validateQueryRequest(
+        const QueryRequest(
+          domain: QueryDomain.calls,
+          filters: <QueryFilterCondition>[
+            QueryFilterCondition(
+              field: 'callType',
+              operator: QueryFilterOperator.equals,
+              value: '1',
+            ),
+          ],
+          sort: <QuerySort>[QuerySort(field: 'timestamp')],
+          projection: <String>['id', 'number', 'durationSec'],
+        ),
+      );
+      // No throw.
+    });
+
+    test('validateQueryRequest is a no-op for platformSpecific', () {
+      RuntimeContractValidation.validateQueryRequest(
+        const QueryRequest(
+          domain: QueryDomain.platformSpecific,
+          filters: <QueryFilterCondition>[
+            QueryFilterCondition(
+              field: 'anything_goes',
+              operator: QueryFilterOperator.equals,
+              value: 'x',
+            ),
+          ],
+        ),
+      );
+      // No throw.
+    });
+
+    test('validateMutationRequest rejects unknown filter field', () {
+      expect(
+        () => RuntimeContractValidation.validateMutationRequest(
+          const MutationRequest(
+            domain: QueryDomain.calls,
+            type: MutationType.delete,
+            filters: <QueryFilterCondition>[
+              QueryFilterCondition(
+                field: 'date',
+                operator: QueryFilterOperator.equals,
+                value: '0',
+              ),
+            ],
+          ),
+        ),
+        throwsA(isA<SimpleQueryError>()),
+      );
+    });
+
+    test('validateObserveRequest rejects unknown filter field', () {
+      expect(
+        () => RuntimeContractValidation.validateObserveRequest(
+          const ObserveRequest(
+            domain: QueryDomain.calls,
+            filters: <QueryFilterCondition>[
+              QueryFilterCondition(
+                field: 'date',
+                operator: QueryFilterOperator.equals,
+                value: '0',
+              ),
+            ],
+          ),
+        ),
+        throwsA(isA<SimpleQueryError>()),
+      );
+    });
+
     test('validateBatchRequest rejects empty operations', () {
       expect(
         () => RuntimeContractValidation.validateBatchRequest(
@@ -891,20 +1105,24 @@ void main() {
       );
     });
 
-    test('validateBatchRequest cascades mutation validation', () {
-      expect(
-        () => RuntimeContractValidation.validateBatchRequest(
-          const BatchRequest(
-            operations: <MutationRequest>[
-              MutationRequest(
-                domain: QueryDomain.files,
-                type: MutationType.update,
-              ),
-            ],
-          ),
+    test(
+        'validateBatchRequest does NOT cascade per-op validation '
+        '(sequentialBestEffort)', () {
+      // A malformed operation (insert without values) must not abort the
+      // whole batch at validation time — the batch runner records the
+      // per-op failure in metadata.error and continues with the rest.
+      final validated = RuntimeContractValidation.validateBatchRequest(
+        const BatchRequest(
+          operations: <MutationRequest>[
+            MutationRequest(
+              domain: QueryDomain.files,
+              type: MutationType.update,
+              // no `values` — would fail validateMutationRequest on its own
+            ),
+          ],
         ),
-        throwsA(isA<SimpleQueryError>()),
       );
+      expect(validated.operations, hasLength(1));
     });
 
     test('validateObserveRequest rejects non-positive pollingInterval', () {
