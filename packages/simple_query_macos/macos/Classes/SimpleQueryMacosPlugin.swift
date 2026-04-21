@@ -382,7 +382,14 @@ public class SimpleQueryMacosPlugin: NSObject, FlutterPlugin, NativeQueryHostApi
   private func listContactRecords() throws -> [[String?: Any?]] {
     let access = contactsReadAccess()
     guard access.readable else {
-      throw permissionDenied(access.reason ?? "simple_query: contacts permission is not granted")
+      throw permissionDenied(
+        access.reason ?? "simple_query: contacts permission is not granted",
+        details: [
+          "framework": "Contacts",
+          "infoPlistKey": "NSContactsUsageDescription",
+          "authorizationStatus": contactsAuthorizationStatusName(),
+        ]
+      )
     }
 
     let contactStore = CNContactStore()
@@ -465,7 +472,14 @@ public class SimpleQueryMacosPlugin: NSObject, FlutterPlugin, NativeQueryHostApi
   private func listCalendarRecords(request: [String?: Any?]) throws -> [[String?: Any?]] {
     let access = calendarReadAccess()
     guard access.readable else {
-      throw permissionDenied(access.reason ?? "simple_query: calendar permission is not granted")
+      throw permissionDenied(
+        access.reason ?? "simple_query: calendar permission is not granted",
+        details: [
+          "framework": "EventKit",
+          "infoPlistKey": "NSCalendarsUsageDescription",
+          "authorizationStatus": calendarAuthorizationStatusName(),
+        ]
+      )
     }
 
     let eventStore = EKEventStore()
@@ -490,7 +504,14 @@ public class SimpleQueryMacosPlugin: NSObject, FlutterPlugin, NativeQueryHostApi
   private func listContactContainers() throws -> [[String: Any?]] {
     let access = contactsReadAccess()
     guard access.readable else {
-      throw permissionDenied(access.reason ?? "simple_query: contacts permission is not granted")
+      throw permissionDenied(
+        access.reason ?? "simple_query: contacts permission is not granted",
+        details: [
+          "framework": "Contacts",
+          "infoPlistKey": "NSContactsUsageDescription",
+          "authorizationStatus": contactsAuthorizationStatusName(),
+        ]
+      )
     }
 
     let contactStore = CNContactStore()
@@ -506,7 +527,14 @@ public class SimpleQueryMacosPlugin: NSObject, FlutterPlugin, NativeQueryHostApi
   private func listContactGroups() throws -> [[String: Any?]] {
     let access = contactsReadAccess()
     guard access.readable else {
-      throw permissionDenied(access.reason ?? "simple_query: contacts permission is not granted")
+      throw permissionDenied(
+        access.reason ?? "simple_query: contacts permission is not granted",
+        details: [
+          "framework": "Contacts",
+          "infoPlistKey": "NSContactsUsageDescription",
+          "authorizationStatus": contactsAuthorizationStatusName(),
+        ]
+      )
     }
 
     let contactStore = CNContactStore()
@@ -521,7 +549,14 @@ public class SimpleQueryMacosPlugin: NSObject, FlutterPlugin, NativeQueryHostApi
   private func listCalendars() throws -> [[String: Any?]] {
     let access = calendarReadAccess()
     guard access.readable else {
-      throw permissionDenied(access.reason ?? "simple_query: calendar permission is not granted")
+      throw permissionDenied(
+        access.reason ?? "simple_query: calendar permission is not granted",
+        details: [
+          "framework": "EventKit",
+          "infoPlistKey": "NSCalendarsUsageDescription",
+          "authorizationStatus": calendarAuthorizationStatusName(),
+        ]
+      )
     }
 
     let eventStore = EKEventStore()
@@ -834,8 +869,11 @@ public class SimpleQueryMacosPlugin: NSObject, FlutterPlugin, NativeQueryHostApi
     NativeQueryPigeonError(code: "unavailable", message: message, details: nil)
   }
 
-  private func permissionDenied(_ message: String) -> NativeQueryPigeonError {
-    NativeQueryPigeonError(code: "permission-denied", message: message, details: nil)
+  private func permissionDenied(
+    _ message: String,
+    details: [String: Any?]? = nil
+  ) -> NativeQueryPigeonError {
+    NativeQueryPigeonError(code: "permission-denied", message: message, details: details)
   }
 }
 

@@ -155,11 +155,6 @@ packages:
     description: flutter
     source: sdk
     version: "0.0.0"
-  flutter_web_plugins:
-    dependency: transitive
-    description: flutter
-    source: sdk
-    version: "0.0.0"
   glob:
     dependency: transitive
     description:
@@ -272,54 +267,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.2.0"
-  simple_permissions_android:
-    dependency: transitive
-    description:
-      name: simple_permissions_android
-      sha256: "97dffdf0132f53d6e48472a17c9911a4729e55041610aeeb19754089e47f0483"
-      url: "https://pub.dev"
-    source: hosted
-    version: "1.2.0"
-  simple_permissions_ios:
-    dependency: transitive
-    description:
-      name: simple_permissions_ios
-      sha256: "42dd464d21ffd9dda2c0ef4b1d3e68ba4b8f3b1eadfa60f2afde38eec6e1a8dc"
-      url: "https://pub.dev"
-    source: hosted
-    version: "1.2.0"
-  simple_permissions_macos:
-    dependency: transitive
-    description:
-      name: simple_permissions_macos
-      sha256: "6ac5c0dfd938de9d089b588dee84d28fa016d73ed49d5ce1a541ea27d980c8b2"
-      url: "https://pub.dev"
-    source: hosted
-    version: "1.2.0"
-  simple_permissions_native:
-    dependency: "direct main"
-    description:
-      name: simple_permissions_native
-      sha256: "7ab50381a633894abcaafe3bb48a7544a818e379f8d2a67f4fc9961aac46a04e"
-      url: "https://pub.dev"
-    source: hosted
-    version: "1.2.0"
-  simple_permissions_platform_interface:
-    dependency: transitive
-    description:
-      name: simple_permissions_platform_interface
-      sha256: "8ac20ad5ca17d70940928b9203945b08e9db25fcf0ce24d54e0da3aed16a5ea9"
-      url: "https://pub.dev"
-    source: hosted
-    version: "1.2.0"
-  simple_permissions_web:
-    dependency: transitive
-    description:
-      name: simple_permissions_web
-      sha256: b82a34dbe552ce8601816d1b307d5ab0e1ac6f25d1f8d64addc5bc1631cfce85
-      url: "https://pub.dev"
-    source: hosted
-    version: "1.2.0"
   simple_query_platform_interface:
     dependency: "direct main"
     description:
@@ -412,14 +359,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.2.1"
-  web:
-    dependency: transitive
-    description:
-      name: web
-      sha256: "868d88a33d8a87b18ffc05f9f030ba328ffefba92d6c127917a2ba740f9cfe4a"
-      url: "https://pub.dev"
-    source: hosted
-    version: "1.1.1"
   yaml:
     dependency: transitive
     description:

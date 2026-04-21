@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:simple_permissions_native/simple_permissions_native.dart';
 import 'package:simple_query_platform_interface/simple_query_platform_interface.dart'
     as iface;
 
@@ -10,12 +9,9 @@ import 'generated/query.g.dart' as p;
 class SimpleQueryAndroidApi implements p.QueryFlutterApi {
   SimpleQueryAndroidApi({
     p.QueryHostApi? hostApi,
-    Future<PermissionGrant> Function(Permission permission)? checkPermission,
     bool registerFlutterApi = true,
     bool enforceAndroidPlatformCheck = true,
   })  : _hostApi = hostApi ?? p.QueryHostApi(),
-        _checkPermission =
-            checkPermission ?? SimplePermissionsNative.instance.check,
         _enforceAndroidPlatformCheck = enforceAndroidPlatformCheck {
     if (registerFlutterApi) {
       p.QueryFlutterApi.setUp(this);
@@ -23,9 +19,8 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
   }
 
   final p.QueryHostApi _hostApi;
-  final Future<PermissionGrant> Function(Permission permission)
-      _checkPermission;
   final bool _enforceAndroidPlatformCheck;
+  int? _cachedSdkInt;
 
   final _observerEventsController =
       StreamController<iface.ObserveEvent>.broadcast();
@@ -483,26 +478,47 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
     await _observerEventsController.close();
   }
 
+  /// Verifies the calling app holds the OS permission(s) needed for
+  /// [contentUri]. Throws `SimpleQueryError(code: permissionDenied, details:
+  /// {permissions: [...], domain, operation})` when not granted.
+  ///
+  /// Per MEMORY.md, simple_query never *requests* permissions. The caller
+  /// catches the `permissionDenied` error, requests the named permission via
+  /// their own mechanism (`simple_permissions`, `permission_handler`, raw
+  /// `ActivityCompat.requestPermissions`, etc.), then retries.
   Future<void> _ensurePermission(String contentUri,
       {required bool write}) async {
     if (_enforceAndroidPlatformCheck && !Platform.isAndroid) return;
 
-    final permission = AndroidQueryPermissionResolver.permissionForUri(
+    final candidates = AndroidQueryPermissionResolver.permissionsForUri(
       contentUri,
       write: write,
+      sdkInt: await _androidSdkInt(),
     );
-    if (permission == null) return;
+    if (candidates.isEmpty) return;
 
-    final grant = await _checkPermission(permission);
-    if (grant != PermissionGrant.granted && grant != PermissionGrant.limited) {
-      throw iface.SimpleQueryError(
-        code: iface.SimpleQueryErrorCode.permissionDenied,
-        message:
-            'simple_query: permission ${permission.identifier} is required',
-        operation:
-            write ? iface.QueryOperation.write : iface.QueryOperation.read,
-      );
+    for (final candidate in candidates) {
+      final granted = await _hostApi.hasPermission(candidate);
+      if (granted) return;
     }
+
+    throw iface.SimpleQueryError(
+      code: iface.SimpleQueryErrorCode.permissionDenied,
+      message: candidates.length == 1
+          ? 'simple_query: ${candidates.single} is required'
+          : 'simple_query: one of ${candidates.join(', ')} is required',
+      operation:
+          write ? iface.QueryOperation.write : iface.QueryOperation.read,
+      details: <String, Object?>{
+        'permissions': candidates,
+        'contentUri': contentUri,
+        'write': write,
+      },
+    );
+  }
+
+  Future<int> _androidSdkInt() async {
+    return _cachedSdkInt ??= await _hostApi.getAndroidSdkInt();
   }
 
   String _resolveContentUri({
@@ -990,41 +1006,97 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
   }
 }
 
+/// Maps an Android content URI to the OS permission(s) that gate it.
+///
+/// Returns fully-qualified Android permission strings (e.g.
+/// `android.permission.READ_CONTACTS`) — the same identifiers the caller
+/// would pass to `ContextCompat.checkSelfPermission` or
+/// `ActivityCompat.requestPermissions`.
+///
+/// Multiple permissions in the list represent *alternatives*: if any one is
+/// granted, the query proceeds. This covers the Android 13 media-permission
+/// split, where API 33+ wants `READ_MEDIA_IMAGES` / `_VIDEO` / `_AUDIO` while
+/// API ≤32 still uses `READ_EXTERNAL_STORAGE`.
+///
+/// Returns an empty list for content URIs the provider does not gate
+/// (e.g. write paths on media and SMS, which the system never exposes for
+/// third-party writes).
+///
+/// simple_query never *requests* permissions — that is the caller's job.
+/// This catalog tells them which identifier to request after seeing a
+/// `permissionDenied` error.
 abstract final class AndroidQueryPermissionResolver {
-  static Permission? permissionForUri(String contentUri,
-      {required bool write}) {
+  static const _readContacts = 'android.permission.READ_CONTACTS';
+  static const _writeContacts = 'android.permission.WRITE_CONTACTS';
+  static const _readSms = 'android.permission.READ_SMS';
+  static const _readCallLog = 'android.permission.READ_CALL_LOG';
+  static const _writeCallLog = 'android.permission.WRITE_CALL_LOG';
+  static const _readCalendar = 'android.permission.READ_CALENDAR';
+  static const _writeCalendar = 'android.permission.WRITE_CALENDAR';
+  static const _readExternalStorage =
+      'android.permission.READ_EXTERNAL_STORAGE';
+  static const _readMediaImages = 'android.permission.READ_MEDIA_IMAGES';
+  static const _readMediaVideo = 'android.permission.READ_MEDIA_VIDEO';
+  static const _readMediaAudio = 'android.permission.READ_MEDIA_AUDIO';
+
+  static List<String> permissionsForUri(
+    String contentUri, {
+    required bool write,
+    required int sdkInt,
+  }) {
     final uri = Uri.parse(contentUri);
     final authority = uri.authority.toLowerCase();
     final path = uri.path.toLowerCase();
 
     if (authority == 'sms' || authority == 'mms' || authority == 'mms-sms') {
-      return write ? null : const ReadSms();
+      return write ? const <String>[] : const <String>[_readSms];
     }
 
     if (authority.contains('contacts') ||
         authority.contains('com.android.contacts')) {
-      return write ? const WriteContacts() : const ReadContacts();
+      return <String>[write ? _writeContacts : _readContacts];
     }
 
     if (authority == 'call_log' || path.contains('call_log')) {
-      return write ? const WriteCallLog() : const ReadCallLog();
+      return <String>[write ? _writeCallLog : _readCallLog];
     }
 
     if (authority.contains('calendar') ||
         authority.contains('com.android.calendar')) {
-      return write ? const WriteCalendar() : const ReadCalendar();
+      return <String>[write ? _writeCalendar : _readCalendar];
     }
 
     if (authority.contains('media') ||
         authority.contains('com.android.providers.media')) {
-      if (write) return null;
-      if (path.contains('/images/')) return const VersionedPermission.images();
-      if (path.contains('/video/')) return const VersionedPermission.video();
-      if (path.contains('/audio/')) return const VersionedPermission.audio();
-      return const ReadExternalStorage();
+      if (write) return const <String>[];
+      // API 33+ introduced the granular READ_MEDIA_* permissions. On older
+      // devices, fall back to READ_EXTERNAL_STORAGE. Returning both as
+      // alternatives lets the device decide: `hasPermission` returns false
+      // for the modern name on API ≤32 (not in manifest) and false for the
+      // legacy name on API 33+ (ignored).
+      if (path.contains('/images/')) {
+        return sdkInt >= 33
+            ? const <String>[_readMediaImages]
+            : const <String>[_readExternalStorage];
+      }
+      if (path.contains('/video/')) {
+        return sdkInt >= 33
+            ? const <String>[_readMediaVideo]
+            : const <String>[_readExternalStorage];
+      }
+      if (path.contains('/audio/')) {
+        return sdkInt >= 33
+            ? const <String>[_readMediaAudio]
+            : const <String>[_readExternalStorage];
+      }
+      // Generic media URI (no kind in path) — on API 33+ there is no single
+      // umbrella permission; accept any of the three.
+      return sdkInt >= 33
+          ? const <String>[_readMediaImages, _readMediaVideo, _readMediaAudio]
+          : const <String>[_readExternalStorage];
     }
 
-    return null;
+    return const <String>[];
   }
 }
 

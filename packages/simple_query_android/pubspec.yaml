@@ -21,7 +21,6 @@ dependencies:
     sdk: flutter
   simple_query_platform_interface:
     path: ../simple_query_platform_interface
-  simple_permissions_native: ^1.2.0
 
 dev_dependencies:
   flutter_test:

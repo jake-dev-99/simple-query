@@ -733,14 +733,26 @@ class LocalFileSystemFallback {
     } on SimpleQueryError {
       rethrow;
     } on FileSystemException catch (error) {
+      // EACCES (errno 13) and EPERM (errno 1) on POSIX,
+      // ERROR_ACCESS_DENIED (5) on Windows. Map these to permissionDenied
+      // so callers can request the appropriate access (sandbox approval,
+      // file owner change, manifest declaration, etc.) and retry. Other
+      // FileSystemExceptions stay as unavailable.
+      final errno = error.osError?.errorCode;
+      final isPermissionDenied = errno == 13 || errno == 1 || errno == 5;
       throw _errorBuilder(
-        code: SimpleQueryErrorCode.unavailable,
-        message: 'simple_query: filesystem fallback failed: ${error.message}',
+        code: isPermissionDenied
+            ? SimpleQueryErrorCode.permissionDenied
+            : SimpleQueryErrorCode.unavailable,
+        message: isPermissionDenied
+            ? 'simple_query: filesystem access denied: ${error.message}'
+            : 'simple_query: filesystem fallback failed: ${error.message}',
         domain: domain,
         operation: operation,
         details: <String, Object?>{
           if (error.path != null) 'path': error.path!,
           if (error.osError?.message != null) 'osError': error.osError!.message,
+          if (errno != null) 'errno': errno,
         },
       );
     }

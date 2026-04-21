@@ -1,27 +1,29 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:simple_permissions_native/simple_permissions_native.dart';
 import 'package:simple_query_android/src/generated/query.g.dart' as p;
 import 'package:simple_query_android/src/simple_query_android_api.dart';
 import 'package:simple_query_platform_interface/simple_query_platform_interface.dart'
     as iface;
 
 void main() {
-  group('AndroidQueryPermissionResolver', () {
-    test('maps media image uri to versioned images permission', () {
-      final permission = AndroidQueryPermissionResolver.permissionForUri(
+  // Smoke coverage for the catalog. Detailed cases live in the
+  // 'AndroidQueryPermissionResolver (raw permission strings)' group below.
+  group('AndroidQueryPermissionResolver smoke', () {
+    test('media image uri on API 33 → READ_MEDIA_IMAGES', () {
+      final permissions = AndroidQueryPermissionResolver.permissionsForUri(
         'content://media/external/images/media',
         write: false,
+        sdkInt: 33,
       );
-      expect(permission, isA<VersionedPermission>());
-      expect(permission!.identifier, 'versioned_images');
+      expect(permissions, <String>['android.permission.READ_MEDIA_IMAGES']);
     });
 
-    test('does not gate sms writes with SEND_SMS', () {
-      final permission = AndroidQueryPermissionResolver.permissionForUri(
+    test('does not gate sms writes', () {
+      final permissions = AndroidQueryPermissionResolver.permissionsForUri(
         'content://sms',
         write: true,
+        sdkInt: 33,
       );
-      expect(permission, isNull);
+      expect(permissions, isEmpty);
     });
   });
 
@@ -39,7 +41,6 @@ void main() {
       hostApi: host,
       registerFlutterApi: false,
       enforceAndroidPlatformCheck: false,
-      checkPermission: (_) async => PermissionGrant.granted,
     );
 
     final response = await api.query(
@@ -86,7 +87,6 @@ void main() {
       hostApi: host,
       registerFlutterApi: false,
       enforceAndroidPlatformCheck: false,
-      checkPermission: (_) async => PermissionGrant.granted,
     );
 
     final response = await api.query(
@@ -117,7 +117,6 @@ void main() {
       hostApi: host,
       registerFlutterApi: false,
       enforceAndroidPlatformCheck: false,
-      checkPermission: (_) async => PermissionGrant.granted,
     );
 
     host.queryResponse = p.QueryResponse(
@@ -191,7 +190,6 @@ void main() {
       hostApi: host,
       registerFlutterApi: false,
       enforceAndroidPlatformCheck: false,
-      checkPermission: (_) async => PermissionGrant.granted,
     );
 
     final contacts = await api.query(
@@ -237,7 +235,6 @@ void main() {
       hostApi: host,
       registerFlutterApi: false,
       enforceAndroidPlatformCheck: false,
-      checkPermission: (_) async => PermissionGrant.granted,
     );
 
     final calendar = await api.query(
@@ -266,7 +263,6 @@ void main() {
       hostApi: _FakeHostApi(),
       registerFlutterApi: false,
       enforceAndroidPlatformCheck: false,
-      checkPermission: (_) async => PermissionGrant.granted,
     );
 
     final snapshot = await api.getCapabilities();
@@ -299,7 +295,6 @@ void main() {
       hostApi: host,
       registerFlutterApi: false,
       enforceAndroidPlatformCheck: false,
-      checkPermission: (_) async => PermissionGrant.granted,
     );
 
     await api.batch(
@@ -323,7 +318,6 @@ void main() {
       hostApi: host,
       registerFlutterApi: false,
       enforceAndroidPlatformCheck: false,
-      checkPermission: (_) async => PermissionGrant.granted,
     );
 
     await expectLater(
@@ -368,7 +362,6 @@ void main() {
       hostApi: host,
       registerFlutterApi: false,
       enforceAndroidPlatformCheck: false,
-      checkPermission: (_) async => PermissionGrant.granted,
     );
 
     final response = await api.query(
@@ -396,7 +389,6 @@ void main() {
       hostApi: host,
       registerFlutterApi: false,
       enforceAndroidPlatformCheck: false,
-      checkPermission: (_) async => PermissionGrant.granted,
     );
 
     final response = await api.query(
@@ -416,7 +408,6 @@ void main() {
       hostApi: host,
       registerFlutterApi: false,
       enforceAndroidPlatformCheck: false,
-      checkPermission: (_) async => PermissionGrant.granted,
     );
 
     final stream = api.observe(
@@ -442,7 +433,6 @@ void main() {
       hostApi: host,
       registerFlutterApi: false,
       enforceAndroidPlatformCheck: false,
-      checkPermission: (_) async => PermissionGrant.granted,
     );
 
     final result = await api.callExtension(
@@ -464,7 +454,6 @@ void main() {
       hostApi: host,
       registerFlutterApi: false,
       enforceAndroidPlatformCheck: false,
-      checkPermission: (_) async => PermissionGrant.granted,
     );
 
     final result = await api.callExtension(
@@ -493,7 +482,6 @@ void main() {
       hostApi: host,
       registerFlutterApi: false,
       enforceAndroidPlatformCheck: false,
-      checkPermission: (_) async => PermissionGrant.granted,
     );
 
     final result = await api.callExtension(
@@ -512,7 +500,6 @@ void main() {
       hostApi: _FakeHostApi(),
       registerFlutterApi: false,
       enforceAndroidPlatformCheck: false,
-      checkPermission: (_) async => PermissionGrant.granted,
     );
 
     expect(
@@ -536,7 +523,6 @@ void main() {
       hostApi: _FakeHostApi(),
       registerFlutterApi: false,
       enforceAndroidPlatformCheck: false,
-      checkPermission: (_) async => PermissionGrant.granted,
     );
 
     expect(
@@ -560,7 +546,6 @@ void main() {
       hostApi: host,
       registerFlutterApi: false,
       enforceAndroidPlatformCheck: false,
-      checkPermission: (_) async => PermissionGrant.granted,
     );
 
     expect(
@@ -593,7 +578,6 @@ void main() {
         hostApi: host,
         registerFlutterApi: false,
         enforceAndroidPlatformCheck: false,
-        checkPermission: (_) async => PermissionGrant.granted,
       );
     });
 
@@ -881,7 +865,6 @@ void main() {
         hostApi: host,
         registerFlutterApi: false,
         enforceAndroidPlatformCheck: false,
-        checkPermission: (_) async => PermissionGrant.granted,
       );
     });
 
@@ -996,7 +979,6 @@ void main() {
         hostApi: host,
         registerFlutterApi: false,
         enforceAndroidPlatformCheck: false,
-        checkPermission: (_) async => PermissionGrant.granted,
       );
     });
 
@@ -1197,128 +1179,153 @@ void main() {
     });
   });
 
-  group('AndroidQueryPermissionResolver', () {
-    test('sms read uri maps to ReadSms', () {
-      final permission = AndroidQueryPermissionResolver.permissionForUri(
-        'content://sms',
-        write: false,
-      );
-      expect(permission, isA<ReadSms>());
+  group('AndroidQueryPermissionResolver (raw permission strings)', () {
+    List<String> resolve(String uri,
+            {required bool write, int sdkInt = 33}) =>
+        AndroidQueryPermissionResolver.permissionsForUri(
+          uri,
+          write: write,
+          sdkInt: sdkInt,
+        );
+
+    test('sms read maps to READ_SMS, write returns empty', () {
+      expect(resolve('content://sms', write: false),
+          <String>['android.permission.READ_SMS']);
+      expect(resolve('content://sms', write: true), isEmpty);
     });
 
-    test('contacts read uri maps to ReadContacts', () {
-      final permission = AndroidQueryPermissionResolver.permissionForUri(
-        'content://com.android.contacts/contacts',
-        write: false,
-      );
-      expect(permission, isA<ReadContacts>());
+    test('mms read maps to READ_SMS, write returns empty', () {
+      expect(resolve('content://mms', write: false),
+          <String>['android.permission.READ_SMS']);
+      expect(resolve('content://mms', write: true), isEmpty);
     });
 
-    test('contacts write uri maps to WriteContacts', () {
-      final permission = AndroidQueryPermissionResolver.permissionForUri(
-        'content://com.android.contacts/contacts',
-        write: true,
-      );
-      expect(permission, isA<WriteContacts>());
+    test('contacts read/write map to READ_CONTACTS / WRITE_CONTACTS', () {
+      expect(
+          resolve('content://com.android.contacts/contacts', write: false),
+          <String>['android.permission.READ_CONTACTS']);
+      expect(
+          resolve('content://com.android.contacts/contacts', write: true),
+          <String>['android.permission.WRITE_CONTACTS']);
     });
 
-    test('call_log read uri maps to ReadCallLog', () {
-      final permission = AndroidQueryPermissionResolver.permissionForUri(
-        'content://call_log/calls',
-        write: false,
-      );
-      expect(permission, isA<ReadCallLog>());
+    test('call_log read/write map to READ_CALL_LOG / WRITE_CALL_LOG', () {
+      expect(resolve('content://call_log/calls', write: false),
+          <String>['android.permission.READ_CALL_LOG']);
+      expect(resolve('content://call_log/calls', write: true),
+          <String>['android.permission.WRITE_CALL_LOG']);
     });
 
-    test('call_log write uri maps to WriteCallLog', () {
-      final permission = AndroidQueryPermissionResolver.permissionForUri(
-        'content://call_log/calls',
-        write: true,
-      );
-      expect(permission, isA<WriteCallLog>());
+    test('calendar read/write map to READ_CALENDAR / WRITE_CALENDAR', () {
+      expect(
+          resolve('content://com.android.calendar/events', write: false),
+          <String>['android.permission.READ_CALENDAR']);
+      expect(
+          resolve('content://com.android.calendar/events', write: true),
+          <String>['android.permission.WRITE_CALENDAR']);
     });
 
-    test('calendar read uri maps to ReadCalendar', () {
-      final permission = AndroidQueryPermissionResolver.permissionForUri(
-        'content://com.android.calendar/events',
-        write: false,
-      );
-      expect(permission, isA<ReadCalendar>());
+    test('media images on API 33+ → READ_MEDIA_IMAGES', () {
+      expect(
+          resolve('content://media/external/images/media',
+              write: false, sdkInt: 33),
+          <String>['android.permission.READ_MEDIA_IMAGES']);
     });
 
-    test('calendar write uri maps to WriteCalendar', () {
-      final permission = AndroidQueryPermissionResolver.permissionForUri(
-        'content://com.android.calendar/events',
-        write: true,
-      );
-      expect(permission, isA<WriteCalendar>());
+    test('media images on API 32 → READ_EXTERNAL_STORAGE', () {
+      expect(
+          resolve('content://media/external/images/media',
+              write: false, sdkInt: 32),
+          <String>['android.permission.READ_EXTERNAL_STORAGE']);
     });
 
-    test('media images uri maps to VersionedPermission.images', () {
-      final permission = AndroidQueryPermissionResolver.permissionForUri(
-        'content://media/external/images/media',
-        write: false,
-      );
-      expect(permission, isA<VersionedPermission>());
-      expect(permission!.identifier, 'versioned_images');
+    test('media video on API 33+ → READ_MEDIA_VIDEO', () {
+      expect(
+          resolve('content://media/external/video/media',
+              write: false, sdkInt: 34),
+          <String>['android.permission.READ_MEDIA_VIDEO']);
     });
 
-    test('media video uri maps to VersionedPermission.video', () {
-      final permission = AndroidQueryPermissionResolver.permissionForUri(
-        'content://media/external/video/media',
-        write: false,
-      );
-      expect(permission, isA<VersionedPermission>());
-      expect(permission!.identifier, 'versioned_video');
+    test('media audio on API 33+ → READ_MEDIA_AUDIO', () {
+      expect(
+          resolve('content://media/external/audio/media',
+              write: false, sdkInt: 33),
+          <String>['android.permission.READ_MEDIA_AUDIO']);
     });
 
-    test('media audio uri maps to VersionedPermission.audio', () {
-      final permission = AndroidQueryPermissionResolver.permissionForUri(
-        'content://media/external/audio/media',
-        write: false,
-      );
-      expect(permission, isA<VersionedPermission>());
-      expect(permission!.identifier, 'versioned_audio');
+    test('media generic file on API 33+ accepts any of the three media perms',
+        () {
+      expect(
+          resolve('content://media/external/file', write: false, sdkInt: 33),
+          containsAll(<String>[
+            'android.permission.READ_MEDIA_IMAGES',
+            'android.permission.READ_MEDIA_VIDEO',
+            'android.permission.READ_MEDIA_AUDIO',
+          ]));
     });
 
-    test('media generic file uri maps to ReadExternalStorage', () {
-      final permission = AndroidQueryPermissionResolver.permissionForUri(
-        'content://media/external/file',
-        write: false,
-      );
-      expect(permission, isA<ReadExternalStorage>());
+    test('media generic file on API 32 → READ_EXTERNAL_STORAGE', () {
+      expect(
+          resolve('content://media/external/file', write: false, sdkInt: 32),
+          <String>['android.permission.READ_EXTERNAL_STORAGE']);
     });
 
-    test('media write uri returns null', () {
-      final permission = AndroidQueryPermissionResolver.permissionForUri(
-        'content://media/external/images/media',
-        write: true,
-      );
-      expect(permission, isNull);
+    test('media write returns empty (system never grants third-party writes)',
+        () {
+      expect(resolve('content://media/external/images/media', write: true),
+          isEmpty);
     });
 
-    test('unknown uri returns null', () {
-      final permission = AndroidQueryPermissionResolver.permissionForUri(
-        'content://com.example.custom/data',
-        write: false,
+    test('unknown uri returns empty (no gate)', () {
+      expect(resolve('content://com.example.custom/data', write: false),
+          isEmpty);
+    });
+  });
+
+  group('_ensurePermission gating', () {
+    test('throws permissionDenied with the candidate permission in details',
+        () async {
+      final host = _FakeHostApi()..grantedPermissions = const <String>{};
+      final api = SimpleQueryAndroidApi(
+        hostApi: host,
+        registerFlutterApi: false,
+        enforceAndroidPlatformCheck: false,
       );
-      expect(permission, isNull);
+
+      await expectLater(
+        api.query(
+          const iface.QueryRequest(domain: iface.QueryDomain.contacts),
+        ),
+        throwsA(
+          isA<iface.SimpleQueryError>()
+              .having((e) => e.code, 'code',
+                  iface.SimpleQueryErrorCode.permissionDenied)
+              .having(
+                (e) => e.details?['permissions'],
+                'details.permissions',
+                <String>['android.permission.READ_CONTACTS'],
+              ),
+        ),
+      );
+      expect(host.permissionChecks,
+          contains('android.permission.READ_CONTACTS'));
     });
 
-    test('mms read uri maps to ReadSms', () {
-      final permission = AndroidQueryPermissionResolver.permissionForUri(
-        'content://mms',
-        write: false,
+    test('proceeds when any candidate permission is granted', () async {
+      final host = _FakeHostApi()
+        ..grantedPermissions = const <String>{
+          'android.permission.READ_CONTACTS',
+        };
+      final api = SimpleQueryAndroidApi(
+        hostApi: host,
+        registerFlutterApi: false,
+        enforceAndroidPlatformCheck: false,
       );
-      expect(permission, isA<ReadSms>());
-    });
 
-    test('mms write uri returns null', () {
-      final permission = AndroidQueryPermissionResolver.permissionForUri(
-        'content://mms',
-        write: true,
+      // No throw — record set is empty but the permission gate passes.
+      await api.query(
+        const iface.QueryRequest(domain: iface.QueryDomain.contacts),
       );
-      expect(permission, isNull);
     });
   });
 
@@ -1328,7 +1335,6 @@ void main() {
       hostApi: host,
       registerFlutterApi: false,
       enforceAndroidPlatformCheck: false,
-      checkPermission: (_) async => PermissionGrant.granted,
     );
 
     final handle = await api.openBinary(
@@ -1442,4 +1448,24 @@ class _FakeHostApi extends p.QueryHostApi {
           'method': request.method,
         },
       );
+
+  /// Permission gate stub. Default: every permission is granted. Set
+  /// [grantedPermissions] to a specific allowlist to simulate denial.
+  Set<String>? grantedPermissions;
+  final List<String> permissionChecks = <String>[];
+
+  @override
+  Future<bool> hasPermission(String permissionName) async {
+    permissionChecks.add(permissionName);
+    final allowlist = grantedPermissions;
+    return allowlist == null || allowlist.contains(permissionName);
+  }
+
+  /// SDK-version stub. Default: API 33 so the Dart catalog picks the
+  /// modern `READ_MEDIA_*` permissions. Override for legacy-permission
+  /// coverage.
+  int sdkInt = 33;
+
+  @override
+  Future<int> getAndroidSdkInt() async => sdkInt;
 }
