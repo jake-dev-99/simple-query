@@ -226,6 +226,10 @@ class CallRecord {
     this.number,
     this.durationSec,
     this.name,
+    this.isNew,
+    this.isRead,
+    this.geocodedLocation,
+    this.subscriptionId,
   }) : extras = _extrasFor(QueryDomain.calls, raw);
 
   factory CallRecord.fromRecord(QueryRecord record) {
@@ -236,6 +240,15 @@ class CallRecord {
       number: _optionalString(record, 'number'),
       durationSec: _optionalInt(record, 'durationSec'),
       name: _optionalString(record, 'name'),
+      // Optional CallLog columns — populated by Android from `new`,
+      // `is_read`, `geocoded_location`, `subscription_id`. iOS / macOS
+      // / desktop leave these absent. Canonical keys are filtered out
+      // of [extras], so exposing typed getters keeps them reachable
+      // without dropping down to [raw].
+      isNew: _optionalBool(record, 'isNew'),
+      isRead: _optionalBool(record, 'isRead'),
+      geocodedLocation: _optionalString(record, 'geocodedLocation'),
+      subscriptionId: _optionalInt(record, 'subscriptionId'),
       raw: Map<String, Object?>.unmodifiable(record),
     );
   }
@@ -246,6 +259,10 @@ class CallRecord {
   final String? number;
   final int? durationSec;
   final String? name;
+  final bool? isNew;
+  final bool? isRead;
+  final String? geocodedLocation;
+  final int? subscriptionId;
   final Map<String, Object?> raw;
   final Map<String, Object?> extras;
 
