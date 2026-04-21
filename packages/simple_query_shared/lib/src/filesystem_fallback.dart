@@ -353,11 +353,16 @@ class LocalFileSystemFallback {
         );
         _observeTimers.add(timer!);
       },
-      onCancel: () {
+      onCancel: () async {
         timer?.cancel();
         if (timer != null) {
           _observeTimers.remove(timer);
         }
+        // Close the controller when the last subscriber leaves so the
+        // stream doesn't keep the surrounding object alive. Broadcast
+        // StreamController.onCancel only fires after every listener
+        // drops, which is the right point to release.
+        await controller.close();
       },
     );
 

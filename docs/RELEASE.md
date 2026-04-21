@@ -39,6 +39,23 @@ version explicitly** on the PR that lands the change — the
 auto-tagger respects an explicit bump and publishes at that
 version rather than patch-incrementing past it.
 
+## CHANGELOG discipline
+
+Every package's `CHANGELOG.md` starts with a `## Unreleased`
+section. Every PR that changes behaviour in that package appends
+bullets under it.
+
+On release (step 4 above), the cut-a-release flow replaces
+`## Unreleased` with `## <version>` for each package being
+published. `tool/publish.sh` validates that the target version has
+a matching `## <version>` heading before talking to pub.dev.
+
+After a release lands on `main`, the **first PR into develop**
+re-seeds `## Unreleased` at the top of each published CHANGELOG.
+
+This keeps the release notes truthful (every shipped change is
+named) without forcing every PR to pick a version number.
+
 ## Tag patterns (one per federated package)
 
 | Package | Tag prefix | Working dir |

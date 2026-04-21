@@ -1,6 +1,6 @@
 name: simple_query_macos
 description: macOS implementation for the simple_query federated plugin.
-version: 0.5.0
+version: 0.6.0
 homepage: https://github.com/simplezen/simple-query
 repository: https://github.com/simplezen/simple-query
 issue_tracker: https://github.com/simplezen/simple-query/issues

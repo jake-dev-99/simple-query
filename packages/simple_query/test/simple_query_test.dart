@@ -522,7 +522,7 @@ void main() {
 
     await SimpleQuery.instance.queryRaw(
       contentUri: 'content://com.biz.app/data',
-      filters: <QueryFilterCondition>[
+      filters: const <QueryFilterCondition>[
         QueryFilterCondition(
           field: 'my_native_column',
           operator: QueryFilterOperator.equals,

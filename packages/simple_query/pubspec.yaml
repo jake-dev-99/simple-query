@@ -1,6 +1,6 @@
 name: simple_query
 description: Cross-platform typed query API for device data (contacts, media, files, calendar, messages, calls).
-version: 0.5.0
+version: 0.6.0
 homepage: https://github.com/simplezen/simple-query
 repository: https://github.com/simplezen/simple-query
 issue_tracker: https://github.com/simplezen/simple-query/issues

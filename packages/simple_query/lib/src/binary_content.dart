@@ -27,9 +27,12 @@ import 'simple_query_api.dart';
 class BinaryContent {
   BinaryContent._(this._handle, this._facade);
 
-  /// Internal: facade-level constructor. Test code can use this via
-  /// [BinaryContent.forTesting].
-  factory BinaryContent.forTesting({
+  /// Wraps a raw [handle] returned by [SimpleQuery.openBinary] with the
+  /// facade reference needed to close it. Used internally by
+  /// [SimpleQuery.openBinaryContent] and [SimpleQuery.withBinaryContent];
+  /// tests that want to construct a [BinaryContent] around a canned
+  /// [BinaryContentHandle] can also use this constructor.
+  factory BinaryContent.fromHandle({
     required BinaryContentHandle handle,
     required SimpleQuery facade,
   }) =>
