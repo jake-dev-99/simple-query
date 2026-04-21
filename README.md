@@ -25,13 +25,30 @@ Federated-only source of truth:
 
 ## Highlights
 
-- Typed filter/query model (`QueryRequest`)
-- Capability discovery (`getCapabilities`)
-- Deterministic standardized errors (`SimpleQueryError`)
-- Unified observe contract with fallback polling where native streams are unavailable
-- Binary content handle abstraction (`openBinary` / `closeBinary`)
-- Explicit sequential best-effort fallback batch semantics outside Android
-- Explicit `platformData.rootPath` requirement for non-Android fallback `files`/`media` operations
+- Typed filter/query model (`QueryRequest`, `QueryBuilder`) with canonical
+  field vocabulary enforced per domain (`QueryFieldCatalog`).
+- Capability discovery (`getCapabilities`).
+- Deterministic standardized errors (`SimpleQueryError` with machine-readable
+  `SimpleQueryErrorCode`).
+- Permission-aware: simple_query checks current grant state and fails fast
+  with `permissionDenied`, but never requests permissions — that stays the
+  app's job (use any permission library you like). See
+  [`docs/DESIGN.md`](docs/DESIGN.md#p-ext-simple_query-checks-permissions-but-never-depends-on-simple_permissions).
+- Streaming pagination (`SimpleQuery.queryPaginated`) that walks
+  `nextCursor` / `nextOffset` to exhaustion, cancellable via the
+  subscription.
+- Self-closing binary-content wrapper (`BinaryContent`,
+  `withBinaryContent`) so callers never juggle bare `handleId` strings.
+- Typed record views (`ContactRecord`, `CallRecord`, etc.) with
+  `record.raw` (untouched source map) and `record.extras` (OEM/niche
+  columns the canonical contract doesn't name).
+- First-class custom content provider access via
+  `SimpleQuery.queryRaw(contentUri: ...)` for in-house providers.
+- Unified observe contract with fallback polling where native streams are
+  unavailable.
+- Explicit sequential best-effort fallback batch semantics outside Android.
+- Explicit `platformData.rootPath` requirement for non-Android fallback
+  `files`/`media` operations.
 
 ## Platform Support
 
@@ -47,14 +64,29 @@ Capability behavior is explicitly platform- and domain-gated. Check capabilities
 | calls | Full CRUD + observe | Not available (OS restricted) | Not available (OS restricted) | Not available (OS restricted) | Not available (OS restricted) |
 | platformSpecific | Provider extensions | Diagnostic + photos | Diagnostic + photos | Diagnostic + storage | Diagnostic + tracker/XDG |
 
-See migration details in `docs/MIGRATION.md`.
-Extension namespaces are documented in `docs/extensions/`.
-Canonical error mapping rules are documented in `docs/ERROR_MAPPING.md`.
-Cross-platform semantics are documented in `docs/API_SEMANTICS.md`.
+## Documentation
+
+| Topic | File |
+| --- | --- |
+| **Design principles** (read before contributing) | [docs/DESIGN.md](docs/DESIGN.md) |
+| Cross-platform semantics | [docs/API_SEMANTICS.md](docs/API_SEMANTICS.md) |
+| Canonical error codes | [docs/ERROR_MAPPING.md](docs/ERROR_MAPPING.md) |
+| Migration from raw ContentProvider / native APIs | [docs/MIGRATION.md](docs/MIGRATION.md) |
+| Platform support matrix | [docs/PLATFORM_SUPPORT_MATRIX.md](docs/PLATFORM_SUPPORT_MATRIX.md) |
+| Platform extensions (index) | [docs/EXTENSIONS.md](docs/EXTENSIONS.md) |
+| Release process | [docs/RELEASE.md](docs/RELEASE.md) |
 
 ## Development
 
 ```bash
+# Per-package tests
 cd packages/simple_query
 flutter test
+
+# Whole-workspace verification
+dart run melos run analyze
+dart run melos run test
+
+# Regenerate pigeon glue after editing any pigeon.dart
+./tool/regen_pigeon.sh
 ```
