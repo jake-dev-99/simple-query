@@ -218,15 +218,13 @@ class QueryPage {
 
   /// Offset-based pagination. The next page is requested via
   /// [QueryResult.nextOffset].
-  const QueryPage.offset({this.limit, required int offset})
-      : offset = offset,
-        cursor = null;
+  const QueryPage.offset({this.limit, required int this.offset})
+      : cursor = null;
 
   /// Cursor-based pagination. The next page is requested by passing
   /// [QueryResult.nextCursor] back as [cursor].
-  const QueryPage.cursor({this.limit, required String cursor})
-      : offset = null,
-        cursor = cursor;
+  const QueryPage.cursor({this.limit, required String this.cursor})
+      : offset = null;
 
   final int? limit;
   final int? offset;
