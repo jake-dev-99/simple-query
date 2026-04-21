@@ -1,6 +1,6 @@
 name: simple_query_linux
 description: Linux implementation for the simple_query federated plugin.
-version: 0.4.0
+version: 0.5.0
 homepage: https://github.com/simplezen/simple-query
 repository: https://github.com/simplezen/simple-query
 issue_tracker: https://github.com/simplezen/simple-query/issues
@@ -28,7 +28,7 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^5.0.0
-  pigeon: ^22.7.0
+  pigeon: 22.7.4
 
 flutter:
   plugin:

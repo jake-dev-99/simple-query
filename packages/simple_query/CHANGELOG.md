@@ -1,3 +1,31 @@
+## 0.5.0
+
+Consumer-ergonomics release. Additive — no breaking changes from 0.4.0.
+
+### Added
+- `SimpleQuery.queryPaginated(request)` — returns a `Stream<QueryResult>` that walks `nextCursor` / `nextOffset` to exhaustion. Cursor is preferred when both are present; stops on the first empty page or when both pagination tokens are null. Cancellable via the stream subscription.
+- `SimpleQuery.queryPaginatedTyped<T>(request, fromRecord)` — same but maps each page through `fromRecord`. Mapping failures wrapped in `SimpleQueryError(invalidQuery, details: {recordIndex, cause})` like `queryTyped`.
+- `BinaryContent` class wraps `BinaryContentHandle` with typed getters and a self-closing `close()` that's idempotent.
+- `SimpleQuery.openBinaryContent(request)` — opens binary content as a `BinaryContent`.
+- `SimpleQuery.withBinaryContent(request, body)` — scoped helper that runs `body` with an open `BinaryContent` and guarantees close on return or throw.
+- `SimpleQuery.queryBuilder(domain)` — fluent entry point for building queries off the facade instead of importing `QueryBuilder` directly.
+- `QueryBuilder.pageOffset({limit, required offset})` and `pageCursor({limit, required cursor})` — type-safe pagination convenience methods.
+- `QueryBuilder.executePaginated()` — convenience for `queryPaginated(build())`.
+
+### Changed
+- `QueryBuilder.build()` now validates filter/sort/projection field names against `QueryFieldCatalog` before returning. Unknown canonical fields throw `SimpleQueryError(invalidQuery, details: {field, allowed})` instead of failing later in the platform layer with a less actionable error. No-op for `QueryDomain.platformSpecific`.
+
+### Tooling
+- Pigeon dependency pinned to exact version `22.7.4` in every platform package — different developers will produce identical generated output.
+- New `tool/regen_pigeon.sh` regenerates every platform's pigeon glue and runs `dart format` on the output for stable line-wrap.
+- New `pigeon-drift` CI job re-runs the regen tool and fails the build if the committed `.g.dart` / `.g.kt` are stale. Catches "edited pigeon.dart but forgot to commit the regen" before merge.
+
+### Migration
+None required. All additions are new methods; existing code keeps working.
+
+### Deferred
+- Typed `callExtension` registry (plan 2.5) — needs concrete consumer demand to design correctly; raw `callExtension` remains the supported path.
+
 ## 0.4.0
 
 ### Breaking changes

@@ -55,3 +55,29 @@ jobs:
             echo "No test/ directory — skipping."
           fi
 
+  pigeon-drift:
+    name: Pigeon generated code is in sync
+    runs-on: ubuntu-latest
+    # Pigeon is pinned to an exact version (`pigeon: 22.7.4`) in every
+    # platform package's pubspec.yaml. This job regenerates every
+    # pigeon-derived .g.dart and .g.kt and fails the build if any are
+    # different from what's committed — catches "I edited pigeon.dart
+    # but forgot to regenerate" before merge.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Regenerate pigeon glue
+        run: ./tool/regen_pigeon.sh
+
+      - name: Fail on drift
+        run: |
+          if ! git diff --exit-code; then
+            echo "::error::Committed pigeon-generated code is stale."
+            echo "Run ./tool/regen_pigeon.sh locally and commit the result."
+            exit 1
+          fi
+
