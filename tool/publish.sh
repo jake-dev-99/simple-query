@@ -108,6 +108,17 @@ validate_package() {
     errors=$((errors + 1))
   fi
 
+  # Warn (don't fail) when `## Unreleased` is the top heading — usually
+  # means we forgot to promote it to `## <version>` before publishing.
+  # See docs/RELEASE.md "CHANGELOG discipline".
+  if [[ -f "$pkg_dir/CHANGELOG.md" ]]; then
+    first_heading=$(grep -m1 '^## ' "$pkg_dir/CHANGELOG.md" || true)
+    if [[ "$first_heading" == "## Unreleased" ]] && ! grep -q "^## $version" "$pkg_dir/CHANGELOG.md"; then
+      echo -e "    ${YELLOW}CHANGELOG.md still leads with '## Unreleased'${RESET}"
+      echo -e "    ${YELLOW}Promote the Unreleased bullets to '## $version' before releasing${RESET}"
+    fi
+  fi
+
   # No path dependencies remain after conversion
   if grep -q 'path: \.\./' "$pkg_dir/pubspec.yaml"; then
     echo -e "    ${RED}Path dependencies still present after conversion${RESET}"
