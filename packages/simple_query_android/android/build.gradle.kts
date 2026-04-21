@@ -25,7 +25,7 @@ plugins {
 
 android {
     namespace = "io.simplezen.simple_query"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         minSdk = 30
