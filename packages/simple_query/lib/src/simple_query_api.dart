@@ -5,17 +5,42 @@ import 'query_builder.dart';
 
 /// The main entry point for querying and modifying device data.
 ///
-/// Access it via [SimpleQuery.instance]. Use this to read contacts, media,
-/// files, calendar events, and more across Android and iOS.
+/// **Singleton.** Always use [SimpleQuery.instance]; never call the
+/// private constructor. Tests that want to swap the underlying backend
+/// don't replace [SimpleQuery.instance] — they assign to
+/// `SimpleQueryPlatform.instance` instead (the facade delegates every
+/// call through it).
+///
+/// Example:
+/// ```dart
+/// final contacts = await SimpleQuery.instance.queryTyped(
+///   const QueryRequest(domain: QueryDomain.contacts),
+///   ContactRecord.fromRecord,
+/// );
+/// ```
+///
+/// See [docs/DESIGN.md](https://github.com/simplezen/simple-query/blob/main/docs/DESIGN.md)
+/// for the principles behind the API shape.
 class SimpleQuery {
   SimpleQuery._();
 
+  /// The singleton. Safe to cache; identity is stable for the life of
+  /// the isolate.
   static final SimpleQuery instance = SimpleQuery._();
 
+  /// Reports, for every [QueryDomain], which operations
+  /// (read / write / observe / stream) are usable on this device right
+  /// now. Always check before issuing a request — the defaults on
+  /// unsupported platforms report everything as `false`.
   Future<CapabilitySnapshot> getCapabilities() {
     return SimpleQueryPlatform.instance.getCapabilities();
   }
 
+  /// Runs [request] against the current platform backend. Prefer
+  /// [queryTyped], [queryBuilder], or [queryPaginated] when you want
+  /// typed records, fluent construction, or exhaustive pagination.
+  ///
+  /// Throws [SimpleQueryError] on failure — check `.code` to branch.
   Future<QueryResult> query(QueryRequest request) {
     return SimpleQueryPlatform.instance.query(request);
   }
@@ -201,14 +226,26 @@ class SimpleQuery {
     return List<T>.unmodifiable(results);
   }
 
+  /// Executes a single insert / update / delete. For multi-operation
+  /// atomic-where-possible writes use [batch]. Throws [SimpleQueryError]
+  /// on failure.
   Future<MutationResult> mutate(MutationRequest request) {
     return SimpleQueryPlatform.instance.mutate(request);
   }
 
+  /// Executes a sequence of mutations. `sequentialBestEffort` semantics:
+  /// a failed operation records its error in its own
+  /// [MutationResult.metadata] `error` key and does not abort the
+  /// batch. Android may execute atomically when the underlying provider
+  /// supports it; see [docs/API_SEMANTICS.md](https://github.com/simplezen/simple-query/blob/main/docs/API_SEMANTICS.md#batch-semantics).
   Future<BatchResult> batch(BatchRequest request) {
     return SimpleQueryPlatform.instance.batch(request);
   }
 
+  /// Watches [ObserveRequest.domain] for changes. Emits [ObserveEvent]s
+  /// until the subscription is cancelled. Non-Android platforms use
+  /// polling fallback when native change notifications aren't
+  /// available — rate controlled by [ObserveRequest.pollingInterval].
   Stream<ObserveEvent> observe(ObserveRequest request) {
     return SimpleQueryPlatform.instance.observe(request);
   }
@@ -257,6 +294,18 @@ class SimpleQuery {
     }
   }
 
+  /// Calls a platform-specific extension method.
+  ///
+  /// Extension namespaces and methods are **not portable** across
+  /// platforms — treat every call as platform-gated. Available namespaces
+  /// and methods per platform are documented in
+  /// [docs/extensions/](https://github.com/simplezen/simple-query/tree/main/docs/extensions)
+  /// (see [docs/EXTENSIONS.md](https://github.com/simplezen/simple-query/blob/main/docs/EXTENSIONS.md)
+  /// for the index).
+  ///
+  /// For hitting an arbitrary content URI on Android (your own
+  /// `content://com.biz.app/...` provider), prefer [queryRaw] — it's a
+  /// first-class entry point, not an extension call.
   Future<Map<String, Object?>?> callExtension({
     required String namespace,
     required String method,
@@ -269,6 +318,8 @@ class SimpleQuery {
     );
   }
 
+  /// Releases platform resources (observers, open binary handles, etc.).
+  /// Typically called once at app shutdown. Idempotent.
   Future<void> dispose() async {
     await SimpleQueryPlatform.instance.dispose();
   }

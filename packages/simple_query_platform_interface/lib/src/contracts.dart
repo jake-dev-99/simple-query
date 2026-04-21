@@ -1,5 +1,23 @@
 import 'models.dart';
 
+/// Declares the canonical required + optional record keys for each
+/// [QueryDomain].
+///
+/// Platforms normalise their native row representation to this set of
+/// keys before returning records — so a consumer can read e.g.
+/// `record['callType']` on every platform, regardless of whether the
+/// underlying column name was `type` (Android CallLog),
+/// `CNCallKind` (iOS), or something else. OEM-specific extra columns
+/// survive on the record as non-canonical keys and surface via
+/// [ContactRecord.extras] / [CallRecord.extras] / etc.
+///
+/// This class is the **canonical contract**. It's also the input to
+/// [QueryFieldCatalog] — consumers pass canonical names in filters /
+/// sort / projection, which simple_query translates to each platform's
+/// native column at query time.
+///
+/// See `docs/API_SEMANTICS.md` and `docs/DESIGN.md` (P2, P3) for why
+/// the contract is AOSP-shaped and never per-OS-version.
 abstract final class QueryDomainContracts {
   static const Map<QueryDomain, Set<String>> requiredKeys =
       <QueryDomain, Set<String>>{
@@ -127,6 +145,10 @@ abstract final class QueryDomainContracts {
   }
 }
 
+/// Enforces that every [QueryDomain] is represented exactly once in a
+/// [CapabilitySnapshot]. A platform that omits a domain — or reports it
+/// twice — is a contract bug, and [RuntimeContractValidation] raises
+/// `SimpleQueryError(unavailable, details: {missingDomains: [...]})`.
 abstract final class CapabilityContracts {
   static bool isComplete(Iterable<CapabilityDescriptor> capabilities) {
     final domains = capabilities.map((item) => item.domain).toSet();
