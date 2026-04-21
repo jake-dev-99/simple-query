@@ -1,5 +1,7 @@
 import 'package:simple_query_platform_interface/simple_query_platform_interface.dart';
 
+import 'binary_content.dart';
+
 /// The main entry point for querying and modifying device data.
 ///
 /// Access it via [SimpleQuery.instance]. Use this to read contacts, media,
@@ -197,12 +199,48 @@ class SimpleQuery {
     return SimpleQueryPlatform.instance.observe(request);
   }
 
+  /// Opens binary content (e.g. a photo body) and returns the wire-format
+  /// handle. Most callers should prefer [openBinaryContent] or
+  /// [withBinaryContent] which wrap the handle with a safe `close()`
+  /// instead of forcing the caller to track a bare `handleId`.
   Future<BinaryContentHandle> openBinary(BinaryRequest request) {
     return SimpleQueryPlatform.instance.openBinary(request);
   }
 
+  /// Closes a binary handle by id. Pair with [openBinary]. Most callers
+  /// should prefer [openBinaryContent] / [withBinaryContent] which manage
+  /// the handle automatically.
   Future<void> closeBinary(String handleId) {
     return SimpleQueryPlatform.instance.closeBinary(handleId);
+  }
+
+  /// Opens binary content as a self-closing [BinaryContent]. Caller is
+  /// responsible for calling `close()` on the returned object — or use
+  /// [withBinaryContent] for a scoped helper that closes on return.
+  Future<BinaryContent> openBinaryContent(BinaryRequest request) async {
+    final handle = await openBinary(request);
+    return BinaryContent.forTesting(handle: handle, facade: this);
+  }
+
+  /// Opens binary content for the duration of [body], guaranteeing it is
+  /// closed when [body] returns or throws. Returns whatever [body] returns.
+  ///
+  /// ```dart
+  /// final bytes = await SimpleQuery.instance.withBinaryContent(
+  ///   request,
+  ///   (content) => File(content.localPath).readAsBytes(),
+  /// );
+  /// ```
+  Future<R> withBinaryContent<R>(
+    BinaryRequest request,
+    Future<R> Function(BinaryContent content) body,
+  ) async {
+    final content = await openBinaryContent(request);
+    try {
+      return await body(content);
+    } finally {
+      await content.close();
+    }
   }
 
   Future<Map<String, Object?>?> callExtension({

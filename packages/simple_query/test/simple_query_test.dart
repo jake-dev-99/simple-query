@@ -419,6 +419,68 @@ void main() {
     });
   });
 
+  group('BinaryContent', () {
+    test('openBinaryContent wraps the wire handle with a closing API',
+        () async {
+      final fake = makeFake();
+      SimpleQueryPlatform.instance = fake;
+
+      final content = await SimpleQuery.instance.openBinaryContent(
+        const BinaryRequest(
+          domain: QueryDomain.files,
+          recordId: '/tmp/x',
+        ),
+      );
+
+      expect(content.handleId, 'h1');
+      expect(content.localPath, '/tmp/h1');
+      expect(content.isClosed, isFalse);
+      expect(fake.openBinaryCalls, 1);
+      expect(fake.closeBinaryCalls, 0);
+
+      await content.close();
+      expect(content.isClosed, isTrue);
+      expect(fake.closeBinaryCalls, 1);
+
+      // close() is idempotent — second call doesn't dispatch again.
+      await content.close();
+      expect(fake.closeBinaryCalls, 1);
+    });
+
+    test('withBinaryContent closes on success', () async {
+      final fake = makeFake();
+      SimpleQueryPlatform.instance = fake;
+
+      final result = await SimpleQuery.instance.withBinaryContent<String>(
+        const BinaryRequest(
+          domain: QueryDomain.files,
+          recordId: '/tmp/x',
+        ),
+        (content) async => content.localPath,
+      );
+
+      expect(result, '/tmp/h1');
+      expect(fake.closeBinaryCalls, 1);
+    });
+
+    test('withBinaryContent closes on error', () async {
+      final fake = makeFake();
+      SimpleQueryPlatform.instance = fake;
+
+      await expectLater(
+        SimpleQuery.instance.withBinaryContent<void>(
+          const BinaryRequest(
+            domain: QueryDomain.files,
+            recordId: '/tmp/x',
+          ),
+          (content) async => throw StateError('boom'),
+        ),
+        throwsA(isA<StateError>()),
+      );
+      expect(fake.closeBinaryCalls, 1);
+    });
+  });
+
   test('queryRaw builds a platformSpecific request with the contentUri',
       () async {
     final fake = makeFake();
