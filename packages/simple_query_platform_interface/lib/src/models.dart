@@ -1,5 +1,7 @@
 import 'package:collection/collection.dart';
 
+import 'exceptions.dart';
+
 /// A single row of data returned by a query, stored as field-name-to-value pairs.
 typedef QueryRecord = Map<String, Object?>;
 
@@ -122,14 +124,29 @@ const Object _unset = Object();
 ///
 /// Combine multiple conditions in a [QueryRequest] to build complex filters.
 class QueryFilterCondition {
-  const QueryFilterCondition({
+  QueryFilterCondition({
     required this.field,
     required this.operator,
     this.value,
-  }) : assert(
-          operator != QueryFilterOperator.inList || value is List,
-          'QueryFilterOperator.inList requires value to be a List',
-        );
+  }) {
+    // Runtime check (not `assert`): asserts are stripped in release builds,
+    // so an invariant enforced only via `assert` lets malformed filter
+    // conditions slip through to platform code where they surface as
+    // less-actionable PlatformException failures. Throw a typed error
+    // with the offending field/operator/runtimeType so callers can
+    // diagnose the bad query at the construction site instead.
+    if (operator == QueryFilterOperator.inList && value is! List) {
+      throw SimpleQueryError(
+        code: SimpleQueryErrorCode.invalidQuery,
+        message: 'QueryFilterOperator.inList requires value to be a List',
+        details: <String, Object?>{
+          'field': field,
+          'operator': operator.name,
+          'runtimeType': '${value.runtimeType}',
+        },
+      );
+    }
+  }
 
   final String field;
   final QueryFilterOperator operator;
@@ -206,15 +223,27 @@ class QuerySort {
 class QueryPage {
   /// Construct a page with optional [limit] only. Prefer [QueryPage.offset]
   /// or [QueryPage.cursor] when paginating.
-  const QueryPage({
+  QueryPage({
     this.limit,
     this.offset,
     this.cursor,
-  }) : assert(
-          offset == null || cursor == null,
-          'QueryPage cannot set both offset and cursor; use QueryPage.offset '
-          'or QueryPage.cursor to pick one pagination mode.',
-        );
+  }) {
+    // Runtime check (not `assert`): see note on QueryFilterCondition.
+    // Mutual exclusion has to hold in release builds too; an ambiguous
+    // page that sets both offset and cursor otherwise reaches platform
+    // code where behavior diverges by backend.
+    if (offset != null && cursor != null) {
+      throw SimpleQueryError(
+        code: SimpleQueryErrorCode.invalidQuery,
+        message: 'QueryPage cannot set both offset and cursor; use '
+            'QueryPage.offset or QueryPage.cursor to pick one pagination mode.',
+        details: <String, Object?>{
+          'offset': offset,
+          'cursor': cursor,
+        },
+      );
+    }
+  }
 
   /// Offset-based pagination. The next page is requested via
   /// [QueryResult.nextOffset].

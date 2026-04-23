@@ -20,7 +20,7 @@ void main() {
   test('unsupported default query throws SimpleQueryError.notSupported', () {
     expect(
       () => SimpleQueryPlatform.instance.query(
-        const QueryRequest(domain: QueryDomain.contacts),
+        QueryRequest(domain: QueryDomain.contacts),
       ),
       throwsA(
         isA<SimpleQueryError>().having(
@@ -36,7 +36,7 @@ void main() {
       () async {
     await expectLater(
       SimpleQueryPlatform.instance
-          .observe(const ObserveRequest(domain: QueryDomain.files)),
+          .observe(ObserveRequest(domain: QueryDomain.files)),
       emitsError(
         isA<SimpleQueryError>()
             .having((e) => e.code, 'code', SimpleQueryErrorCode.notSupported)
@@ -183,7 +183,7 @@ void main() {
 
   group('model equality', () {
     test('two identical QueryRequest instances are equal', () {
-      const a = QueryRequest(
+      final a = QueryRequest(
         domain: QueryDomain.contacts,
         entityType: 'people',
         filters: [
@@ -196,7 +196,7 @@ void main() {
         sort: [QuerySort(field: 'name')],
         page: QueryPage(limit: 10, offset: 0),
       );
-      const b = QueryRequest(
+      final b = QueryRequest(
         domain: QueryDomain.contacts,
         entityType: 'people',
         filters: [
@@ -220,9 +220,9 @@ void main() {
     });
 
     test('QueryPage with cursor field equality', () {
-      const a = QueryPage(limit: 20, cursor: 'abc123');
-      const b = QueryPage(limit: 20, cursor: 'abc123');
-      const c = QueryPage(limit: 20, cursor: 'def456');
+      final a = QueryPage(limit: 20, cursor: 'abc123');
+      final b = QueryPage(limit: 20, cursor: 'abc123');
+      final c = QueryPage(limit: 20, cursor: 'def456');
       expect(a, equals(b));
       expect(a.hashCode, equals(b.hashCode));
       expect(a, isNot(equals(c)));
@@ -253,7 +253,7 @@ void main() {
     });
 
     test('deep equality for filters list in QueryRequest', () {
-      const a = QueryRequest(
+      final a = QueryRequest(
         domain: QueryDomain.messages,
         filters: [
           QueryFilterCondition(
@@ -263,7 +263,7 @@ void main() {
           ),
         ],
       );
-      const b = QueryRequest(
+      final b = QueryRequest(
         domain: QueryDomain.messages,
         filters: [
           QueryFilterCondition(
@@ -290,12 +290,12 @@ void main() {
     });
 
     test('QueryFilterCondition equality', () {
-      const a = QueryFilterCondition(
+      final a = QueryFilterCondition(
         field: 'name',
         operator: QueryFilterOperator.contains,
         value: 'test',
       );
-      const b = QueryFilterCondition(
+      final b = QueryFilterCondition(
         field: 'name',
         operator: QueryFilterOperator.contains,
         value: 'test',
@@ -320,7 +320,7 @@ void main() {
 
   group('model copyWith', () {
     test('QueryRequest copyWith preserves unmodified fields', () {
-      const original = QueryRequest(
+      final original = QueryRequest(
         domain: QueryDomain.contacts,
         entityType: 'people',
         filters: [
@@ -343,7 +343,7 @@ void main() {
       const original = QueryRequest(domain: QueryDomain.contacts);
       final modified = original.copyWith(
         entityType: 'organizations',
-        page: const QueryPage(limit: 50),
+        page: QueryPage(limit: 50),
       );
       expect(modified.entityType, 'organizations');
       expect(modified.page!.limit, 50);
@@ -351,7 +351,7 @@ void main() {
     });
 
     test('QueryPage copyWith preserves cursor', () {
-      const original = QueryPage(limit: 10, cursor: 'abc');
+      final original = QueryPage(limit: 10, cursor: 'abc');
       final modified = original.copyWith(limit: 20);
       expect(modified.limit, 20);
       expect(modified.cursor, 'abc');
@@ -372,7 +372,7 @@ void main() {
     });
 
     test('QueryFilterCondition copyWith', () {
-      const original = QueryFilterCondition(
+      final original = QueryFilterCondition(
         field: 'name',
         operator: QueryFilterOperator.equals,
         value: 'Alice',
@@ -472,7 +472,7 @@ void main() {
     });
 
     test('QueryRequest clears projection/page/platformData independently', () {
-      const request = QueryRequest(
+      final request = QueryRequest(
         domain: QueryDomain.files,
         entityType: 'e',
         projection: <String>['a'],
@@ -576,7 +576,7 @@ void main() {
     });
 
     test('QueryFilterCondition clears value', () {
-      const condition = QueryFilterCondition(
+      final condition = QueryFilterCondition(
         field: 'f',
         operator: QueryFilterOperator.equals,
         value: 'v',
@@ -890,7 +890,12 @@ void main() {
     test('QueryPage rejects simultaneous offset and cursor', () {
       expect(
         () => QueryPage(limit: 10, offset: 0, cursor: 'abc'),
-        throwsA(isA<AssertionError>()),
+        throwsA(
+          isA<SimpleQueryError>()
+              .having((e) => e.code, 'code', SimpleQueryErrorCode.invalidQuery)
+              .having((e) => e.details?['offset'], 'details.offset', 0)
+              .having((e) => e.details?['cursor'], 'details.cursor', 'abc'),
+        ),
       );
     });
 
@@ -906,17 +911,25 @@ void main() {
       expect(page.offset, isNull);
     });
 
-    test('QueryFilterCondition asserts inList value is a List', () {
+    test('QueryFilterCondition rejects inList value that is not a List', () {
       expect(
         () => QueryFilterCondition(
           field: 'id',
           operator: QueryFilterOperator.inList,
           value: 'not-a-list',
         ),
-        throwsA(isA<AssertionError>()),
+        throwsA(
+          isA<SimpleQueryError>()
+              .having((e) => e.code, 'code', SimpleQueryErrorCode.invalidQuery)
+              .having((e) => e.details?['field'], 'details.field', 'id')
+              .having((e) => e.details?['operator'], 'details.operator',
+                  'inList')
+              .having((e) => e.details?['runtimeType'],
+                  'details.runtimeType', 'String'),
+        ),
       );
       // Valid: value is a List.
-      const valid = QueryFilterCondition(
+      final valid = QueryFilterCondition(
         field: 'id',
         operator: QueryFilterOperator.inList,
         value: <String>['1', '2'],
@@ -956,7 +969,7 @@ void main() {
     test('validateMutationRequest rejects empty insert values', () {
       expect(
         () => RuntimeContractValidation.validateMutationRequest(
-          const MutationRequest(
+          MutationRequest(
             domain: QueryDomain.files,
             type: MutationType.insert,
           ),
@@ -971,7 +984,7 @@ void main() {
 
     test('validateMutationRequest accepts delete without values', () {
       final request = RuntimeContractValidation.validateMutationRequest(
-        const MutationRequest(
+        MutationRequest(
           domain: QueryDomain.files,
           type: MutationType.delete,
         ),
@@ -982,7 +995,7 @@ void main() {
     test('validateQueryRequest rejects unknown filter field', () {
       expect(
         () => RuntimeContractValidation.validateQueryRequest(
-          const QueryRequest(
+          QueryRequest(
             domain: QueryDomain.calls,
             filters: <QueryFilterCondition>[
               QueryFilterCondition(
@@ -1004,7 +1017,7 @@ void main() {
     test('validateQueryRequest rejects unknown sort field', () {
       expect(
         () => RuntimeContractValidation.validateQueryRequest(
-          const QueryRequest(
+          QueryRequest(
             domain: QueryDomain.calls,
             sort: <QuerySort>[QuerySort(field: 'date')],
           ),
@@ -1016,7 +1029,7 @@ void main() {
     test('validateQueryRequest rejects unknown projection field', () {
       expect(
         () => RuntimeContractValidation.validateQueryRequest(
-          const QueryRequest(
+          QueryRequest(
             domain: QueryDomain.calls,
             projection: <String>['_id'],
           ),
@@ -1027,7 +1040,7 @@ void main() {
 
     test('validateQueryRequest passes for canonical fields', () {
       RuntimeContractValidation.validateQueryRequest(
-        const QueryRequest(
+        QueryRequest(
           domain: QueryDomain.calls,
           filters: <QueryFilterCondition>[
             QueryFilterCondition(
@@ -1045,7 +1058,7 @@ void main() {
 
     test('validateQueryRequest is a no-op for platformSpecific', () {
       RuntimeContractValidation.validateQueryRequest(
-        const QueryRequest(
+        QueryRequest(
           domain: QueryDomain.platformSpecific,
           filters: <QueryFilterCondition>[
             QueryFilterCondition(
@@ -1062,7 +1075,7 @@ void main() {
     test('validateMutationRequest rejects unknown filter field', () {
       expect(
         () => RuntimeContractValidation.validateMutationRequest(
-          const MutationRequest(
+          MutationRequest(
             domain: QueryDomain.calls,
             type: MutationType.delete,
             filters: <QueryFilterCondition>[
@@ -1081,7 +1094,7 @@ void main() {
     test('validateObserveRequest rejects unknown filter field', () {
       expect(
         () => RuntimeContractValidation.validateObserveRequest(
-          const ObserveRequest(
+          ObserveRequest(
             domain: QueryDomain.calls,
             filters: <QueryFilterCondition>[
               QueryFilterCondition(
@@ -1099,7 +1112,7 @@ void main() {
     test('validateBatchRequest rejects empty operations', () {
       expect(
         () => RuntimeContractValidation.validateBatchRequest(
-          const BatchRequest(operations: <MutationRequest>[]),
+          BatchRequest(operations: <MutationRequest>[]),
         ),
         throwsA(isA<SimpleQueryError>()),
       );
@@ -1112,7 +1125,7 @@ void main() {
       // whole batch at validation time — the batch runner records the
       // per-op failure in metadata.error and continues with the rest.
       final validated = RuntimeContractValidation.validateBatchRequest(
-        const BatchRequest(
+        BatchRequest(
           operations: <MutationRequest>[
             MutationRequest(
               domain: QueryDomain.files,
@@ -1128,7 +1141,7 @@ void main() {
     test('validateObserveRequest rejects non-positive pollingInterval', () {
       expect(
         () => RuntimeContractValidation.validateObserveRequest(
-          const ObserveRequest(
+          ObserveRequest(
             domain: QueryDomain.files,
             pollingInterval: Duration.zero,
           ),
