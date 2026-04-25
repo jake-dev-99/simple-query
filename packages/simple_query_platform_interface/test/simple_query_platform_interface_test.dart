@@ -20,7 +20,7 @@ void main() {
   test('unsupported default query throws SimpleQueryError.notSupported', () {
     expect(
       () => SimpleQueryPlatform.instance.query(
-        QueryRequest(domain: QueryDomain.contacts),
+        const QueryRequest(domain: QueryDomain.contacts),
       ),
       throwsA(
         isA<SimpleQueryError>().having(
@@ -36,7 +36,7 @@ void main() {
       () async {
     await expectLater(
       SimpleQueryPlatform.instance
-          .observe(ObserveRequest(domain: QueryDomain.files)),
+          .observe(const ObserveRequest(domain: QueryDomain.files)),
       emitsError(
         isA<SimpleQueryError>()
             .having((e) => e.code, 'code', SimpleQueryErrorCode.notSupported)
@@ -193,7 +193,7 @@ void main() {
             value: 'Alice',
           ),
         ],
-        sort: [QuerySort(field: 'name')],
+        sort: [const QuerySort(field: 'name')],
         page: QueryPage(limit: 10, offset: 0),
       );
       final b = QueryRequest(
@@ -206,7 +206,7 @@ void main() {
             value: 'Alice',
           ),
         ],
-        sort: [QuerySort(field: 'name')],
+        sort: [const QuerySort(field: 'name')],
         page: QueryPage(limit: 10, offset: 0),
       );
       expect(a, equals(b));
@@ -969,7 +969,7 @@ void main() {
     test('validateMutationRequest rejects empty insert values', () {
       expect(
         () => RuntimeContractValidation.validateMutationRequest(
-          MutationRequest(
+          const MutationRequest(
             domain: QueryDomain.files,
             type: MutationType.insert,
           ),
@@ -984,7 +984,7 @@ void main() {
 
     test('validateMutationRequest accepts delete without values', () {
       final request = RuntimeContractValidation.validateMutationRequest(
-        MutationRequest(
+        const MutationRequest(
           domain: QueryDomain.files,
           type: MutationType.delete,
         ),
@@ -1017,7 +1017,7 @@ void main() {
     test('validateQueryRequest rejects unknown sort field', () {
       expect(
         () => RuntimeContractValidation.validateQueryRequest(
-          QueryRequest(
+          const QueryRequest(
             domain: QueryDomain.calls,
             sort: <QuerySort>[QuerySort(field: 'date')],
           ),
@@ -1029,7 +1029,7 @@ void main() {
     test('validateQueryRequest rejects unknown projection field', () {
       expect(
         () => RuntimeContractValidation.validateQueryRequest(
-          QueryRequest(
+          const QueryRequest(
             domain: QueryDomain.calls,
             projection: <String>['_id'],
           ),
@@ -1049,7 +1049,7 @@ void main() {
               value: '1',
             ),
           ],
-          sort: <QuerySort>[QuerySort(field: 'timestamp')],
+          sort: <QuerySort>[const QuerySort(field: 'timestamp')],
           projection: <String>['id', 'number', 'durationSec'],
         ),
       );
@@ -1112,7 +1112,7 @@ void main() {
     test('validateBatchRequest rejects empty operations', () {
       expect(
         () => RuntimeContractValidation.validateBatchRequest(
-          BatchRequest(operations: <MutationRequest>[]),
+          const BatchRequest(operations: <MutationRequest>[]),
         ),
         throwsA(isA<SimpleQueryError>()),
       );
@@ -1125,7 +1125,7 @@ void main() {
       // whole batch at validation time — the batch runner records the
       // per-op failure in metadata.error and continues with the rest.
       final validated = RuntimeContractValidation.validateBatchRequest(
-        BatchRequest(
+        const BatchRequest(
           operations: <MutationRequest>[
             MutationRequest(
               domain: QueryDomain.files,
@@ -1141,7 +1141,7 @@ void main() {
     test('validateObserveRequest rejects non-positive pollingInterval', () {
       expect(
         () => RuntimeContractValidation.validateObserveRequest(
-          ObserveRequest(
+          const ObserveRequest(
             domain: QueryDomain.files,
             pollingInterval: Duration.zero,
           ),

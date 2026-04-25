@@ -411,7 +411,7 @@ void main() {
     );
 
     final stream = api.observe(
-      iface.ObserveRequest(domain: iface.QueryDomain.messages),
+      const iface.ObserveRequest(domain: iface.QueryDomain.messages),
     );
 
     final sub1 = stream.listen((_) {});
