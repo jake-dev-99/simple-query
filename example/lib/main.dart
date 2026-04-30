@@ -97,7 +97,7 @@ class _ExampleHomeState extends State<ExampleHome> {
         var pageCount = 0;
         var total = 0;
         await for (final page in SimpleQuery.instance.queryPaginated(
-          const QueryRequest(
+          QueryRequest(
             domain: QueryDomain.messages,
             page: QueryPage(limit: 20),
           ),
@@ -242,7 +242,7 @@ class _ExampleHomeState extends State<ExampleHome> {
         }
         final response = await SimpleQuery.instance.queryRaw(
           contentUri: 'content://settings/system',
-          page: const QueryPage(limit: 3),
+          page: QueryPage(limit: 3),
         );
         setState(() {
           _result = 'queryRaw returned ${response.records.length} raw records.\n'

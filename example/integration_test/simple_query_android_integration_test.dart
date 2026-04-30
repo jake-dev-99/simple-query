@@ -29,7 +29,7 @@ void main() {
   ) async {
     try {
       final response = await SimpleQuery.instance.query(
-        const QueryRequest(
+        QueryRequest(
           domain: QueryDomain.files,
           page: QueryPage(limit: 1, offset: 0),
         ),
@@ -45,7 +45,7 @@ void main() {
   testWidgets('batch path executes with mapped outcome', (tester) async {
     try {
       final result = await SimpleQuery.instance.batch(
-        const BatchRequest(
+        BatchRequest(
           operations: <MutationRequest>[
             MutationRequest(
               domain: QueryDomain.files,
