@@ -1,0 +1,6 @@
+# Local-dev overrides for the federated sibling packages. pub publish
+# ignores this file, so the published package pulls hosted versions
+# from pub.dev per the constraints in pubspec.yaml.
+dependency_overrides:
+  simple_query_platform_interface:
+    path: ../simple_query_platform_interface

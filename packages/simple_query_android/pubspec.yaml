@@ -19,8 +19,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  simple_query_platform_interface:
-    path: ../simple_query_platform_interface
+  simple_query_platform_interface: ^0.6.0
 
 dev_dependencies:
   flutter_test:

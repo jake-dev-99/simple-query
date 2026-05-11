@@ -19,18 +19,17 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  simple_query_platform_interface:
-    path: ../simple_query_platform_interface
-  simple_query_android:
-    path: ../simple_query_android
-  simple_query_ios:
-    path: ../simple_query_ios
-  simple_query_macos:
-    path: ../simple_query_macos
-  simple_query_linux:
-    path: ../simple_query_linux
-  simple_query_windows:
-    path: ../simple_query_windows
+  # Hosted constraints for `pub publish`. Path overrides for
+  # local development live in `pubspec_overrides.yaml` (which
+  # pub publish ignores). Path-source deps inside this block
+  # would fail validation with "Don't depend on X from the
+  # path source."
+  simple_query_platform_interface: ^0.6.0
+  simple_query_android: ^0.6.0
+  simple_query_ios: ^0.6.0
+  simple_query_macos: ^0.6.0
+  simple_query_linux: ^0.6.0
+  simple_query_windows: ^0.6.0
 
 dev_dependencies:
   flutter_test:

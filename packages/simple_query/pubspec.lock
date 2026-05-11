@@ -175,7 +175,7 @@ packages:
     source: path
     version: "0.6.0"
   simple_query_shared:
-    dependency: transitive
+    dependency: "direct overridden"
     description:
       path: "../simple_query_shared"
       relative: true
