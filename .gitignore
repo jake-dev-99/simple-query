@@ -7,5 +7,13 @@
 build/
 **/build/
 
+# Gradle / Android build caches
+.gradle/
+**/.gradle/
+
 # IDE noise
 .DS_Store
+.vscode/
+.idea/
+*.iml
+.claude/

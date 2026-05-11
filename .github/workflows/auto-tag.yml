@@ -141,7 +141,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          # `--ref "$tag"` runs publish.yml as if triggered by the
+          # tag push, so the OIDC token's `ref` claim is
+          # `refs/tags/<tag>`. pub.dev's automated-publishing
+          # policy validates that against the configured tag
+          # pattern — without it the claim is `refs/heads/main`
+          # and OIDC is silently rejected, falling back to
+          # interactive OAuth that no one is there to answer.
           for tag in $new_tags; do
-            echo "Dispatching publish.yml for $tag"
-            gh workflow run publish.yml -f tag="$tag"
+            echo "Dispatching publish.yml for $tag (ref=$tag)"
+            gh workflow run publish.yml --ref "$tag" -f tag="$tag"
           done

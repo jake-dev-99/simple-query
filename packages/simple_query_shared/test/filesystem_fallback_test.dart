@@ -259,7 +259,7 @@ void main() {
 
       final result = fallback.applyPaging(
         records,
-        const QueryPage(limit: 2, cursor: 'b'),
+        QueryPage(limit: 2, cursor: 'b'),
       );
 
       expect(result.records, hasLength(2));
@@ -277,7 +277,7 @@ void main() {
 
       final result = fallback.applyPaging(
         records,
-        const QueryPage(limit: 2, cursor: 'a'),
+        QueryPage(limit: 2, cursor: 'a'),
       );
 
       expect(result.records, hasLength(2));
@@ -294,7 +294,7 @@ void main() {
 
       final result = fallback.applyPaging(
         records,
-        const QueryPage(limit: 2, cursor: 'b'),
+        QueryPage(limit: 2, cursor: 'b'),
       );
 
       expect(result.records, isEmpty);
@@ -311,7 +311,7 @@ void main() {
 
       final result = fallback.applyPaging(
         records,
-        const QueryPage(limit: 10, cursor: 'nonexistent'),
+        QueryPage(limit: 10, cursor: 'nonexistent'),
       );
 
       expect(result.records, isEmpty);
@@ -343,7 +343,7 @@ void main() {
 
       final result = fallback.applyPaging(
         records,
-        const QueryPage(limit: 10, cursor: 'a'),
+        QueryPage(limit: 10, cursor: 'a'),
       );
 
       expect(result.records, hasLength(2));
@@ -363,7 +363,7 @@ void main() {
 
       final result = fallback.applyPaging(
         records,
-        const QueryPage(limit: 2, offset: 1),
+        QueryPage(limit: 2, offset: 1),
       );
 
       expect(result.records, hasLength(2));
@@ -373,25 +373,11 @@ void main() {
       expect(result.nextCursor, 'c');
     });
 
-    test('applyPaging cursor takes precedence over offset', () {
-      final records = <QueryRecord>[
-        {'id': 'a'},
-        {'id': 'b'},
-        {'id': 'c'},
-        {'id': 'd'},
-        {'id': 'e'},
-      ];
-
-      // Cursor 'b' means start after 'b', so offset=0 should be ignored
-      final result = fallback.applyPaging(
-        records,
-        const QueryPage(limit: 2, offset: 0, cursor: 'b'),
-      );
-
-      expect(result.records, hasLength(2));
-      expect(result.records[0]['id'], 'c');
-      expect(result.records[1]['id'], 'd');
-    });
+    // `QueryPage` now asserts that `offset` and `cursor` are mutually
+    // exclusive at construction time, so the earlier
+    // "cursor takes precedence over offset" scenario is no longer
+    // representable. Mode choice is expressed by which named constructor
+    // the caller picks (`QueryPage.offset` vs `QueryPage.cursor`).
   });
 
   test('batch continues after filesystem exception', () async {

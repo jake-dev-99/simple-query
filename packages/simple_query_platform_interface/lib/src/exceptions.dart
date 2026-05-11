@@ -45,6 +45,10 @@ class SimpleQueryError implements Exception {
     if (operation != null) {
       segments.add('operation=${operation!.name}');
     }
+    final detailsMap = details;
+    if (detailsMap != null && detailsMap.isNotEmpty) {
+      segments.add('details=$detailsMap');
+    }
     return segments.join(' ');
   }
 }

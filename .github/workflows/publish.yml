@@ -132,6 +132,14 @@ jobs:
           fi
 
       - name: Publish
+        # 2-minute cap. A healthy OIDC-backed publish finishes in
+        # 10-30 s; anything much longer means pub fell back to the
+        # interactive OAuth flow (which happens if the OIDC token's
+        # `ref` claim doesn't match pub.dev's configured tag
+        # pattern). Better to fail fast than sit on the runner for
+        # 40+ minutes waiting for someone to click a browser link
+        # that will never arrive.
+        timeout-minutes: 2
         if: startsWith(steps.resolve.outputs.tag, format('{0}-v', matrix.package.name))
         working-directory: ${{ matrix.package.path }}
         run: flutter pub publish --force

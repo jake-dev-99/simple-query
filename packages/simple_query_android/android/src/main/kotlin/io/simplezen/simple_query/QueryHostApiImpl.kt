@@ -478,6 +478,37 @@ class QueryHostApiImpl(
     }
 
     // -------------------------------------------------------------------------
+    // Permissions
+    // -------------------------------------------------------------------------
+
+    /**
+     * Returns true when the calling process holds [permissionName].
+     *
+     * Wraps `Context.checkSelfPermission`. Synchronous on the native side; the
+     * pigeon contract makes it async on the Dart side. simple_query never
+     * *requests* permissions — that is the developer's responsibility (see
+     * MEMORY.md). This call only reports current grant state.
+     */
+    override fun hasPermission(permissionName: String, callback: (Result<Boolean>) -> Unit) {
+        try {
+            val granted = context.checkSelfPermission(permissionName) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+            callback(Result.success(granted))
+        } catch (e: Exception) {
+            callback(Result.failure(e))
+        }
+    }
+
+    /**
+     * Returns `Build.VERSION.SDK_INT` so the Dart catalog can branch between
+     * legacy (`READ_EXTERNAL_STORAGE`, API ≤32) and modern (`READ_MEDIA_*`,
+     * API 33+) media permissions.
+     */
+    override fun getAndroidSdkInt(callback: (Result<Long>) -> Unit) {
+        callback(Result.success(android.os.Build.VERSION.SDK_INT.toLong()))
+    }
+
+    // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
 

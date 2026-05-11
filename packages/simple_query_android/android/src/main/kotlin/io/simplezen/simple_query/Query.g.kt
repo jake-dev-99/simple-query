@@ -134,7 +134,7 @@ data class QueryResponse (
    * List of rows, each row is a map of column name to value.
    * BLOB columns return null; use openStream() to retrieve binary data.
    * Note: Uses Object? to avoid Pigeon CastList issues with nested generics.
-   * Each row is actually Map<Object?, Object?> - convert with .cast<String?, Object?>().
+   * Each row is actually `Map<Object?, Object?>` - convert with `.cast<String?, Object?>()`.
    */
   val rows: List<Any?>,
   /** Total number of rows returned. */
@@ -462,7 +462,7 @@ data class JoinQueryRequest (
 data class JoinedRow (
   /**
    * Primary row data.
-   * Note: Actually Map<Object?, Object?> - convert keys with .cast<String?, Object?>().
+   * Note: Actually `Map<Object?, Object?>` - convert keys with `.cast<String?, Object?>()`.
    */
   val data: Any,
   /**
@@ -966,6 +966,20 @@ interface QueryHostApi {
   fun uncanonicalize(contentUri: String, callback: (Result<String?>) -> Unit)
   /** Call a provider-defined method. */
   fun call(request: ProviderCallRequest, callback: (Result<ProviderCallResponse>) -> Unit)
+  /**
+   * Returns true if the calling app holds [permissionName]
+   * (a fully-qualified Android permission identifier such as
+   * `android.permission.READ_CONTACTS`). Implemented via
+   * `Context.checkSelfPermission`. Synchronous on the native side; pigeon
+   * makes it async on the Dart side.
+   */
+  fun hasPermission(permissionName: String, callback: (Result<Boolean>) -> Unit)
+  /**
+   * Returns the device's `Build.VERSION.SDK_INT`. Used by the Dart-side
+   * permission catalog to pick between legacy and modern media permissions
+   * (`READ_EXTERNAL_STORAGE` vs `READ_MEDIA_*`).
+   */
+  fun getAndroidSdkInt(callback: (Result<Long>) -> Unit)
 
   companion object {
     /** The codec used by QueryHostApi. */
@@ -1298,6 +1312,44 @@ interface QueryHostApi {
             val args = message as List<Any?>
             val requestArg = args[0] as ProviderCallRequest
             api.call(requestArg) { result: Result<ProviderCallResponse> ->
+              val error = result.exceptionOrNull()
+              if (error != null) {
+                reply.reply(wrapError(error))
+              } else {
+                val data = result.getOrNull()
+                reply.reply(wrapResult(data))
+              }
+            }
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.simple_query.QueryHostApi.hasPermission$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val permissionNameArg = args[0] as String
+            api.hasPermission(permissionNameArg) { result: Result<Boolean> ->
+              val error = result.exceptionOrNull()
+              if (error != null) {
+                reply.reply(wrapError(error))
+              } else {
+                val data = result.getOrNull()
+                reply.reply(wrapResult(data))
+              }
+            }
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.simple_query.QueryHostApi.getAndroidSdkInt$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { _, reply ->
+            api.getAndroidSdkInt{ result: Result<Long> ->
               val error = result.exceptionOrNull()
               if (error != null) {
                 reply.reply(wrapError(error))

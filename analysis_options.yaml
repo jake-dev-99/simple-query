@@ -2,19 +2,48 @@ include: package:flutter_lints/flutter.yaml
 
 linter:
   rules:
+    # Style
     avoid_print: true
     directives_ordering: true
     prefer_single_quotes: true
     prefer_const_constructors: true
     prefer_const_declarations: true
+    prefer_const_literals_to_create_immutables: true
     prefer_final_fields: true
     prefer_final_locals: true
-    unawaited_futures: true
     sort_constructors_first: true
     sort_unnamed_constructors_first: true
+
+    # Correctness / clarity
+    always_declare_return_types: true
+    null_closures: true
+    prefer_void_to_null: true
+    # `avoid_returning_null_for_future` was removed from the lint set in
+    # Dart 3.3.0 — the null-safety system already prevents the class of
+    # bug the lint was guarding against. Leaving the entry enabled
+    # triggers a `removed_lint` warning on every analyze pass.
+    avoid_type_to_string: true
+    throw_in_finally: true
+    unawaited_futures: true
+    unnecessary_await_in_return: true
+
+    # Resource hygiene. These are currently reported as info only; real
+    # offenders in simple_query_shared (filesystem_fallback.dart,
+    # non_android_native_bridge.dart) are tracked as follow-up backlog items.
+    # Promote to warning once those sites are fixed.
+    cancel_subscriptions: true
+    close_sinks: true
 
 analyzer:
   exclude:
     - "**/*.g.dart"
     - "**/build/**"
     - "**/.dart_tool/**"
+  language:
+    strict-casts: true
+    strict-inference: true
+    strict-raw-types: true
+  errors:
+    # Federated plugin monorepo: path deps are expected during development
+    # and swapped for version constraints by tool/publish.sh on release.
+    invalid_dependency: ignore

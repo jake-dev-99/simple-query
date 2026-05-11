@@ -75,7 +75,10 @@ class NonAndroidNativeBridge {
   }
 
   void onObserveEvent(String observerId, NativePayload event) {
-    final controller = _nativeObservers[observerId];
+    // `controller` is a borrowed reference from `_nativeObservers`; the
+    // owning broadcast StreamController is closed from
+    // `observeOrFallback`'s `onCancel` when the last listener drops.
+    final controller = _nativeObservers[observerId]; // ignore: close_sinks
     if (controller == null) return;
     controller.add(NativePayloadCodec.decodeObserveEvent(event));
   }
@@ -173,6 +176,11 @@ class NonAndroidNativeBridge {
           _nativeObserverIds[controller] = observerId;
         } on PlatformException catch (error) {
           if (_shouldFallback(error)) {
+            // The subscription is stored in
+            // `_fallbackSubscriptions[controller]` and cancelled from
+            // the outer `onCancel` below. The lint can't follow the
+            // map-mediated escape.
+            // ignore: cancel_subscriptions
             final subscription = fallbackObserve().listen(
               controller.add,
               onError: controller.addError,

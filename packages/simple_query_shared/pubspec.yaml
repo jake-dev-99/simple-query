@@ -1,6 +1,6 @@
 name: simple_query_shared
 description: Shared infrastructure for non-Android simple_query backends. Provides filesystem fallback, native bridge, and Darwin (iOS/macOS) base class.
-version: 0.2.0
+version: 0.6.0
 homepage: https://github.com/simplezen/simple-query
 repository: https://github.com/simplezen/simple-query
 issue_tracker: https://github.com/simplezen/simple-query/issues
@@ -20,8 +20,7 @@ dependencies:
   flutter:
     sdk: flutter
   path: ^1.9.0
-  simple_query_platform_interface:
-    path: ../simple_query_platform_interface
+  simple_query_platform_interface: ^0.6.0
 
 dev_dependencies:
   flutter_test:

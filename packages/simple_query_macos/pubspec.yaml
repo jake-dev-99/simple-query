@@ -1,6 +1,6 @@
 name: simple_query_macos
 description: macOS implementation for the simple_query federated plugin.
-version: 0.2.0
+version: 0.6.0
 homepage: https://github.com/simplezen/simple-query
 repository: https://github.com/simplezen/simple-query
 issue_tracker: https://github.com/simplezen/simple-query/issues
@@ -19,16 +19,14 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  simple_query_platform_interface:
-    path: ../simple_query_platform_interface
-  simple_query_shared:
-    path: ../simple_query_shared
+  simple_query_platform_interface: ^0.6.0
+  simple_query_shared: ^0.6.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^5.0.0
-  pigeon: ^22.7.0
+  pigeon: 22.7.4
 
 flutter:
   plugin:
