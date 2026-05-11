@@ -1,0 +1,25 @@
+# Local-dev overrides for the federated sibling packages. pub
+# publish ignores this file, so the published `simple_query`
+# pulls hosted versions from pub.dev per the constraints in
+# pubspec.yaml. Local melos workspace + CI both honour these
+# paths so we develop against the in-repo source.
+dependency_overrides:
+  simple_query_platform_interface:
+    path: ../simple_query_platform_interface
+  # simple_query_shared isn't a direct dependency of the facade,
+  # but the platform packages it pulls (ios/macos/linux/windows)
+  # all depend on it. Without a path override here, pub tries to
+  # resolve `simple_query_shared: ^0.6.0` from pub.dev and fails
+  # (only 0.2.0 published).
+  simple_query_shared:
+    path: ../simple_query_shared
+  simple_query_android:
+    path: ../simple_query_android
+  simple_query_ios:
+    path: ../simple_query_ios
+  simple_query_macos:
+    path: ../simple_query_macos
+  simple_query_linux:
+    path: ../simple_query_linux
+  simple_query_windows:
+    path: ../simple_query_windows
