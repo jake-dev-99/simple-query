@@ -1,0 +1,202 @@
+name: Cut Release
+
+# Manual workflow that bumps a package's pubspec version, generates a
+# CHANGELOG entry from git log since the last tag for that package,
+# commits the bump + entry, tags the commit, and pushes both. The tag
+# push triggers `publish.yml` which runs the canonical pub.dev OIDC
+# publish flow.
+#
+# Replaces the old `auto-tag.yml` (which fired on every main merge and
+# was the root cause of orphan-tag drift). Tags only exist now when a
+# human deliberately invokes this workflow.
+#
+# Choose `package = all` to cut a coordinated release that bumps every
+# package in this repo to the same patch / minor / major increment in
+# a single commit + tag set.
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: 'Package to release (or `all` for coordinated bump)'
+        required: true
+        type: choice
+        options:
+          - all
+          - simple_query
+          - simple_query_platform_interface
+          - simple_query_android
+          - simple_query_ios
+          - simple_query_macos
+          - simple_query_linux
+          - simple_query_windows
+          - simple_query_shared
+      bump:
+        description: 'Semver bump'
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      dry_run:
+        description: 'Compute next version + CHANGELOG without pushing'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  cut-release:
+    name: Cut release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          ssh-key: ${{ secrets.AUTO_TAG_DEPLOY_KEY }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Cut release
+        env:
+          PACKAGE: ${{ inputs.package }}
+          BUMP: ${{ inputs.bump }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+
+          declare -A pkgs=(
+            [simple_query]="packages/simple_query"
+            [simple_query_platform_interface]="packages/simple_query_platform_interface"
+            [simple_query_android]="packages/simple_query_android"
+            [simple_query_ios]="packages/simple_query_ios"
+            [simple_query_macos]="packages/simple_query_macos"
+            [simple_query_linux]="packages/simple_query_linux"
+            [simple_query_windows]="packages/simple_query_windows"
+            [simple_query_shared]="packages/simple_query_shared"
+          )
+
+          if [ "$PACKAGE" = "all" ]; then
+            targets=("${!pkgs[@]}")
+          else
+            if [ -z "${pkgs[$PACKAGE]+_}" ]; then
+              echo "::error::Unknown package: $PACKAGE"
+              exit 1
+            fi
+            targets=("$PACKAGE")
+          fi
+
+          bump_version() {
+            local v="$1" mode="$2"
+            local base="${v%%-*}"
+            IFS='.' read -r major minor patch <<< "$base"
+            case "$mode" in
+              major) major=$((major + 1)); minor=0; patch=0 ;;
+              minor) minor=$((minor + 1)); patch=0 ;;
+              patch) patch=$((patch + 1)) ;;
+              *) echo "::error::unknown bump: $mode"; exit 1 ;;
+            esac
+            echo "${major}.${minor}.${patch}"
+          }
+
+          new_tags=()
+          summary=""
+
+          for pkg in "${targets[@]}"; do
+            dir="${pkgs[$pkg]}"
+            pubspec="${dir}/pubspec.yaml"
+            changelog="${dir}/CHANGELOG.md"
+
+            current="$(grep '^version:' "$pubspec" | sed 's/version:[[:space:]]*//' | tr -d '\r')"
+            next="$(bump_version "$current" "$BUMP")"
+            tag="${pkg}-v${next}"
+
+            prev_tag="$(git tag --list "${pkg}-v*" | sort -V | tail -1 || true)"
+
+            if [ -n "$prev_tag" ]; then
+              entries="$(git log "${prev_tag}..HEAD" --pretty=format:'- %s' -- "$dir" 2>/dev/null || true)"
+              range_label="${prev_tag}..HEAD"
+            else
+              entries="$(git log HEAD --pretty=format:'- %s' -- "$dir" 2>/dev/null | head -50 || true)"
+              range_label="initial release (last 50 commits in $dir)"
+            fi
+            [ -z "$entries" ] && entries="- (no commits in $dir since ${prev_tag:-repo init})"
+
+            entry_block="## ${next}
+
+${entries}
+"
+
+            summary+="
+=== ${pkg} ===
+  current:  ${current}
+  next:     ${next}
+  tag:      ${tag}
+  range:    ${range_label}
+${entries}
+"
+
+            if [ "$DRY_RUN" = "true" ]; then
+              continue
+            fi
+
+            sed -i -E "s/^version:[[:space:]]*.*$/version: ${next}/" "$pubspec"
+            git add "$pubspec"
+
+            if [ -f "$changelog" ]; then
+              { printf '%s\n' "$entry_block"; cat "$changelog"; } > "${changelog}.new"
+              mv "${changelog}.new" "$changelog"
+            else
+              printf '%s\n' "$entry_block" > "$changelog"
+            fi
+            git add "$changelog"
+
+            new_tags+=("$tag")
+          done
+
+          echo "==================== Release plan ===================="
+          echo "$summary"
+          echo "======================================================"
+
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "::notice::Dry run — no commits, no tags, no push."
+            exit 0
+          fi
+
+          if ! git diff --cached --quiet; then
+            if [ ${#new_tags[@]} -eq 1 ]; then
+              git commit -m "chore(release): cut ${new_tags[0]}"
+            else
+              git commit -m "chore(release): cut ${#new_tags[@]} tags ($BUMP bump)"
+            fi
+          fi
+
+          for tag in "${new_tags[@]}"; do
+            if git rev-parse "$tag" >/dev/null 2>&1; then
+              echo "::error::tag $tag already exists locally — abort"
+              exit 1
+            fi
+            if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+              echo "::error::tag $tag already exists on origin — abort"
+              exit 1
+            fi
+            git tag -a "$tag" -m "Release $tag"
+          done
+
+          git push --atomic origin HEAD:main "${new_tags[@]}"
+
+          echo "::notice::Pushed commit + ${#new_tags[@]} tag(s). publish.yml will fire per tag."

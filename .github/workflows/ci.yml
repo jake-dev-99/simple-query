@@ -1,11 +1,11 @@
 name: CI
 
-# Runs on every PR against the three promotion-flow branches
-# (develop -> staging -> main). CD (publish.yml) handles the
-# merge + tag side.
+# Runs on every PR targeting `main`. Single-branch model: feature
+# branches PR directly into main, releases are cut via release.yml
+# (manual workflow_dispatch) which tags + triggers publish.yml.
 on:
   pull_request:
-    branches: [develop, staging, main]
+    branches: [main]
 
 jobs:
   package-tests:
@@ -53,5 +53,51 @@ jobs:
             flutter test
           else
             echo "No test/ directory — skipping."
+          fi
+
+      # Validate publishability at CI time so publish-blocking issues
+      # (missing LICENSE, malformed pubspec, oversize files, missing
+      # repository/issue_tracker URLs) surface before merge instead of
+      # after a tag push. CD then publishes with --skip-validation so
+      # the same checks aren't re-run on the publish runner where
+      # `pubspec_overrides.yaml` hints would otherwise clutter the log
+      # and an interactive OAuth flow could stall the job.
+      #
+      # `--dry-run` exits 0 even when pub emits hints (the in-flight
+      # `pubspec_overrides.yaml` warning during pre-publish dev) so it
+      # doesn't falsely fail develop branches; only hard errors block.
+      - name: Validate publishability (pub publish --dry-run)
+        # 2-minute cap, matching the publish step in publish.yml. A
+        # healthy `--dry-run` finishes in 10-30 s; anything longer
+        # means pub is wedged on dependency resolution or a runaway
+        # file walk. Fail fast rather than burn a runner.
+        timeout-minutes: 2
+        working-directory: ${{ matrix.package }}
+        run: flutter pub publish --dry-run
+
+  pigeon-drift:
+    name: Pigeon generated code is in sync
+    runs-on: ubuntu-latest
+    # Pigeon is pinned to an exact version (`pigeon: 22.7.4`) in every
+    # platform package's pubspec.yaml. This job regenerates every
+    # pigeon-derived .g.dart and .g.kt and fails the build if any are
+    # different from what's committed — catches "I edited pigeon.dart
+    # but forgot to regenerate" before merge.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Regenerate pigeon glue
+        run: ./tool/regen_pigeon.sh
+
+      - name: Fail on drift
+        run: |
+          if ! git diff --exit-code; then
+            echo "::error::Committed pigeon-generated code is stale."
+            echo "Run ./tool/regen_pigeon.sh locally and commit the result."
+            exit 1
           fi
 
