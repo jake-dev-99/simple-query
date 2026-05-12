@@ -1,6 +1,6 @@
 name: simple_query_ios
 description: iOS implementation for the simple_query federated plugin.
-version: 0.6.0
+version: 0.2.1
 homepage: https://github.com/simplezen/simple-query
 repository: https://github.com/simplezen/simple-query
 issue_tracker: https://github.com/simplezen/simple-query/issues
@@ -19,8 +19,8 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  simple_query_platform_interface: ^0.6.0
-  simple_query_shared: ^0.6.0
+  simple_query_platform_interface: ^0.2.0
+  simple_query_shared: ^0.2.0
 
 dev_dependencies:
   flutter_test:
