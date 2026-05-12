@@ -1,3 +1,21 @@
+## 0.2.1
+
+### Reset to align with pub.dev's published series
+
+This package on pub.dev is at 0.2.0. Local git tags 0.3.0 (and
+0.3.1 on `_android`) and the develop pubspec at 0.6.0 were
+authored ahead of the next publish but never reached pub.dev.
+Orphan tags deleted from origin and the version reset to the
+smallest patch above the last-published version (0.2.0 → 0.2.1).
+
+Cross-package constraints lowered from `^0.6.0` to `^0.2.0` to
+match the published series.
+
+The 0.3 — 0.6 work described in the entries below is not lost —
+it lives in source and will surface in published form through
+subsequent patch / minor / major bumps as appropriate. Entries
+kept for archival reference.
+
 ## Unreleased
 
 ## 0.6.0

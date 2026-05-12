@@ -77,6 +77,64 @@ jobs:
               && [ "$a" != "$b" ]
           }
 
+          # Authoritative answer to "what's the latest version a user
+          # can `flutter pub get`." A git tag can exist without ever
+          # reaching pub.dev (publish run that timed out, OIDC
+          # misconfig, etc.); basing patch-bumps on git tags lets
+          # those orphans drift git history past pub.dev.
+          #
+          # Distinguishes three outcomes via exit code so the caller
+          # can react differently — collapsing them all into "fall back
+          # to git tags" would re-introduce the orphan-tag drift this
+          # patch is meant to prevent (a transient pub.dev 5xx during
+          # auto-tag would silently use the local orphan tag, push a
+          # newer version, and the orphan would become permanent).
+          #
+          #   exit 0  + version on stdout → ok, use it.
+          #   exit 10 → pub.dev 404 (package not published yet). Caller
+          #             may fall back to git tags (first-publish path).
+          #   exit 20 → transient: 5xx, network/TLS, timeout, or 200
+          #             with a body that jq can't parse. Caller MUST
+          #             fail loudly rather than silently fall back.
+          pubdev_latest() {
+            local pkg="$1"
+            local response http body version
+            # `-S` preserved without `2>/dev/null` so curl's own error
+            # messages (DNS failure, TLS handshake, timeout, …) surface
+            # in the workflow log instead of being swallowed — exit 20
+            # then has a paper trail the operator can act on.
+            response="$(curl -sS --max-time 10 \
+              -w $'\n%{http_code}' \
+              "https://pub.dev/api/packages/${pkg}")" \
+              || return 20
+            http="${response##*$'\n'}"
+            body="${response%$'\n'*}"
+            case "$http" in
+              200)
+                version="$(echo "$body" \
+                  | jq -r '.latest.version // empty' 2>/dev/null)" \
+                  || {
+                    printf '::warning::pubdev_latest(%s): jq could not parse 200 response body: %s\n' \
+                      "$pkg" "$(printf '%s' "$body" | head -c 200 | tr '\n' ' ')" >&2
+                    return 20
+                  }
+                if [ -z "$version" ]; then
+                  printf '::warning::pubdev_latest(%s): 200 OK but .latest.version is empty: %s\n' \
+                    "$pkg" "$(printf '%s' "$body" | head -c 200 | tr '\n' ' ')" >&2
+                  return 20
+                fi
+                echo "$version"
+                return 0
+                ;;
+              404) return 10 ;;
+              *)
+                printf '::warning::pubdev_latest(%s): HTTP %s — body: %s\n' \
+                  "$pkg" "$http" "$(printf '%s' "$body" | head -c 200 | tr '\n' ' ')" >&2
+                return 20
+                ;;
+            esac
+          }
+
           for pkg in "${!pkgs[@]}"; do
             dir="${pkgs[$pkg]}"
             if ! echo "$changed_files" | grep -q "^${dir}/"; then
@@ -87,14 +145,39 @@ jobs:
             pubspec_v="$(grep '^version:' "$pubspec_path" \
               | sed 's/version:[[:space:]]*//' | tr -d '\r')"
 
-            last_tag="$(git tag --list "${pkg}-v*" \
-              | sed "s/^${pkg}-v//" \
-              | sort -V | tail -1 || true)"
+            # pub.dev is the source of truth. Fall back to git tags
+            # ONLY on a clean 404 (first-publish path). On transient
+            # errors (5xx, network, parse), fail the whole workflow —
+            # silently using local tags would silently drift git past
+            # pub.dev, which is exactly what this patch prevents.
+            set +e
+            last_published="$(pubdev_latest "$pkg")"
+            pd_status=$?
+            set -e
+            case "$pd_status" in
+              0)
+                source="pub.dev"
+                ;;
+              10)
+                last_published="$(git tag --list "${pkg}-v*" \
+                  | sed "s/^${pkg}-v//" \
+                  | sort -V | tail -1 || true)"
+                if [ -n "$last_published" ]; then
+                  source="git-tag-fallback (pub.dev 404)"
+                else
+                  source="unpublished (pub.dev 404, no git tags)"
+                fi
+                ;;
+              *)
+                echo "::error::pubdev_latest($pkg) failed with code $pd_status — transient pub.dev or network error. Re-run the workflow once pub.dev is healthy. Aborting to avoid silently drifting git tags past published versions."
+                exit 1
+                ;;
+            esac
 
-            if [ -z "$last_tag" ]; then
+            if [ -z "$last_published" ]; then
               candidate="$pubspec_v"
             else
-              candidate="$(next_patch "$last_tag")"
+              candidate="$(next_patch "$last_published")"
             fi
 
             if version_gt "$pubspec_v" "$candidate"; then
@@ -103,7 +186,7 @@ jobs:
               next="$candidate"
             fi
 
-            echo "::notice::$pkg pubspec=$pubspec_v last_tag=${last_tag:-<none>} next=$next"
+            echo "::notice::$pkg pubspec=$pubspec_v last_published=${last_published:-<none>} (source=$source) next=$next"
 
             if [ "$pubspec_v" != "$next" ]; then
               sed -i -E "s/^version:[[:space:]]*.*$/version: $next/" "$pubspec_path"
