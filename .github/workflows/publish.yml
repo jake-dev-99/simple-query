@@ -64,7 +64,7 @@ jobs:
         # tags from main, but verify independently.
         if: startsWith(github.ref, format('refs/tags/{0}-v', matrix.package.name))
         run: |
-          git fetch origin main --depth=1
+          git fetch origin main
           if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
             echo "::error::Tag ${GITHUB_REF#refs/tags/} does not point to a commit on origin/main. Aborting publish."
             exit 1
