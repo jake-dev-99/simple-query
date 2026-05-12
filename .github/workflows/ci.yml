@@ -6,6 +6,12 @@ name: CI
 on:
   pull_request:
     branches: [main]
+  # Also run on direct pushes to main so release.yml's commit
+  # (which lands directly via deploy-key bypass, skipping the PR
+  # gate) still goes through analyze + test before any subsequent
+  # tag fires publish.yml.
+  push:
+    branches: [main]
 
 jobs:
   package-tests:
@@ -25,9 +31,9 @@ jobs:
           - packages/simple_query_shared
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      - uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           channel: stable
 
@@ -84,9 +90,9 @@ jobs:
     # different from what's committed — catches "I edited pigeon.dart
     # but forgot to regenerate" before merge.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      - uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           channel: stable
 
@@ -95,9 +101,12 @@ jobs:
 
       - name: Fail on drift
         run: |
-          if ! git diff --exit-code; then
-            echo "::error::Committed pigeon-generated code is stale."
+          # `git status --porcelain` catches both modified AND untracked
+          # files; `git diff --exit-code` would miss new generated artifacts.
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::Committed pigeon-generated code is stale (or new artifacts appeared)."
             echo "Run ./tool/regen_pigeon.sh locally and commit the result."
+            git status --porcelain
             exit 1
           fi
 
