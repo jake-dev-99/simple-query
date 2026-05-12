@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 import 'package:simple_query/simple_query.dart';
 import 'package:simple_query_platform_interface/simple_query_platform_interface.dart';
+import 'package:simple_query_platform_interface/testing.dart';
 
 void main() {
   final original = SimpleQueryPlatform.instance;
@@ -10,12 +10,34 @@ void main() {
     SimpleQueryPlatform.instance = original;
   });
 
+  FakeSimpleQueryPlatform makeFake() => FakeSimpleQueryPlatform(
+        queryResult: const QueryResult(
+          records: <QueryRecord>[<String, Object?>{'id': 1}],
+        ),
+        mutationResult: const MutationResult(affectedCount: 1),
+        batchResult: const BatchResult(
+          results: <MutationResult>[MutationResult(affectedCount: 1)],
+        ),
+        binaryContentHandle: const BinaryContentHandle(
+          handleId: 'h1',
+          localPath: '/tmp/h1',
+        ),
+        observeStream: Stream<ObserveEvent>.fromIterable(<ObserveEvent>[
+          ObserveEvent(
+            domain: QueryDomain.files,
+            changeType: ObserveChangeType.unknown,
+            timestamp: DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
+          ),
+        ]),
+        extensionResult: const <String, Object?>{'ok': true},
+      );
+
   test('exposes singleton instance', () {
     expect(SimpleQuery.instance, isA<SimpleQuery>());
   });
 
   test('delegates query to platform', () async {
-    final platform = _FakePlatform();
+    final platform = makeFake();
     SimpleQueryPlatform.instance = platform;
 
     final result = await SimpleQuery.instance.query(
@@ -27,7 +49,7 @@ void main() {
   });
 
   test('supports capability lookup', () async {
-    SimpleQueryPlatform.instance = _FakePlatform();
+    SimpleQueryPlatform.instance = makeFake();
 
     final capabilities = await SimpleQuery.instance.getCapabilities();
 
@@ -41,7 +63,7 @@ void main() {
   });
 
   test('dispose delegates to platform', () async {
-    SimpleQueryPlatform.instance = _FakePlatform();
+    SimpleQueryPlatform.instance = makeFake();
 
     await SimpleQuery.instance.dispose();
 
@@ -49,7 +71,7 @@ void main() {
   });
 
   test('delegates mutate, batch, binary, extension and observe', () async {
-    final platform = _FakePlatform();
+    final platform = makeFake();
     SimpleQueryPlatform.instance = platform;
 
     final mutation = await SimpleQuery.instance.mutate(
@@ -99,21 +121,21 @@ void main() {
     test('builder chains produce correct QueryRequest', () {
       final request = QueryBuilder(QueryDomain.contacts)
           .entityType('people')
-          .where('name', QueryFilterOperator.equals, 'Alice')
-          .select(['id', 'name', 'email'])
-          .orderBy('name')
-          .page(limit: 20, offset: 0)
+          .where('displayName', QueryFilterOperator.equals, 'Alice')
+          .select(['id', 'displayName', 'organization'])
+          .orderBy('displayName')
+          .pageOffset(limit: 20, offset: 0)
           .build();
 
       expect(request.domain, QueryDomain.contacts);
       expect(request.entityType, 'people');
       expect(request.filters, hasLength(1));
-      expect(request.filters.first.field, 'name');
+      expect(request.filters.first.field, 'displayName');
       expect(request.filters.first.operator, QueryFilterOperator.equals);
       expect(request.filters.first.value, 'Alice');
-      expect(request.projection, ['id', 'name', 'email']);
+      expect(request.projection, ['id', 'displayName', 'organization']);
       expect(request.sort, hasLength(1));
-      expect(request.sort.first.field, 'name');
+      expect(request.sort.first.field, 'displayName');
       expect(request.sort.first.direction, QuerySortDirection.ascending);
       expect(request.page!.limit, 20);
       expect(request.page!.offset, 0);
@@ -131,15 +153,15 @@ void main() {
 
     test('where() adds multiple filters correctly', () {
       final request = QueryBuilder(QueryDomain.messages)
-          .where('type', QueryFilterOperator.equals, 1)
-          .where('date', QueryFilterOperator.greaterThan, 1000)
+          .where('read', QueryFilterOperator.equals, true)
+          .where('timestamp', QueryFilterOperator.greaterThan, 1000)
           .where('address', QueryFilterOperator.contains, '555')
           .build();
 
       expect(request.filters, hasLength(3));
-      expect(request.filters[0].field, 'type');
+      expect(request.filters[0].field, 'read');
       expect(request.filters[0].operator, QueryFilterOperator.equals);
-      expect(request.filters[1].field, 'date');
+      expect(request.filters[1].field, 'timestamp');
       expect(request.filters[1].operator, QueryFilterOperator.greaterThan);
       expect(request.filters[2].field, 'address');
       expect(request.filters[2].operator, QueryFilterOperator.contains);
@@ -160,14 +182,14 @@ void main() {
 
     test('build() returns immutable request', () {
       final request = QueryBuilder(QueryDomain.contacts)
-          .where('name', QueryFilterOperator.equals, 'test')
-          .orderBy('name')
+          .where('displayName', QueryFilterOperator.equals, 'test')
+          .orderBy('displayName')
           .platformData({'key': 'value'}).build();
 
       // Unmodifiable lists/maps throw when mutated.
       expect(
         () => (request.filters as List).add(
-          const QueryFilterCondition(
+          QueryFilterCondition(
             field: 'x',
             operator: QueryFilterOperator.equals,
           ),
@@ -206,10 +228,322 @@ void main() {
 
       expect(request.platformData, {'rootPath': '/tmp'});
     });
+
+    test('execute() forwards the built request to the platform', () async {
+      final fake = makeFake();
+      SimpleQueryPlatform.instance = fake;
+
+      final result = await QueryBuilder(QueryDomain.contacts)
+          .entityType('people')
+          .where('displayName', QueryFilterOperator.equals, 'Alice')
+          .orderBy('displayName')
+          .page(limit: 5)
+          .execute();
+
+      expect(result.records, hasLength(1));
+      expect(fake.queryCalls, 1);
+      final captured = fake.queryRequests.single;
+      expect(captured.domain, QueryDomain.contacts);
+      expect(captured.entityType, 'people');
+      expect(captured.filters.single.field, 'displayName');
+      expect(captured.sort.single.field, 'displayName');
+      expect(captured.page?.limit, 5);
+    });
+
+    test('build() rejects unknown canonical fields', () {
+      expect(
+        () => QueryBuilder(QueryDomain.calls)
+            .where('type', QueryFilterOperator.equals, '1')
+            .build(),
+        throwsA(
+          isA<SimpleQueryError>()
+              .having((e) => e.code, 'code', SimpleQueryErrorCode.invalidQuery)
+              .having((e) => e.details?['field'], 'details.field', 'type'),
+        ),
+      );
+    });
+
+    test('SimpleQuery.queryBuilder is the facade entry point', () {
+      final builder = SimpleQuery.instance.queryBuilder(QueryDomain.calls);
+      expect(builder, isA<QueryBuilder>());
+      // Producing the same shape as direct QueryBuilder construction.
+      expect(builder.build().domain, QueryDomain.calls);
+    });
+
+    test('pageOffset / pageCursor convenience methods', () {
+      final offsetReq = QueryBuilder(QueryDomain.calls)
+          .pageOffset(limit: 5, offset: 10)
+          .build();
+      expect(offsetReq.page?.offset, 10);
+      expect(offsetReq.page?.cursor, isNull);
+
+      final cursorReq = QueryBuilder(QueryDomain.calls)
+          .pageCursor(limit: 5, cursor: 'tok')
+          .build();
+      expect(cursorReq.page?.cursor, 'tok');
+      expect(cursorReq.page?.offset, isNull);
+    });
+
+    test('executeTyped() maps records and surfaces mapping failures', () async {
+      SimpleQueryPlatform.instance = makeFake();
+
+      final ids = await QueryBuilder(QueryDomain.contacts)
+          .executeTyped<int>((record) => (record['id'] as int?) ?? -1);
+      expect(ids, <int>[1]);
+
+      await expectLater(
+        () => QueryBuilder(QueryDomain.contacts).executeTyped<String>(
+          (record) => throw StateError('boom'),
+        ),
+        throwsA(isA<SimpleQueryError>()),
+      );
+    });
+  });
+
+  group('queryPaginated', () {
+    test('walks cursor-based pagination to exhaustion', () async {
+      final fake = makeFake()
+        ..queryResultsByCall = const <QueryResult>[
+          QueryResult(
+            records: <QueryRecord>[
+              <String, Object?>{'id': 1},
+              <String, Object?>{'id': 2},
+            ],
+            nextCursor: 'a',
+          ),
+          QueryResult(
+            records: <QueryRecord>[
+              <String, Object?>{'id': 3},
+            ],
+            nextCursor: 'b',
+          ),
+          QueryResult(
+            records: <QueryRecord>[
+              <String, Object?>{'id': 4},
+            ],
+          ),
+        ];
+      SimpleQueryPlatform.instance = fake;
+
+      final pages = await SimpleQuery.instance
+          .queryPaginated(const QueryRequest(domain: QueryDomain.contacts))
+          .toList();
+
+      expect(pages, hasLength(3));
+      expect(pages[0].records.length, 2);
+      expect(pages[2].nextCursor, isNull);
+      expect(fake.queryCalls, 3);
+
+      // Subsequent requests carry the cursor from the previous result.
+      expect(fake.queryRequests[1].page?.cursor, 'a');
+      expect(fake.queryRequests[2].page?.cursor, 'b');
+      expect(fake.queryRequests[1].page?.offset, isNull);
+    });
+
+    test('walks offset-based pagination to exhaustion', () async {
+      final fake = makeFake()
+        ..queryResultsByCall = const <QueryResult>[
+          QueryResult(
+            records: <QueryRecord>[<String, Object?>{'id': 1}],
+            nextOffset: 1,
+          ),
+          QueryResult(
+            records: <QueryRecord>[<String, Object?>{'id': 2}],
+            nextOffset: 2,
+          ),
+          QueryResult(records: <QueryRecord>[<String, Object?>{'id': 3}]),
+        ];
+      SimpleQueryPlatform.instance = fake;
+
+      final pages = await SimpleQuery.instance
+          .queryPaginated(QueryRequest(
+            domain: QueryDomain.files,
+            page: QueryPage(limit: 1),
+          ))
+          .toList();
+
+      expect(pages, hasLength(3));
+      expect(fake.queryRequests[1].page?.offset, 1);
+      expect(fake.queryRequests[1].page?.limit, 1);
+      expect(fake.queryRequests[2].page?.offset, 2);
+    });
+
+    test('cursor wins when both nextCursor and nextOffset are present',
+        () async {
+      final fake = makeFake()
+        ..queryResultsByCall = const <QueryResult>[
+          QueryResult(
+            records: <QueryRecord>[<String, Object?>{'id': 1}],
+            nextCursor: 'c',
+            nextOffset: 99,
+          ),
+          QueryResult(records: <QueryRecord>[<String, Object?>{'id': 2}]),
+        ];
+      SimpleQueryPlatform.instance = fake;
+
+      await SimpleQuery.instance
+          .queryPaginated(const QueryRequest(domain: QueryDomain.files))
+          .toList();
+
+      expect(fake.queryRequests[1].page?.cursor, 'c');
+      expect(fake.queryRequests[1].page?.offset, isNull);
+    });
+
+    test('stops on empty page even if pagination tokens are non-null',
+        () async {
+      final fake = makeFake()
+        ..queryResultsByCall = const <QueryResult>[
+          QueryResult(records: <QueryRecord>[], nextCursor: 'should-not-use'),
+        ];
+      SimpleQueryPlatform.instance = fake;
+
+      final pages = await SimpleQuery.instance
+          .queryPaginated(const QueryRequest(domain: QueryDomain.files))
+          .toList();
+
+      expect(pages, hasLength(1));
+      expect(fake.queryCalls, 1);
+    });
+
+    test('queryPaginatedTyped maps each page', () async {
+      final fake = makeFake()
+        ..queryResultsByCall = const <QueryResult>[
+          QueryResult(
+            records: <QueryRecord>[
+              <String, Object?>{'id': 1},
+              <String, Object?>{'id': 2},
+            ],
+            nextCursor: 'a',
+          ),
+          QueryResult(
+            records: <QueryRecord>[<String, Object?>{'id': 3}],
+          ),
+        ];
+      SimpleQueryPlatform.instance = fake;
+
+      final batches = await SimpleQuery.instance
+          .queryPaginatedTyped<int>(
+            const QueryRequest(domain: QueryDomain.contacts),
+            (record) => (record['id'] as int?) ?? -1,
+          )
+          .toList();
+
+      expect(batches, <List<int>>[
+        <int>[1, 2],
+        <int>[3],
+      ]);
+    });
+
+    test('queryPaginatedTyped wraps mapping failures', () async {
+      SimpleQueryPlatform.instance = makeFake();
+
+      await expectLater(
+        SimpleQuery.instance.queryPaginatedTyped<String>(
+          const QueryRequest(domain: QueryDomain.contacts),
+          (record) => throw StateError('boom'),
+        ),
+        emitsError(
+          isA<SimpleQueryError>().having(
+            (e) => e.code,
+            'code',
+            SimpleQueryErrorCode.invalidQuery,
+          ),
+        ),
+      );
+    });
+  });
+
+  group('BinaryContent', () {
+    test('openBinaryContent wraps the wire handle with a closing API',
+        () async {
+      final fake = makeFake();
+      SimpleQueryPlatform.instance = fake;
+
+      final content = await SimpleQuery.instance.openBinaryContent(
+        const BinaryRequest(
+          domain: QueryDomain.files,
+          recordId: '/tmp/x',
+        ),
+      );
+
+      expect(content.handleId, 'h1');
+      expect(content.localPath, '/tmp/h1');
+      expect(content.isClosed, isFalse);
+      expect(fake.openBinaryCalls, 1);
+      expect(fake.closeBinaryCalls, 0);
+
+      await content.close();
+      expect(content.isClosed, isTrue);
+      expect(fake.closeBinaryCalls, 1);
+
+      // close() is idempotent — second call doesn't dispatch again.
+      await content.close();
+      expect(fake.closeBinaryCalls, 1);
+    });
+
+    test('withBinaryContent closes on success', () async {
+      final fake = makeFake();
+      SimpleQueryPlatform.instance = fake;
+
+      final result = await SimpleQuery.instance.withBinaryContent<String>(
+        const BinaryRequest(
+          domain: QueryDomain.files,
+          recordId: '/tmp/x',
+        ),
+        (content) async => content.localPath,
+      );
+
+      expect(result, '/tmp/h1');
+      expect(fake.closeBinaryCalls, 1);
+    });
+
+    test('withBinaryContent closes on error', () async {
+      final fake = makeFake();
+      SimpleQueryPlatform.instance = fake;
+
+      await expectLater(
+        SimpleQuery.instance.withBinaryContent<void>(
+          const BinaryRequest(
+            domain: QueryDomain.files,
+            recordId: '/tmp/x',
+          ),
+          (content) async => throw StateError('boom'),
+        ),
+        throwsA(isA<StateError>()),
+      );
+      expect(fake.closeBinaryCalls, 1);
+    });
+  });
+
+  test('queryRaw builds a platformSpecific request with the contentUri',
+      () async {
+    final fake = makeFake();
+    SimpleQueryPlatform.instance = fake;
+
+    await SimpleQuery.instance.queryRaw(
+      contentUri: 'content://com.biz.app/data',
+      filters: <QueryFilterCondition>[
+        QueryFilterCondition(
+          field: 'my_native_column',
+          operator: QueryFilterOperator.equals,
+          value: 'value',
+        ),
+      ],
+      projection: const <String>['col_a', 'col_b'],
+      platformData: const <String, Object?>{'extra': 1},
+    );
+
+    expect(fake.queryCalls, 1);
+    final captured = fake.queryRequests.single;
+    expect(captured.domain, QueryDomain.platformSpecific);
+    expect(captured.platformData?['contentUri'], 'content://com.biz.app/data');
+    expect(captured.platformData?['extra'], 1);
+    expect(captured.filters.single.field, 'my_native_column');
+    expect(captured.projection, <String>['col_a', 'col_b']);
   });
 
   test('queryTyped maps records', () async {
-    SimpleQueryPlatform.instance = _FakePlatform();
+    SimpleQueryPlatform.instance = makeFake();
 
     final ids = await SimpleQuery.instance.queryTyped<int>(
       const QueryRequest(domain: QueryDomain.contacts),
@@ -218,87 +552,50 @@ void main() {
 
     expect(ids, <int>[1]);
   });
-}
 
-class _FakePlatform extends SimpleQueryPlatform
-    with MockPlatformInterfaceMixin {
-  int mutateCalls = 0;
-  int batchCalls = 0;
-  int openBinaryCalls = 0;
-  int closeBinaryCalls = 0;
-  int callExtensionCalls = 0;
-  int observeCalls = 0;
+  test('queryTyped wraps fromRecord failures in SimpleQueryError', () async {
+    SimpleQueryPlatform.instance = makeFake();
 
-  @override
-  Future<BatchResult> batch(BatchRequest request) async {
-    batchCalls += 1;
-    return const BatchResult(
-      results: <MutationResult>[MutationResult(affectedCount: 1)],
+    await expectLater(
+      () => SimpleQuery.instance.queryTyped<String>(
+        const QueryRequest(domain: QueryDomain.contacts),
+        (record) =>
+            throw StateError('synthetic mapping failure'),
+      ),
+      throwsA(
+        isA<SimpleQueryError>()
+            .having((e) => e.code, 'code', SimpleQueryErrorCode.invalidQuery)
+            .having((e) => e.details?['recordIndex'], 'recordIndex', 0)
+            .having((e) => e.details?['domain'], 'domain', 'contacts')
+            .having(
+              (e) => e.details?['cause'],
+              'cause',
+              contains('synthetic mapping failure'),
+            ),
+      ),
     );
-  }
+  });
 
-  @override
-  Future<void> closeBinary(String handleId) async {
-    closeBinaryCalls += 1;
-  }
+  test('queryTyped passes SimpleQueryError from fromRecord through unwrapped',
+      () async {
+    SimpleQueryPlatform.instance = makeFake();
 
-  @override
-  Future<Map<String, Object?>?> callExtension({
-    required String namespace,
-    required String method,
-    Map<String, Object?>? args,
-  }) async {
-    callExtensionCalls += 1;
-    return <String, Object?>{'ok': true};
-  }
-
-  @override
-  Future<void> dispose() async {}
-
-  @override
-  Future<CapabilitySnapshot> getCapabilities() async => CapabilitySnapshot(
-        capabilities: QueryDomain.values
-            .map(
-              (domain) => CapabilityDescriptor(
-                domain: domain,
-                canRead: true,
-                canWrite: true,
-                canObserve: true,
-                canStream: true,
-              ),
-            )
-            .toList(growable: false),
-      );
-
-  @override
-  Future<MutationResult> mutate(MutationRequest request) async {
-    mutateCalls += 1;
-    return const MutationResult(affectedCount: 1);
-  }
-
-  @override
-  Stream<ObserveEvent> observe(ObserveRequest request) =>
-      Stream<ObserveEvent>.fromIterable(<ObserveEvent>[
-        ObserveEvent(
-          domain: request.domain,
-          changeType: ObserveChangeType.unknown,
-          timestamp: DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
+    await expectLater(
+      () => SimpleQuery.instance.queryTyped<String>(
+        const QueryRequest(domain: QueryDomain.contacts),
+        (record) => throw const SimpleQueryError(
+          code: SimpleQueryErrorCode.permissionDenied,
+          message: 'nope',
         ),
-      ]).map((event) {
-        observeCalls += 1;
-        return event;
-      });
-
-  @override
-  Future<BinaryContentHandle> openBinary(BinaryRequest request) async {
-    openBinaryCalls += 1;
-    return const BinaryContentHandle(handleId: 'h1', localPath: '/tmp/h1');
-  }
-
-  @override
-  Future<QueryResult> query(QueryRequest request) async => const QueryResult(
-        records: <QueryRecord>[
-          <String, Object?>{'id': 1}
-        ],
-      );
+      ),
+      throwsA(
+        isA<SimpleQueryError>().having(
+          (e) => e.code,
+          'code',
+          SimpleQueryErrorCode.permissionDenied,
+        ),
+      ),
+    );
+  });
 }
+

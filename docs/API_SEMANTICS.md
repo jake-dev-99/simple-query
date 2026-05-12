@@ -6,7 +6,7 @@ This document defines the portability guarantees for the simple_query API.
 
 - `entityType`: stable core field. Platforms may ignore it when a domain does not expose multiple entity types.
 - `projection`: stable core field. Backends should return only requested keys when projection is supported.
-- `include`: reserved for future use. Not currently part of the `QueryRequest` model. On Android, use `callExtension(namespace: 'android.provider', method: 'queryWithJoins')` for join-style queries.
+- `include`: not part of the `QueryRequest` model. For join-style queries on Android, use `callExtension(namespace: 'android.provider', method: 'queryWithJoins')`. The canonical model deliberately avoids SQL-join semantics — most domains don't support them and the ones that do (Android contacts) are better served by the typed extension.
 - `platformData`: platform-specific escape hatch. Treat keys as namespace-specific and non-portable unless documented otherwise.
 
 ## Batch semantics

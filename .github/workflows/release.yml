@@ -125,7 +125,7 @@ jobs:
             next="$(bump_version "$current" "$BUMP")"
             tag="${pkg}-v${next}"
 
-            prev_tag="$(git tag --list "${pkg}-v*" | sort -V | tail -1 || true)"
+            prev_tag="$(git tag --merged HEAD --list "${pkg}-v*" | sort -V | tail -1 || true)"
 
             if [ -n "$prev_tag" ]; then
               entries="$(git log "${prev_tag}..HEAD" --pretty=format:'- %s' -- "$dir" 2>/dev/null || true)"

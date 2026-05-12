@@ -1,5 +1,7 @@
 import 'package:collection/collection.dart';
 
+import 'exceptions.dart';
+
 /// A single row of data returned by a query, stored as field-name-to-value pairs.
 typedef QueryRecord = Map<String, Object?>;
 
@@ -107,15 +109,45 @@ enum ObserveChangeType {
 
 const _deepEquals = DeepCollectionEquality();
 
+/// Sentinel used by `copyWith` methods to distinguish "parameter omitted"
+/// (keep existing value) from "parameter explicitly null" (clear the value).
+///
+/// Every nullable field in a `copyWith` uses the pattern:
+///
+/// ```dart
+/// copyWith({Object? foo = _unset}) =>
+///     Foo(foo: identical(foo, _unset) ? this.foo : foo as T?);
+/// ```
+const Object _unset = Object();
+
 /// A single filter rule that narrows which records a query returns.
 ///
 /// Combine multiple conditions in a [QueryRequest] to build complex filters.
 class QueryFilterCondition {
-  const QueryFilterCondition({
+  QueryFilterCondition({
     required this.field,
     required this.operator,
     this.value,
-  });
+  }) {
+    // Runtime check (not `assert`): asserts are stripped in release builds,
+    // so an invariant enforced only via `assert` lets malformed filter
+    // conditions slip through to platform code where they surface as
+    // less-actionable PlatformException failures. Throw a typed error
+    // with the offending field/operator/runtimeType so callers can
+    // diagnose the bad query at the construction site instead.
+    if (operator == QueryFilterOperator.inList && value is! List) {
+      throw SimpleQueryError(
+        code: SimpleQueryErrorCode.invalidQuery,
+        message:
+            'simple_query: QueryFilterOperator.inList requires value to be a List',
+        details: <String, Object?>{
+          'field': field,
+          'operator': operator.name,
+          'runtimeType': '${value.runtimeType}',
+        },
+      );
+    }
+  }
 
   final String field;
   final QueryFilterOperator operator;
@@ -124,12 +156,12 @@ class QueryFilterCondition {
   QueryFilterCondition copyWith({
     String? field,
     QueryFilterOperator? operator,
-    Object? value,
+    Object? value = _unset,
   }) {
     return QueryFilterCondition(
       field: field ?? this.field,
       operator: operator ?? this.operator,
-      value: value ?? this.value,
+      value: identical(value, _unset) ? this.value : value,
     );
   }
 
@@ -190,11 +222,40 @@ class QuerySort {
 /// query resumes from where the cursor left off. Get the next cursor from
 /// [QueryResult.nextCursor].
 class QueryPage {
-  const QueryPage({
+  /// Construct a page with optional [limit] only. Prefer [QueryPage.offset]
+  /// or [QueryPage.cursor] when paginating.
+  QueryPage({
     this.limit,
     this.offset,
     this.cursor,
-  });
+  }) {
+    // Runtime check (not `assert`): see note on QueryFilterCondition.
+    // Mutual exclusion has to hold in release builds too; an ambiguous
+    // page that sets both offset and cursor otherwise reaches platform
+    // code where behavior diverges by backend.
+    if (offset != null && cursor != null) {
+      throw SimpleQueryError(
+        code: SimpleQueryErrorCode.invalidQuery,
+        message: 'simple_query: QueryPage cannot set both offset and cursor; '
+            'use QueryPage.offset or QueryPage.cursor to pick one pagination '
+            'mode.',
+        details: <String, Object?>{
+          'offset': offset,
+          'cursor': cursor,
+        },
+      );
+    }
+  }
+
+  /// Offset-based pagination. The next page is requested via
+  /// [QueryResult.nextOffset].
+  const QueryPage.offset({this.limit, required int this.offset})
+      : cursor = null;
+
+  /// Cursor-based pagination. The next page is requested by passing
+  /// [QueryResult.nextCursor] back as [cursor].
+  const QueryPage.cursor({this.limit, required String this.cursor})
+      : offset = null;
 
   final int? limit;
   final int? offset;
@@ -205,14 +266,14 @@ class QueryPage {
   final String? cursor;
 
   QueryPage copyWith({
-    int? limit,
-    int? offset,
-    String? cursor,
+    Object? limit = _unset,
+    Object? offset = _unset,
+    Object? cursor = _unset,
   }) {
     return QueryPage(
-      limit: limit ?? this.limit,
-      offset: offset ?? this.offset,
-      cursor: cursor ?? this.cursor,
+      limit: identical(limit, _unset) ? this.limit : limit as int?,
+      offset: identical(offset, _unset) ? this.offset : offset as int?,
+      cursor: identical(cursor, _unset) ? this.cursor : cursor as String?,
     );
   }
 
@@ -255,21 +316,27 @@ class QueryRequest {
 
   QueryRequest copyWith({
     QueryDomain? domain,
-    String? entityType,
+    Object? entityType = _unset,
     List<QueryFilterCondition>? filters,
-    List<String>? projection,
+    Object? projection = _unset,
     List<QuerySort>? sort,
-    QueryPage? page,
-    Map<String, Object?>? platformData,
+    Object? page = _unset,
+    Object? platformData = _unset,
   }) {
     return QueryRequest(
       domain: domain ?? this.domain,
-      entityType: entityType ?? this.entityType,
+      entityType: identical(entityType, _unset)
+          ? this.entityType
+          : entityType as String?,
       filters: filters ?? this.filters,
-      projection: projection ?? this.projection,
+      projection: identical(projection, _unset)
+          ? this.projection
+          : projection as List<String>?,
       sort: sort ?? this.sort,
-      page: page ?? this.page,
-      platformData: platformData ?? this.platformData,
+      page: identical(page, _unset) ? this.page : page as QueryPage?,
+      platformData: identical(platformData, _unset)
+          ? this.platformData
+          : platformData as Map<String, Object?>?,
     );
   }
 
@@ -325,17 +392,25 @@ class QueryResult {
 
   QueryResult copyWith({
     List<QueryRecord>? records,
-    int? totalCount,
-    int? nextOffset,
-    String? nextCursor,
-    Map<String, Object?>? metadata,
+    Object? totalCount = _unset,
+    Object? nextOffset = _unset,
+    Object? nextCursor = _unset,
+    Object? metadata = _unset,
   }) {
     return QueryResult(
       records: records ?? this.records,
-      totalCount: totalCount ?? this.totalCount,
-      nextOffset: nextOffset ?? this.nextOffset,
-      nextCursor: nextCursor ?? this.nextCursor,
-      metadata: metadata ?? this.metadata,
+      totalCount: identical(totalCount, _unset)
+          ? this.totalCount
+          : totalCount as int?,
+      nextOffset: identical(nextOffset, _unset)
+          ? this.nextOffset
+          : nextOffset as int?,
+      nextCursor: identical(nextCursor, _unset)
+          ? this.nextCursor
+          : nextCursor as String?,
+      metadata: identical(metadata, _unset)
+          ? this.metadata
+          : metadata as Map<String, Object?>?,
     );
   }
 
@@ -384,18 +459,23 @@ class MutationRequest {
   MutationRequest copyWith({
     QueryDomain? domain,
     MutationType? type,
-    String? entityType,
-    QueryRecord? values,
+    Object? entityType = _unset,
+    Object? values = _unset,
     List<QueryFilterCondition>? filters,
-    Map<String, Object?>? platformData,
+    Object? platformData = _unset,
   }) {
     return MutationRequest(
       domain: domain ?? this.domain,
       type: type ?? this.type,
-      entityType: entityType ?? this.entityType,
-      values: values ?? this.values,
+      entityType: identical(entityType, _unset)
+          ? this.entityType
+          : entityType as String?,
+      values:
+          identical(values, _unset) ? this.values : values as QueryRecord?,
       filters: filters ?? this.filters,
-      platformData: platformData ?? this.platformData,
+      platformData: identical(platformData, _unset)
+          ? this.platformData
+          : platformData as Map<String, Object?>?,
     );
   }
 
@@ -437,14 +517,20 @@ class MutationResult {
   final Map<String, Object?>? metadata;
 
   MutationResult copyWith({
-    int? affectedCount,
-    String? insertedId,
-    Map<String, Object?>? metadata,
+    Object? affectedCount = _unset,
+    Object? insertedId = _unset,
+    Object? metadata = _unset,
   }) {
     return MutationResult(
-      affectedCount: affectedCount ?? this.affectedCount,
-      insertedId: insertedId ?? this.insertedId,
-      metadata: metadata ?? this.metadata,
+      affectedCount: identical(affectedCount, _unset)
+          ? this.affectedCount
+          : affectedCount as int?,
+      insertedId: identical(insertedId, _unset)
+          ? this.insertedId
+          : insertedId as String?,
+      metadata: identical(metadata, _unset)
+          ? this.metadata
+          : metadata as Map<String, Object?>?,
     );
   }
 
@@ -477,11 +563,13 @@ class BatchRequest {
 
   BatchRequest copyWith({
     List<MutationRequest>? operations,
-    Map<String, Object?>? platformData,
+    Object? platformData = _unset,
   }) {
     return BatchRequest(
       operations: operations ?? this.operations,
-      platformData: platformData ?? this.platformData,
+      platformData: identical(platformData, _unset)
+          ? this.platformData
+          : platformData as Map<String, Object?>?,
     );
   }
 
@@ -553,7 +641,7 @@ class CapabilityDescriptor {
     bool? canWrite,
     bool? canObserve,
     bool? canStream,
-    String? reason,
+    Object? reason = _unset,
   }) {
     return CapabilityDescriptor(
       domain: domain ?? this.domain,
@@ -561,7 +649,8 @@ class CapabilityDescriptor {
       canWrite: canWrite ?? this.canWrite,
       canObserve: canObserve ?? this.canObserve,
       canStream: canStream ?? this.canStream,
-      reason: reason ?? this.reason,
+      reason:
+          identical(reason, _unset) ? this.reason : reason as String?,
     );
   }
 
@@ -641,17 +730,23 @@ class ObserveRequest {
 
   ObserveRequest copyWith({
     QueryDomain? domain,
-    String? entityType,
+    Object? entityType = _unset,
     List<QueryFilterCondition>? filters,
-    Duration? pollingInterval,
-    Map<String, Object?>? platformData,
+    Object? pollingInterval = _unset,
+    Object? platformData = _unset,
   }) {
     return ObserveRequest(
       domain: domain ?? this.domain,
-      entityType: entityType ?? this.entityType,
+      entityType: identical(entityType, _unset)
+          ? this.entityType
+          : entityType as String?,
       filters: filters ?? this.filters,
-      pollingInterval: pollingInterval ?? this.pollingInterval,
-      platformData: platformData ?? this.platformData,
+      pollingInterval: identical(pollingInterval, _unset)
+          ? this.pollingInterval
+          : pollingInterval as Duration?,
+      platformData: identical(platformData, _unset)
+          ? this.platformData
+          : platformData as Map<String, Object?>?,
     );
   }
 
@@ -702,19 +797,24 @@ class ObserveEvent {
     QueryDomain? domain,
     ObserveChangeType? changeType,
     DateTime? timestamp,
-    String? entityType,
+    Object? entityType = _unset,
     List<String>? ids,
-    String? source,
-    Map<String, Object?>? metadata,
+    Object? source = _unset,
+    Object? metadata = _unset,
   }) {
     return ObserveEvent(
       domain: domain ?? this.domain,
       changeType: changeType ?? this.changeType,
       timestamp: timestamp ?? this.timestamp,
-      entityType: entityType ?? this.entityType,
+      entityType: identical(entityType, _unset)
+          ? this.entityType
+          : entityType as String?,
       ids: ids ?? this.ids,
-      source: source ?? this.source,
-      metadata: metadata ?? this.metadata,
+      source:
+          identical(source, _unset) ? this.source : source as String?,
+      metadata: identical(metadata, _unset)
+          ? this.metadata
+          : metadata as Map<String, Object?>?,
     );
   }
 
@@ -762,15 +862,21 @@ class BinaryRequest {
 
   BinaryRequest copyWith({
     QueryDomain? domain,
-    String? entityType,
-    String? recordId,
-    Map<String, Object?>? platformData,
+    Object? entityType = _unset,
+    Object? recordId = _unset,
+    Object? platformData = _unset,
   }) {
     return BinaryRequest(
       domain: domain ?? this.domain,
-      entityType: entityType ?? this.entityType,
-      recordId: recordId ?? this.recordId,
-      platformData: platformData ?? this.platformData,
+      entityType: identical(entityType, _unset)
+          ? this.entityType
+          : entityType as String?,
+      recordId: identical(recordId, _unset)
+          ? this.recordId
+          : recordId as String?,
+      platformData: identical(platformData, _unset)
+          ? this.platformData
+          : platformData as Map<String, Object?>?,
     );
   }
 
@@ -815,16 +921,20 @@ class BinaryContentHandle {
   BinaryContentHandle copyWith({
     String? handleId,
     String? localPath,
-    String? mimeType,
-    int? size,
-    Map<String, Object?>? metadata,
+    Object? mimeType = _unset,
+    Object? size = _unset,
+    Object? metadata = _unset,
   }) {
     return BinaryContentHandle(
       handleId: handleId ?? this.handleId,
       localPath: localPath ?? this.localPath,
-      mimeType: mimeType ?? this.mimeType,
-      size: size ?? this.size,
-      metadata: metadata ?? this.metadata,
+      mimeType: identical(mimeType, _unset)
+          ? this.mimeType
+          : mimeType as String?,
+      size: identical(size, _unset) ? this.size : size as int?,
+      metadata: identical(metadata, _unset)
+          ? this.metadata
+          : metadata as Map<String, Object?>?,
     );
   }
 

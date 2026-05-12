@@ -112,7 +112,7 @@ class QueryResponse {
   /// List of rows, each row is a map of column name to value.
   /// BLOB columns return null; use openStream() to retrieve binary data.
   /// Note: Uses Object? to avoid Pigeon CastList issues with nested generics.
-  /// Each row is actually Map<Object?, Object?> - convert with .cast<String?, Object?>().
+  /// Each row is actually `Map<Object?, Object?>` - convert with `.cast<String?, Object?>()`.
   List<Object?> rows;
 
   /// Total number of rows returned.
@@ -489,7 +489,7 @@ class JoinedRow {
   });
 
   /// Primary row data.
-  /// Note: Actually Map<Object?, Object?> - convert keys with .cast<String?, Object?>().
+  /// Note: Actually `Map<Object?, Object?>` - convert keys with `.cast<String?, Object?>()`.
   Object data;
 
   /// Related rows keyed by JoinSpec.name.
@@ -1389,6 +1389,72 @@ class QueryHostApi {
       );
     } else {
       return (pigeonVar_replyList[0] as ProviderCallResponse?)!;
+    }
+  }
+
+  /// Returns true if the calling app holds [permissionName]
+  /// (a fully-qualified Android permission identifier such as
+  /// `android.permission.READ_CONTACTS`). Implemented via
+  /// `Context.checkSelfPermission`. Synchronous on the native side; pigeon
+  /// makes it async on the Dart side.
+  Future<bool> hasPermission(String permissionName) async {
+    final String pigeonVar_channelName =
+        'dev.flutter.pigeon.simple_query.QueryHostApi.hasPermission$pigeonVar_messageChannelSuffix';
+    final BasicMessageChannel<Object?> pigeonVar_channel =
+        BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final List<Object?>? pigeonVar_replyList = await pigeonVar_channel
+        .send(<Object?>[permissionName]) as List<Object?>?;
+    if (pigeonVar_replyList == null) {
+      throw _createConnectionError(pigeonVar_channelName);
+    } else if (pigeonVar_replyList.length > 1) {
+      throw PlatformException(
+        code: pigeonVar_replyList[0]! as String,
+        message: pigeonVar_replyList[1] as String?,
+        details: pigeonVar_replyList[2],
+      );
+    } else if (pigeonVar_replyList[0] == null) {
+      throw PlatformException(
+        code: 'null-error',
+        message: 'Host platform returned null value for non-null return value.',
+      );
+    } else {
+      return (pigeonVar_replyList[0] as bool?)!;
+    }
+  }
+
+  /// Returns the device's `Build.VERSION.SDK_INT`. Used by the Dart-side
+  /// permission catalog to pick between legacy and modern media permissions
+  /// (`READ_EXTERNAL_STORAGE` vs `READ_MEDIA_*`).
+  Future<int> getAndroidSdkInt() async {
+    final String pigeonVar_channelName =
+        'dev.flutter.pigeon.simple_query.QueryHostApi.getAndroidSdkInt$pigeonVar_messageChannelSuffix';
+    final BasicMessageChannel<Object?> pigeonVar_channel =
+        BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final List<Object?>? pigeonVar_replyList =
+        await pigeonVar_channel.send(null) as List<Object?>?;
+    if (pigeonVar_replyList == null) {
+      throw _createConnectionError(pigeonVar_channelName);
+    } else if (pigeonVar_replyList.length > 1) {
+      throw PlatformException(
+        code: pigeonVar_replyList[0]! as String,
+        message: pigeonVar_replyList[1] as String?,
+        details: pigeonVar_replyList[2],
+      );
+    } else if (pigeonVar_replyList[0] == null) {
+      throw PlatformException(
+        code: 'null-error',
+        message: 'Host platform returned null value for non-null return value.',
+      );
+    } else {
+      return (pigeonVar_replyList[0] as int?)!;
     }
   }
 }
