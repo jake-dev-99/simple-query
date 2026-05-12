@@ -1,39 +1,20 @@
 name: Publish to pub.dev
 
-# Triggered by tag pushes on `main` matching one of the eight
-# federated packages' tag prefixes. Each package has its own
-# tag pattern so a release event publishes exactly one package
-# at a time — consistent with pub.dev's automated-publishing
-# contract (one tag pattern per package registration).
+# Triggered by tag pushes on `main` matching one of the federated
+# packages' tag prefixes. Tags are created by `release.yml`
+# (workflow_dispatch). There is no auto-tag step; tags only exist
+# when a human deliberately cuts one. This eliminates the orphan-tag
+# drift class that plagued the previous auto-tag.yml flow.
 #
-# Tag examples:
-#   simple_query-v0.3.0
-#   simple_query_android-v0.3.0
-#   simple_query_platform_interface-v0.3.0
-#
-# See docs/RELEASE.md for the cut-a-release runbook + the
-# required one-time pub.dev "Automated publishing" setup per
-# package.
-#
-# Two triggers, both needed:
-#
-#   push: tags — still wired so a manually-pushed tag (human-
-#     cut release) publishes without extra steps.
-#
-#   workflow_dispatch — auto-tag runs on main merges, creates
-#     tags, and pushes them with the default GITHUB_TOKEN.
-#     GitHub suppresses `push: tags` workflow triggers when the
-#     pusher is the runner's own token (anti-infinite-loop),
-#     so without this entrypoint every auto-tag landed without
-#     a publish run. auto-tag now calls
-#     `gh workflow run publish.yml -f tag=<tag>` per new tag;
-#     workflow_dispatch is the one event that *does* fire from
-#     GITHUB_TOKEN.
+# Per-package matrix using subosito/flutter-action + flutter pub
+# publish --force --skip-validation. `--skip-validation` lets pub
+# publish work for Flutter packages (skips resolution which trips
+# on `sdk: flutter`); pub.dev's server still enforces version
+# monotonicity, ownership, and OIDC binding.
+
 on:
   push:
     tags:
-      # GitHub Actions uses glob syntax here (not regex); the
-      # verify-version step validates the exact semver.
       - 'simple_query-v*'
       - 'simple_query_platform_interface-v*'
       - 'simple_query_android-v*'
@@ -42,17 +23,12 @@ on:
       - 'simple_query_linux-v*'
       - 'simple_query_windows-v*'
       - 'simple_query_shared-v*'
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: 'Package tag to publish (e.g. simple_query_android-v0.3.1)'
-        required: true
-        type: string
 
 jobs:
   publish:
     permissions:
       id-token: write
+      contents: read
     runs-on: ubuntu-latest
 
     strategy:
@@ -76,54 +52,34 @@ jobs:
           - name: simple_query_shared
             path: packages/simple_query_shared
 
-    # Per-step `if:` rather than job-level: GitHub Actions
-    # evaluates job-level `if:` before matrix expansion, so
-    # `matrix.package.name` can't be referenced there.
     steps:
-      # Normalise tag source across `push` (GITHUB_REF) and
-      # `workflow_dispatch` (input). Subsequent steps gate on
-      # the resolved tag so both trigger paths work with one
-      # set of conditions.
-      - name: Resolve tag
-        id: resolve
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            tag="${{ inputs.tag }}"
-            ref="refs/tags/$tag"
-          else
-            tag="${GITHUB_REF#refs/tags/}"
-            ref="$GITHUB_REF"
-          fi
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "ref=$ref" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/checkout@v4
-        if: startsWith(steps.resolve.outputs.tag, format('{0}-v', matrix.package.name))
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        if: startsWith(github.ref, format('refs/tags/{0}-v', matrix.package.name))
         with:
-          ref: ${{ steps.resolve.outputs.ref }}
+          fetch-depth: 0  # full history for the ancestry check
 
-      # Flutter plugin packages (pubspec pins `sdk: flutter`), so
-      # `dart pub` can't resolve — pub reports:
-      #   "Because <pkg> requires the Flutter SDK, version solving
-      #    failed. Flutter users should use `flutter pub` instead
-      #    of `dart pub`."
-      # Use the Flutter toolchain and call `flutter pub ...`
-      # throughout. pub.dev's OIDC publish works identically.
-      - uses: subosito/flutter-action@v2
-        if: startsWith(steps.resolve.outputs.tag, format('{0}-v', matrix.package.name))
+      - name: Verify tag commit is on main
+        # `on.push.tags` is not branch-scoped — a tag from any branch
+        # would otherwise trigger publish. release.yml normally only
+        # tags from main, but verify independently.
+        if: startsWith(github.ref, format('refs/tags/{0}-v', matrix.package.name))
+        run: |
+          git fetch origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::Tag ${GITHUB_REF#refs/tags/} does not point to a commit on origin/main. Aborting publish."
+            exit 1
+          fi
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        if: startsWith(github.ref, format('refs/tags/{0}-v', matrix.package.name))
         with:
           channel: stable
 
-      - name: Install dependencies
-        if: startsWith(steps.resolve.outputs.tag, format('{0}-v', matrix.package.name))
-        working-directory: ${{ matrix.package.path }}
-        run: flutter pub get
-
       - name: Verify pubspec version matches tag
-        if: startsWith(steps.resolve.outputs.tag, format('{0}-v', matrix.package.name))
+        if: startsWith(github.ref, format('refs/tags/{0}-v', matrix.package.name))
         working-directory: ${{ matrix.package.path }}
         run: |
-          tag="${{ steps.resolve.outputs.tag }}"
+          tag="${GITHUB_REF#refs/tags/}"
           expected="${tag#${{ matrix.package.name }}-v}"
           actual="$(grep '^version:' pubspec.yaml | sed 's/version:[[:space:]]*//')"
           if [ "$expected" != "$actual" ]; then
@@ -131,24 +87,13 @@ jobs:
             exit 1
           fi
 
-      - name: Publish
-        # 2-minute cap. A healthy OIDC-backed publish finishes in
-        # 10-30 s; anything much longer means pub fell back to the
-        # interactive OAuth flow (which happens if the OIDC token's
-        # `ref` claim doesn't match pub.dev's configured tag
-        # pattern). Better to fail fast than sit on the runner for
-        # 40+ minutes waiting for someone to click a browser link
-        # that will never arrive.
-        timeout-minutes: 2
-        if: startsWith(steps.resolve.outputs.tag, format('{0}-v', matrix.package.name))
+      - name: Install dependencies
+        if: startsWith(github.ref, format('refs/tags/{0}-v', matrix.package.name))
         working-directory: ${{ matrix.package.path }}
-        # --force skips the interactive "publish this?" prompt.
-        # --skip-validation skips the local pre-flight checks (file
-        # listing, pubspec lint, override hints, version-progression
-        # hint). Validation already ran at CI time on the PR; re-running
-        # it here just adds noise (the `pubspec_overrides.yaml` hint
-        # always fires during pre-publish dev) and never blocks because
-        # hints don't fail validation. pub.dev's server still enforces
-        # ownership, version monotonicity, and OIDC binding regardless
-        # of what the local CLI does.
+        run: flutter pub get
+
+      - name: Publish
+        timeout-minutes: 2
+        if: startsWith(github.ref, format('refs/tags/{0}-v', matrix.package.name))
+        working-directory: ${{ matrix.package.path }}
         run: flutter pub publish --force --skip-validation
