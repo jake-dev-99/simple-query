@@ -67,6 +67,11 @@ jobs:
       # `pubspec_overrides.yaml` warning during pre-publish dev) so it
       # doesn't falsely fail develop branches; only hard errors block.
       - name: Validate publishability (pub publish --dry-run)
+        # 2-minute cap, matching the publish step in publish.yml. A
+        # healthy `--dry-run` finishes in 10-30 s; anything longer
+        # means pub is wedged on dependency resolution or a runaway
+        # file walk. Fail fast rather than burn a runner.
+        timeout-minutes: 2
         working-directory: ${{ matrix.package }}
         run: flutter pub publish --dry-run
 
