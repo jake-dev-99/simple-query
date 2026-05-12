@@ -99,9 +99,13 @@ jobs:
           pubdev_latest() {
             local pkg="$1"
             local response http body version
+            # `-S` preserved without `2>/dev/null` so curl's own error
+            # messages (DNS failure, TLS handshake, timeout, …) surface
+            # in the workflow log instead of being swallowed — exit 20
+            # then has a paper trail the operator can act on.
             response="$(curl -sS --max-time 10 \
               -w $'\n%{http_code}' \
-              "https://pub.dev/api/packages/${pkg}" 2>/dev/null)" \
+              "https://pub.dev/api/packages/${pkg}")" \
               || return 20
             http="${response##*$'\n'}"
             body="${response%$'\n'*}"
@@ -109,15 +113,25 @@ jobs:
               200)
                 version="$(echo "$body" \
                   | jq -r '.latest.version // empty' 2>/dev/null)" \
-                  || return 20
+                  || {
+                    printf '::warning::pubdev_latest(%s): jq could not parse 200 response body: %s\n' \
+                      "$pkg" "$(printf '%s' "$body" | head -c 200 | tr '\n' ' ')" >&2
+                    return 20
+                  }
                 if [ -z "$version" ]; then
+                  printf '::warning::pubdev_latest(%s): 200 OK but .latest.version is empty: %s\n' \
+                    "$pkg" "$(printf '%s' "$body" | head -c 200 | tr '\n' ' ')" >&2
                   return 20
                 fi
                 echo "$version"
                 return 0
                 ;;
               404) return 10 ;;
-              *)   return 20 ;;
+              *)
+                printf '::warning::pubdev_latest(%s): HTTP %s — body: %s\n' \
+                  "$pkg" "$http" "$(printf '%s' "$body" | head -c 200 | tr '\n' ' ')" >&2
+                return 20
+                ;;
             esac
           }
 
@@ -148,7 +162,11 @@ jobs:
                 last_published="$(git tag --list "${pkg}-v*" \
                   | sed "s/^${pkg}-v//" \
                   | sort -V | tail -1 || true)"
-                source="git-tag-fallback (pub.dev 404)"
+                if [ -n "$last_published" ]; then
+                  source="git-tag-fallback (pub.dev 404)"
+                else
+                  source="unpublished (pub.dev 404, no git tags)"
+                fi
                 ;;
               *)
                 echo "::error::pubdev_latest($pkg) failed with code $pd_status — transient pub.dev or network error. Re-run the workflow once pub.dev is healthy. Aborting to avoid silently drifting git tags past published versions."
