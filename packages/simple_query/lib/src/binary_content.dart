@@ -73,7 +73,7 @@ class BinaryContent {
   /// resource as un-closeable).
   Future<void> close() async {
     if (_closed) return;
-    await _facade.closeBinary(_handle.handleId);
     _closed = true;
+    await _facade.closeBinary(_handle.handleId);
   }
 }
