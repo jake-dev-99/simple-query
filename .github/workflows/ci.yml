@@ -5,7 +5,7 @@ name: CI
 # merge + tag side.
 on:
   pull_request:
-    branches: [develop, staging, main]
+    branches: [main]
 
 jobs:
   package-tests:
