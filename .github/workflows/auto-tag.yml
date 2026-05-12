@@ -77,6 +77,31 @@ jobs:
               && [ "$a" != "$b" ]
           }
 
+          # Authoritative answer to "what's the latest version a user
+          # can `flutter pub get`." A git tag can exist without ever
+          # reaching pub.dev (publish run that timed out, OIDC
+          # misconfig, etc.); basing patch-bumps on git tags lets
+          # those orphans drift git history past pub.dev. Returns
+          # empty string on 404 (package not yet published) or any
+          # network failure — caller falls back to git tags.
+          pubdev_latest() {
+            local pkg="$1"
+            local body http
+            body="$(curl -sS --max-time 10 \
+              -w '%{http_code}' \
+              "https://pub.dev/api/packages/${pkg}" 2>/dev/null || true)"
+            if [ -z "$body" ]; then
+              return 0
+            fi
+            http="${body: -3}"
+            body="${body:0:${#body}-3}"
+            if [ "$http" != "200" ]; then
+              return 0
+            fi
+            echo "$body" | jq -r '.latest.version // empty' 2>/dev/null \
+              || true
+          }
+
           for pkg in "${!pkgs[@]}"; do
             dir="${pkgs[$pkg]}"
             if ! echo "$changed_files" | grep -q "^${dir}/"; then
@@ -87,14 +112,21 @@ jobs:
             pubspec_v="$(grep '^version:' "$pubspec_path" \
               | sed 's/version:[[:space:]]*//' | tr -d '\r')"
 
-            last_tag="$(git tag --list "${pkg}-v*" \
-              | sed "s/^${pkg}-v//" \
-              | sort -V | tail -1 || true)"
+            # pub.dev is the source of truth. Fall back to git tags
+            # only when pub.dev returns 404 (first-publish path).
+            last_published="$(pubdev_latest "$pkg")"
+            source="pub.dev"
+            if [ -z "$last_published" ]; then
+              last_published="$(git tag --list "${pkg}-v*" \
+                | sed "s/^${pkg}-v//" \
+                | sort -V | tail -1 || true)"
+              source="git-tag-fallback"
+            fi
 
-            if [ -z "$last_tag" ]; then
+            if [ -z "$last_published" ]; then
               candidate="$pubspec_v"
             else
-              candidate="$(next_patch "$last_tag")"
+              candidate="$(next_patch "$last_published")"
             fi
 
             if version_gt "$pubspec_v" "$candidate"; then
@@ -103,7 +135,7 @@ jobs:
               next="$candidate"
             fi
 
-            echo "::notice::$pkg pubspec=$pubspec_v last_tag=${last_tag:-<none>} next=$next"
+            echo "::notice::$pkg pubspec=$pubspec_v last_published=${last_published:-<none>} (source=$source) next=$next"
 
             if [ "$pubspec_v" != "$next" ]; then
               sed -i -E "s/^version:[[:space:]]*.*$/version: $next/" "$pubspec_path"
