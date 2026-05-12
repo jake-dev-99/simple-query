@@ -1,11 +1,17 @@
 name: CI
 
-# Runs on every PR against the three promotion-flow branches
-# (develop -> staging -> main). CD (publish.yml) handles the
-# merge + tag side.
+# Runs on every PR targeting `main`. Single-branch model: feature
+# branches PR directly into main, releases are cut via release.yml
+# (manual workflow_dispatch) which tags + triggers publish.yml.
 on:
   pull_request:
-    branches: [develop, staging, main]
+    branches: [main]
+  # Also run on direct pushes to main so release.yml's commit
+  # (which lands directly via deploy-key bypass, skipping the PR
+  # gate) still goes through analyze + test before any subsequent
+  # tag fires publish.yml.
+  push:
+    branches: [main]
 
 jobs:
   package-tests:
@@ -25,9 +31,9 @@ jobs:
           - packages/simple_query_shared
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      - uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           channel: stable
 
@@ -54,4 +60,11 @@ jobs:
           else
             echo "No test/ directory — skipping."
           fi
+
+      # Note: validate-publishability dry-run + pigeon-drift jobs are
+      # intentionally omitted in this Phase A revision. Both depend on
+      # tooling/state that lives only on develop (the path→hosted dep
+      # split lives in pubspec_overrides.yaml on develop; tool/regen_pigeon.sh
+      # is develop-only). They land via the develop→main bridge merge in
+      # Phase B and the steps come back automatically.
 
