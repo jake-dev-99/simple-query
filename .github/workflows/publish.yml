@@ -6,9 +6,11 @@ name: Publish to pub.dev
 # when a human deliberately cuts one. This eliminates the orphan-tag
 # drift class that plagued the previous auto-tag.yml flow.
 #
-# Each `publish-*` job uses the canonical
-# `dart-lang/setup-dart/.github/workflows/publish.yml@v1` reusable
-# workflow, which handles OIDC token exchange with pub.dev.
+# Per-package matrix using subosito/flutter-action + flutter pub
+# publish --force --skip-validation. `--skip-validation` lets pub
+# publish work for Flutter packages (skips resolution which trips
+# on `sdk: flutter`); pub.dev's server still enforces version
+# monotonicity, ownership, and OIDC binding.
 
 on:
   push:
@@ -23,66 +25,61 @@ on:
       - 'simple_query_shared-v*'
 
 jobs:
-  publish-facade:
-    if: startsWith(github.ref, 'refs/tags/simple_query-v')
+  publish:
     permissions:
       id-token: write
-    uses: dart-lang/setup-dart/.github/workflows/publish.yml@v1
-    with:
-      working-directory: packages/simple_query
+      contents: read
+    runs-on: ubuntu-latest
 
-  publish-platform-interface:
-    if: startsWith(github.ref, 'refs/tags/simple_query_platform_interface-v')
-    permissions:
-      id-token: write
-    uses: dart-lang/setup-dart/.github/workflows/publish.yml@v1
-    with:
-      working-directory: packages/simple_query_platform_interface
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - name: simple_query
+            path: packages/simple_query
+          - name: simple_query_platform_interface
+            path: packages/simple_query_platform_interface
+          - name: simple_query_android
+            path: packages/simple_query_android
+          - name: simple_query_ios
+            path: packages/simple_query_ios
+          - name: simple_query_macos
+            path: packages/simple_query_macos
+          - name: simple_query_linux
+            path: packages/simple_query_linux
+          - name: simple_query_windows
+            path: packages/simple_query_windows
+          - name: simple_query_shared
+            path: packages/simple_query_shared
 
-  publish-android:
-    if: startsWith(github.ref, 'refs/tags/simple_query_android-v')
-    permissions:
-      id-token: write
-    uses: dart-lang/setup-dart/.github/workflows/publish.yml@v1
-    with:
-      working-directory: packages/simple_query_android
+    steps:
+      - uses: actions/checkout@v4
+        if: startsWith(github.ref, format('refs/tags/{0}-v', matrix.package.name))
 
-  publish-ios:
-    if: startsWith(github.ref, 'refs/tags/simple_query_ios-v')
-    permissions:
-      id-token: write
-    uses: dart-lang/setup-dart/.github/workflows/publish.yml@v1
-    with:
-      working-directory: packages/simple_query_ios
+      - uses: subosito/flutter-action@v2
+        if: startsWith(github.ref, format('refs/tags/{0}-v', matrix.package.name))
+        with:
+          channel: stable
 
-  publish-macos:
-    if: startsWith(github.ref, 'refs/tags/simple_query_macos-v')
-    permissions:
-      id-token: write
-    uses: dart-lang/setup-dart/.github/workflows/publish.yml@v1
-    with:
-      working-directory: packages/simple_query_macos
+      - name: Verify pubspec version matches tag
+        if: startsWith(github.ref, format('refs/tags/{0}-v', matrix.package.name))
+        working-directory: ${{ matrix.package.path }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          expected="${tag#${{ matrix.package.name }}-v}"
+          actual="$(grep '^version:' pubspec.yaml | sed 's/version:[[:space:]]*//')"
+          if [ "$expected" != "$actual" ]; then
+            echo "::error::Tag ${tag} does not match pubspec version ${actual} (expected ${expected})"
+            exit 1
+          fi
 
-  publish-linux:
-    if: startsWith(github.ref, 'refs/tags/simple_query_linux-v')
-    permissions:
-      id-token: write
-    uses: dart-lang/setup-dart/.github/workflows/publish.yml@v1
-    with:
-      working-directory: packages/simple_query_linux
+      - name: Install dependencies
+        if: startsWith(github.ref, format('refs/tags/{0}-v', matrix.package.name))
+        working-directory: ${{ matrix.package.path }}
+        run: flutter pub get
 
-  publish-windows:
-    if: startsWith(github.ref, 'refs/tags/simple_query_windows-v')
-    permissions:
-      id-token: write
-    uses: dart-lang/setup-dart/.github/workflows/publish.yml@v1
-    with:
-      working-directory: packages/simple_query_windows
-
-  publish-shared:
-    if: startsWith(github.ref, 'refs/tags/simple_query_shared-v')
-    permissions:
-      id-token: write
-    uses: dart-lang/setup-dart/.github/workflows/publish.yml@v1
-    with:
-      working-directory: packages/simple_query_shared
+      - name: Publish
+        timeout-minutes: 2
+        if: startsWith(github.ref, format('refs/tags/{0}-v', matrix.package.name))
+        working-directory: ${{ matrix.package.path }}
+        run: flutter pub publish --force --skip-validation
