@@ -142,4 +142,13 @@ jobs:
         timeout-minutes: 2
         if: startsWith(steps.resolve.outputs.tag, format('{0}-v', matrix.package.name))
         working-directory: ${{ matrix.package.path }}
-        run: flutter pub publish --force
+        # --force skips the interactive "publish this?" prompt.
+        # --skip-validation skips the local pre-flight checks (file
+        # listing, pubspec lint, override hints, version-progression
+        # hint). Validation already ran at CI time on the PR; re-running
+        # it here just adds noise (the `pubspec_overrides.yaml` hint
+        # always fires during pre-publish dev) and never blocks because
+        # hints don't fail validation. pub.dev's server still enforces
+        # ownership, version monotonicity, and OIDC binding regardless
+        # of what the local CLI does.
+        run: flutter pub publish --force --skip-validation

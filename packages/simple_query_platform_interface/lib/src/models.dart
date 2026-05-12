@@ -138,7 +138,8 @@ class QueryFilterCondition {
     if (operator == QueryFilterOperator.inList && value is! List) {
       throw SimpleQueryError(
         code: SimpleQueryErrorCode.invalidQuery,
-        message: 'QueryFilterOperator.inList requires value to be a List',
+        message:
+            'simple_query: QueryFilterOperator.inList requires value to be a List',
         details: <String, Object?>{
           'field': field,
           'operator': operator.name,
@@ -235,8 +236,9 @@ class QueryPage {
     if (offset != null && cursor != null) {
       throw SimpleQueryError(
         code: SimpleQueryErrorCode.invalidQuery,
-        message: 'QueryPage cannot set both offset and cursor; use '
-            'QueryPage.offset or QueryPage.cursor to pick one pagination mode.',
+        message: 'simple_query: QueryPage cannot set both offset and cursor; '
+            'use QueryPage.offset or QueryPage.cursor to pick one pagination '
+            'mode.',
         details: <String, Object?>{
           'offset': offset,
           'cursor': cursor,

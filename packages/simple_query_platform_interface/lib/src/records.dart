@@ -317,7 +317,8 @@ String _coerceString(Object value, String field) {
   throw SimpleQueryError(
     code: SimpleQueryErrorCode.invalidQuery,
     message:
-        'Record field "$field" expected a String/num/bool, got ${value.runtimeType}',
+        'simple_query: record field "$field" expected a String/num/bool, '
+        'got ${value.runtimeType}',
     details: <String, Object?>{'field': field, 'runtimeType': '${value.runtimeType}'},
   );
 }
@@ -347,7 +348,8 @@ bool? _optionalBool(QueryRecord record, String field) {
   throw SimpleQueryError(
     code: SimpleQueryErrorCode.invalidQuery,
     message:
-        'Record field "$field" expected a bool-coercible value, got ${value.runtimeType}',
+        'simple_query: record field "$field" expected a bool-coercible '
+        'value, got ${value.runtimeType}',
     details: <String, Object?>{'field': field, 'value': '$value'},
   );
 }
@@ -361,7 +363,8 @@ int? _optionalInt(QueryRecord record, String field) {
   throw SimpleQueryError(
     code: SimpleQueryErrorCode.invalidQuery,
     message:
-        'Record field "$field" expected an int-coercible value, got ${value.runtimeType}',
+        'simple_query: record field "$field" expected an int-coercible '
+        'value, got ${value.runtimeType}',
     details: <String, Object?>{'field': field, 'runtimeType': '${value.runtimeType}'},
   );
 }
@@ -373,7 +376,8 @@ List<String> _stringList(QueryRecord record, String field) {
     throw SimpleQueryError(
       code: SimpleQueryErrorCode.invalidQuery,
       message:
-          'Record field "$field" expected a List, got ${value.runtimeType}',
+          'simple_query: record field "$field" expected a List, got '
+          '${value.runtimeType}',
       details: <String, Object?>{'field': field, 'runtimeType': '${value.runtimeType}'},
     );
   }
