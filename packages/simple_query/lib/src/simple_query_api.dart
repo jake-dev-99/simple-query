@@ -78,6 +78,8 @@ class SimpleQuery {
   /// [QueryPage.limit] from the original request.
   Stream<QueryResult> queryPaginated(QueryRequest request) async* {
     var current = request;
+    String? lastCursor;
+    int? lastOffset;
     while (true) {
       final result = await query(current);
       yield result;
@@ -90,6 +92,21 @@ class SimpleQuery {
           (nextCursor == null && nextOffset == null)) {
         return;
       }
+
+      // Defensive: a non-advancing pagination token (same cursor or same
+      // offset as last round) would loop forever. Treat as exhausted and
+      // surface a debug-only warning so the platform bug is noticed.
+      if ((nextCursor != null && nextCursor == lastCursor) ||
+          (nextCursor == null &&
+              nextOffset != null &&
+              nextOffset == lastOffset)) {
+        assert(false,
+            'simple_query: pagination token did not advance — stopping. '
+            'cursor=$nextCursor offset=$nextOffset');
+        return;
+      }
+      lastCursor = nextCursor;
+      lastOffset = nextOffset;
 
       final limit = current.page?.limit;
       current = current.copyWith(
