@@ -67,10 +67,13 @@ class BinaryContent {
   /// platform-interface layer.
   BinaryContentHandle get rawHandle => _handle;
 
-  /// Releases the platform-side resource. Idempotent.
+  /// Releases the platform-side resource. Idempotent on success; safe to
+  /// retry after a transient platform failure (we only mark `_closed` after
+  /// the underlying close succeeds, so a failed call doesn't strand the
+  /// resource as un-closeable).
   Future<void> close() async {
     if (_closed) return;
-    _closed = true;
     await _facade.closeBinary(_handle.handleId);
+    _closed = true;
   }
 }
