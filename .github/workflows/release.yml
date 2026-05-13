@@ -206,4 +206,4 @@ ${entries}
 
           git push --atomic origin HEAD:main "${new_tags[@]}"
 
-          echo "::notice::Pushed commit + ${#new_tags[@]} tag(s). publish.yml will fire per tag."
+          echo "::notice::Pushed commit + ${#new_tags[@]} tag(s). the Deploy workflow will fire per tag."
