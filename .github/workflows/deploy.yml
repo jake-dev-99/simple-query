@@ -34,6 +34,16 @@ on:
   # tag. The `tag` input must be an existing tag name (e.g.
   # `simple_query_android-v0.2.1`); the resolve step keys deploys
   # off that exact value.
+  #
+  # Caveat: workflow_dispatch's OIDC token claims `ref` as the
+  # branch the workflow was launched from (typically `main`), not
+  # the tag. pub.dev's automated-publishing binding validates the
+  # `ref` claim against the configured tag pattern, so a manual
+  # re-fire MAY be rejected at the OIDC handshake even though the
+  # checkout step operates on the tag. If a re-fire fails with
+  # OAuth-fallback (interactive browser URL printed), the path
+  # forward is to delete + re-cut the tag via the "Cut Release"
+  # workflow rather than re-firing this manually.
   workflow_dispatch:
     inputs:
       tag:
@@ -70,9 +80,20 @@ jobs:
           else
             tag="$INPUT_GITHUB_REF_NAME"
           fi
-          # Sanity: tag must match one of this repo's package prefixes.
-          if ! [[ "$tag" =~ ^simple_query(_platform_interface|_android|_ios|_macos|_linux|_windows|_shared)?-v ]]; then
-            echo "::error::Tag '$tag' does not match any expected simple_query* package prefix."
+          # Reject control characters (newlines, CR, etc.) outright.
+          # An attacker-controlled workflow_dispatch tag value with
+          # an embedded newline could append further key=value lines
+          # to $GITHUB_OUTPUT and override the resolved ref the
+          # checkout step uses. Belt-and-suspenders alongside the
+          # full-shape regex below.
+          if [[ "$tag" =~ [[:cntrl:]] ]]; then
+            echo "::error::Tag input contains control characters; rejected."
+            exit 1
+          fi
+          # Tag must match one of this repo's package prefixes AND a
+          # plausible version suffix. Anchored at both ends.
+          if ! [[ "$tag" =~ ^simple_query(_platform_interface|_android|_ios|_macos|_linux|_windows|_shared)?-v[0-9A-Za-z._+-]+$ ]]; then
+            echo "::error::Tag '$tag' does not match any expected simple_query*-v<version> shape."
             exit 1
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
