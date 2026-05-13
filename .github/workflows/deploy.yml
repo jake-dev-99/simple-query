@@ -1,0 +1,181 @@
+name: Deploy
+
+# Deploys a tagged release of a federated package to pub.dev. Each
+# package has its own tag prefix so a single tagged release
+# publishes exactly one package — consistent with pub.dev's
+# automated-publishing contract (one tag pattern per package
+# registration).
+#
+# Tags are created by the "Cut Release" workflow (workflow_dispatch).
+# There is no auto-tag step; tags only exist when a human
+# deliberately cuts one. This eliminates the orphan-tag drift class
+# that plagued the previous auto-tag flow.
+#
+# Per-package matrix using subosito/flutter-action + flutter pub
+# publish --force --skip-validation. `--skip-validation` lets pub
+# publish work for Flutter packages (skips resolution which trips
+# on `sdk: flutter`); pub.dev's server still enforces version
+# monotonicity, ownership, and OIDC binding.
+
+on:
+  push:
+    tags:
+      - 'simple_query-v*'
+      - 'simple_query_platform_interface-v*'
+      - 'simple_query_android-v*'
+      - 'simple_query_ios-v*'
+      - 'simple_query_macos-v*'
+      - 'simple_query_linux-v*'
+      - 'simple_query_windows-v*'
+      - 'simple_query_shared-v*'
+  # Manual re-fire for an existing tag — e.g. transient pub.dev
+  # outage swallowed the original tag-push run, or an OIDC config
+  # was fixed and the publish needs to be retried against the same
+  # tag. The `tag` input must be an existing tag name (e.g.
+  # `simple_query_android-v0.2.1`); the resolve step keys deploys
+  # off that exact value.
+  #
+  # Caveat: workflow_dispatch's OIDC token claims `ref` as the
+  # branch the workflow was launched from (typically `main`), not
+  # the tag. pub.dev's automated-publishing binding validates the
+  # `ref` claim against the configured tag pattern, so a manual
+  # re-fire MAY be rejected at the OIDC handshake even though the
+  # checkout step operates on the tag. If a re-fire fails with
+  # OAuth-fallback (interactive browser URL printed), the path
+  # forward is to delete + re-cut the tag via the "Cut Release"
+  # workflow rather than re-firing this manually.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re-)deploy (e.g. simple_query_android-v0.2.1)'
+        required: true
+        type: string
+
+jobs:
+  # Resolve the effective tag name regardless of trigger:
+  #   push:tags         → github.ref_name
+  #   workflow_dispatch → inputs.tag
+  # All downstream `if:` matrix gates and the checkout `ref:` key off
+  # this single resolved value, so the rest of the workflow doesn't
+  # have to branch on event type.
+  resolve-tag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      ref: ${{ steps.resolve.outputs.ref }}
+    steps:
+      - name: Resolve tag
+        id: resolve
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_GITHUB_REF_NAME: ${{ github.ref_name }}
+          INPUT_EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$INPUT_EVENT_NAME" = "workflow_dispatch" ]; then
+            tag="$INPUT_TAG"
+          else
+            tag="$INPUT_GITHUB_REF_NAME"
+          fi
+          # Reject control characters (newlines, CR, etc.) outright.
+          # An attacker-controlled workflow_dispatch tag value with
+          # an embedded newline could append further key=value lines
+          # to $GITHUB_OUTPUT and override the resolved ref the
+          # checkout step uses. Belt-and-suspenders alongside the
+          # full-shape regex below.
+          if [[ "$tag" =~ [[:cntrl:]] ]]; then
+            echo "::error::Tag input contains control characters; rejected."
+            exit 1
+          fi
+          # Tag must match one of this repo's package prefixes AND a
+          # plausible version suffix. Anchored at both ends.
+          if ! [[ "$tag" =~ ^simple_query(_platform_interface|_android|_ios|_macos|_linux|_windows|_shared)?-v[0-9A-Za-z._+-]+$ ]]; then
+            echo "::error::Tag '$tag' does not match any expected simple_query*-v<version> shape."
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "ref=refs/tags/$tag" >> "$GITHUB_OUTPUT"
+          echo "::notice::Resolved deploy tag: $tag"
+
+  publish:
+    needs: resolve-tag
+    permissions:
+      id-token: write
+      contents: read
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - name: simple_query
+            path: packages/simple_query
+          - name: simple_query_platform_interface
+            path: packages/simple_query_platform_interface
+          - name: simple_query_android
+            path: packages/simple_query_android
+          - name: simple_query_ios
+            path: packages/simple_query_ios
+          - name: simple_query_macos
+            path: packages/simple_query_macos
+          - name: simple_query_linux
+            path: packages/simple_query_linux
+          - name: simple_query_windows
+            path: packages/simple_query_windows
+          - name: simple_query_shared
+            path: packages/simple_query_shared
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        if: startsWith(needs.resolve-tag.outputs.tag, format('{0}-v', matrix.package.name))
+        with:
+          ref: ${{ needs.resolve-tag.outputs.ref }}
+          fetch-depth: 0  # full history for the ancestry check
+
+      - name: Verify tag commit is on main
+        # `on.push.tags` is not branch-scoped — a tag from any branch
+        # would otherwise trigger publish. The "Cut Release" workflow
+        # normally only tags from main, but verify independently.
+        if: startsWith(needs.resolve-tag.outputs.tag, format('{0}-v', matrix.package.name))
+        env:
+          RESOLVED_TAG: ${{ needs.resolve-tag.outputs.tag }}
+        run: |
+          git fetch origin main
+          # After checkout above, HEAD points at the tag's commit.
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::Tag $RESOLVED_TAG does not point to a commit on origin/main. Aborting publish."
+            exit 1
+          fi
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        if: startsWith(needs.resolve-tag.outputs.tag, format('{0}-v', matrix.package.name))
+        with:
+          channel: stable
+
+      - name: Verify pubspec version matches tag
+        if: startsWith(needs.resolve-tag.outputs.tag, format('{0}-v', matrix.package.name))
+        working-directory: ${{ matrix.package.path }}
+        env:
+          RESOLVED_TAG: ${{ needs.resolve-tag.outputs.tag }}
+          PACKAGE_NAME: ${{ matrix.package.name }}
+        run: |
+          expected="${RESOLVED_TAG#${PACKAGE_NAME}-v}"
+          actual="$(grep '^version:' pubspec.yaml | sed 's/version:[[:space:]]*//')"
+          if [ "$expected" != "$actual" ]; then
+            echo "::error::Tag ${RESOLVED_TAG} does not match pubspec version ${actual} (expected ${expected})"
+            exit 1
+          fi
+
+      - name: Install dependencies
+        if: startsWith(needs.resolve-tag.outputs.tag, format('{0}-v', matrix.package.name))
+        working-directory: ${{ matrix.package.path }}
+        run: flutter pub get
+
+      - name: Publish
+        timeout-minutes: 2
+        if: startsWith(needs.resolve-tag.outputs.tag, format('{0}-v', matrix.package.name))
+        working-directory: ${{ matrix.package.path }}
+        run: flutter pub publish --force --skip-validation

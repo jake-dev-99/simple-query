@@ -1,17 +1,20 @@
-name: CI
+name: Verify
 
-# Runs on every PR targeting `main`. Single-branch model: feature
-# branches PR directly into main, releases are cut via release.yml
-# (manual workflow_dispatch) which tags + triggers publish.yml.
+# Verifies a change before it lands on main: runs on every PR
+# targeting main and on every direct push to main (which only
+# happens via the "Cut Release" workflow's bot bypass — covered
+# for safety so any tag-firing commit has been gated).
+# Single-branch model: feature branches PR directly into main,
+# releases are cut via the "Cut Release" workflow which tags +
+# triggers the "Deploy" workflow.
 on:
   pull_request:
     branches: [main]
-  # Also run on direct pushes to main so release.yml's commit
-  # (which lands directly via deploy-key bypass, skipping the PR
-  # gate) still goes through analyze + test before any subsequent
-  # tag fires publish.yml.
   push:
     branches: [main]
+  # Manual override for re-running the gate against a specific ref
+  # (e.g. after a flaky external dep stabilizes).
+  workflow_dispatch:
 
 jobs:
   package-tests:
