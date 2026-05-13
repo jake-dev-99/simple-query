@@ -175,7 +175,17 @@ jobs:
         run: flutter pub get
 
       - name: Publish
+        # `dart pub publish` (not `flutter pub publish`) — this is
+        # dart-lang's canonical automated-publishing invocation. The
+        # earlier `flutter pub` choice was because dart pub refuses to
+        # resolve a Flutter-SDK-pinned package, but `--skip-validation`
+        # skips the resolution step that throws. Going through dart pub
+        # removes one layer of indirection between the OIDC env vars
+        # (`ACTIONS_ID_TOKEN_REQUEST_*`, injected by `id-token: write`)
+        # and the pub binary that uses them. 2-min cap so an OAuth
+        # fallback fails fast instead of waiting on a prompt nobody
+        # will answer.
         timeout-minutes: 2
         if: startsWith(needs.resolve-tag.outputs.tag, format('{0}-v', matrix.package.name))
         working-directory: ${{ matrix.package.path }}
-        run: flutter pub publish --force --skip-validation
+        run: dart pub publish --force --skip-validation
