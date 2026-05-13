@@ -136,19 +136,15 @@ jobs:
             fi
             [ -z "$entries" ] && entries="- (no commits in $dir since ${prev_tag:-repo init})"
 
-            entry_block="## ${next}
+            # Build the CHANGELOG entry and per-package summary via
+            # printf rather than multi-line bash literals — a literal
+            # with an unindented line (e.g. the trailing `"` at column
+            # 1) breaks the YAML `run: |` block-scalar indent contract
+            # and the whole workflow fails to parse before it can run.
+            entry_block=$(printf '## %s\n\n%s\n' "$next" "$entries")
 
-${entries}
-"
-
-            summary+="
-=== ${pkg} ===
-  current:  ${current}
-  next:     ${next}
-  tag:      ${tag}
-  range:    ${range_label}
-${entries}
-"
+            summary+="$(printf '\n=== %s ===\n  current:  %s\n  next:     %s\n  tag:      %s\n  range:    %s\n%s\n' \
+              "$pkg" "$current" "$next" "$tag" "$range_label" "$entries")"
 
             if [ "$DRY_RUN" = "true" ]; then
               continue
