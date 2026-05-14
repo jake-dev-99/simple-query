@@ -74,14 +74,9 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
 
       - name: Configure git identity
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          app_info=$(gh api /app)
-          app_slug=$(echo "$app_info" | jq -r '.slug')
-          app_id=$(echo "$app_info" | jq -r '.id')
-          git config user.name "${app_slug}[bot]"
-          git config user.email "${app_id}+${app_slug}[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Cut release
         env:
