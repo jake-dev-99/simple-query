@@ -1,5 +1,7 @@
 # simple_query
 
+> **Contributing / agents:** see [`AGENTS.md`](AGENTS.md) for build·test·verify (incl. `melos bootstrap`), conventions, and the "What NOT to do" rulings (Claude Code reads it via [`CLAUDE.md`](CLAUDE.md)). Governed by the Simple Zen SOP family (Notion).
+
 Federated Flutter plugin providing a typed query API for device data (contacts,
 media, files, calendar, messages, calls). Android is the reference backend;
 non-Android platforms provide a mix of native bridges, filesystem fallback, and
