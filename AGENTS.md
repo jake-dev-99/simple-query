@@ -68,6 +68,16 @@ short-lived branch per work item; PRs target `main`. Releases are cut via
 
 ## What NOT to do (binding rulings)
 
+- **Don't make `simple_query` depend on `simple_permissions`.** `simple_query`
+  is permission-*aware* — it checks state and **fails fast** with
+  `SimpleQueryError(code: permissionDenied, …)` carrying the OS permission
+  id — but it never *requests* permissions, never depends on
+  `simple_permissions`/`simple_permissions_native`, and never surfaces their
+  types in its public API. (Past guidance was the opposite; this is
+  inverted intentionally.) Flag any `simple_permissions*` import in
+  `packages/simple_query*/` or any direct `requestPermissions` /
+  `*requestAccess` / `*requestAuthorization` call. See
+  [`docs/memory/feedback_permissions.md`](docs/memory/feedback_permissions.md).
 - **Don't break the platform-interface API without a major version bump** —
   downstream (Unify Messages+) and pub.dev consumers depend on it.
 - **Don't change documented error mappings or query semantics silently** —
