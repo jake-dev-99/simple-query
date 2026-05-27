@@ -1,1 +1,0 @@
-- [simple_query checks permissions but never depends on simple_permissions](feedback_permissions.md) — permission-*aware* (check + fail-fast `permissionDenied` carrying the OS permission id), but never requests permissions and never depends on / exposes `simple_permissions`

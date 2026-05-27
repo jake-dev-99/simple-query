@@ -6,7 +6,10 @@ Operational procedures for `simple_query`.
 | --- | --- |
 | [../RELEASE.md](../RELEASE.md) | Release/publish procedure (kept at `docs/` root for now). |
 
-Release + deploy are automated via `.github/workflows/release.yml` and
-`deploy.yml` (`main`-only, tag-driven). Add rollback / incident procedures
-here as they're needed. For day-to-day build/test/verify commands (incl.
-`melos bootstrap`), see [`AGENTS.md`](../../AGENTS.md).
+Release + deploy run from `main` only. `.github/workflows/release.yml`
+cuts the release (manual `workflow_dispatch`), and
+`.github/workflows/deploy.yml` triggers on the resulting tag push to run
+the OIDC pub.dev publish. Full detail in [`../RELEASE.md`](../RELEASE.md).
+Add rollback / incident procedures here as they're needed. For day-to-day
+build/test/verify commands (incl. `melos bootstrap`), see
+[`AGENTS.md`](../../AGENTS.md).

@@ -17,7 +17,7 @@ code-quality, semver/API-stability, tests, and docs do.
 
 ## Layout (melos workspace)
 
-```
+```text
 packages/
   simple_query                 # the public API package
   simple_query_platform_interface   # the contract — the load-bearing API
