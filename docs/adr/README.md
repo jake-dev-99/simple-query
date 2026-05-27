@@ -20,5 +20,5 @@ should be folded into numbered ADRs as they're revisited:
 - [`../PLATFORM_SUPPORT_MATRIX.md`](../PLATFORM_SUPPORT_MATRIX.md) — per-platform support decisions.
 - [`../MIGRATION.md`](../MIGRATION.md) — migration guidance.
 
-> As a Plugin (not an App), `simple-query` has no per-concern Notion docs —
+> As a Plugin (not an App), `simple_query` has no per-concern Notion docs —
 > these records are self-contained here.

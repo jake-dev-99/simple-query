@@ -1,4 +1,4 @@
-# AGENTS.md — working in `simple-query`
+# AGENTS.md — working in `simple_query`
 
 Canonical guide for any agent or contributor in this repo (Claude Code
 reads it via [`CLAUDE.md`](CLAUDE.md), which `@`-imports this file).
