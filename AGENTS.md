@@ -64,7 +64,7 @@ See `melos.yaml` for the workspace scripts.
 
 `main`-only with git tags for releases (no `develop`/`staging`). One
 short-lived branch per work item; PRs target `main`. Releases are cut via
-`.github/workflows/release.yml`; see [`docs/runbooks/`](docs/runbooks/).
+`.github/workflows/release.yml`; see [`docs/RELEASE.md`](docs/RELEASE.md).
 
 ## What NOT to do (binding rulings)
 
