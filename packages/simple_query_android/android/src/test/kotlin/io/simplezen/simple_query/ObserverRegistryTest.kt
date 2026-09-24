@@ -5,10 +5,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Unit tests for [ObserverRegistry].
- *
- * Verifies that flag constants, selfChange forwarding, and changeType mapping
- * are all wired through the dispatch pipeline correctly.
+ * Unit tests for [ObserverRegistry] constants and flag semantics.
  *
  * These tests exercise the Kotlin-side semantics (constants, bit-tests)
  * without requiring an Android device — the registry's private internals
