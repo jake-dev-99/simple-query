@@ -624,6 +624,7 @@ class ContentChangeEvent {
     required this.uri,
     required this.changeType,
     this.flags,
+    this.selfChange = false,
   });
 
   /// ID of the observer that fired.
@@ -638,12 +639,18 @@ class ContentChangeEvent {
   /// Additional flags from the observer.
   int? flags;
 
+  /// Whether this change originated from our own writes (vs. an external
+  /// app or the system). Self-writes are already covered by the
+  /// post-write reconcile, so consumers can skip a redundant pass.
+  bool selfChange;
+
   Object encode() {
     return <Object?>[
       observerId,
       uri,
       changeType,
       flags,
+      selfChange,
     ];
   }
 
@@ -654,6 +661,7 @@ class ContentChangeEvent {
       uri: result[1]! as String,
       changeType: result[2]! as ContentChangeType,
       flags: result[3] as int?,
+      selfChange: result[4]! as bool,
     );
   }
 }

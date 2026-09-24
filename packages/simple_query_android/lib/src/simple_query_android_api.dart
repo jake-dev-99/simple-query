@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:simple_query_platform_interface/simple_query_platform_interface.dart'
     as iface;
 
@@ -26,6 +27,15 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
       StreamController<iface.ObserveEvent>.broadcast();
   final _activeObservers = <String, _ObserverRegistration>{};
   final _openBinaryHandles = <String, String>{};
+
+  /// Test-only hook: subscribe to the global observer-events broadcast so
+  /// tests can assert on [ObserveEvent] fields (ids, selfChange, flags)
+  /// without going through a full channel integration.
+  @visibleForTesting
+  StreamSubscription<iface.ObserveEvent> subscribeToObserverEvents(
+      void Function(iface.ObserveEvent e) onEvent) {
+    return _observerEventsController.stream.listen(onEvent);
+  }
 
   Future<iface.CapabilitySnapshot> getCapabilities() async {
     return iface.RuntimeContractValidation.validateCapabilitySnapshot(
@@ -424,15 +434,29 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
     final registration = _activeObservers[event.observerId];
     if (registration == null) return;
 
+    // Extract a trailing integer row id from the URI when present.
+    // URIs like `content://sms/1571` or `content://mms/42` carry the
+    // changed row's `_id` as the last path segment; root-URI notifies
+    // (e.g. `content://sms`) have no such segment and yield an empty ids
+    // list, which the consumer treats as "reconcile the whole list".
+    final ids = <String>[];
+    final uri = Uri.parse(event.uri);
+    final lastSegment = uri.pathSegments.lastOrNull;
+    if (lastSegment != null && int.tryParse(lastSegment) != null) {
+      ids.add(lastSegment);
+    }
+
     final mapped = iface.ObserveEvent(
       domain: registration.request.domain,
       entityType: registration.request.entityType,
       changeType: _observeType(event.changeType),
       timestamp: DateTime.now().toUtc(),
+      ids: ids,
       source: 'android.content_observer',
       metadata: <String, Object?>{
         'uri': event.uri,
         if (event.flags != null) 'flags': event.flags!,
+        'selfChange': event.selfChange,
       },
     );
 

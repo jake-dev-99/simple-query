@@ -40,7 +40,12 @@ class ObserverRegistry(
 
         val observer = object : ContentObserver(mainHandler) {
             override fun onChange(selfChange: Boolean) {
-                dispatchChange(observerId, contentUri, null, ContentChangeType.UNKNOWN)
+                dispatchChange(
+                    observerId, contentUri, null,
+                    ContentChangeType.UNKNOWN,
+                    flags = null,
+                    selfChange = selfChange,
+                )
             }
 
             override fun onChange(selfChange: Boolean, uri: Uri?) {
@@ -48,7 +53,9 @@ class ObserverRegistry(
                     observerId,
                     contentUri,
                     uri?.toString(),
-                    ContentChangeType.UNKNOWN
+                    ContentChangeType.UNKNOWN,
+                    flags = null,
+                    selfChange = selfChange,
                 )
             }
 
@@ -59,7 +66,12 @@ class ObserverRegistry(
                     flags and NOTIFY_DELETE != 0 -> ContentChangeType.DELETE
                     else -> ContentChangeType.UNKNOWN
                 }
-                dispatchChange(observerId, contentUri, uri?.toString(), changeType)
+                dispatchChange(
+                    observerId, contentUri, uri?.toString(),
+                    changeType,
+                    flags = flags,
+                    selfChange = selfChange,
+                )
             }
 
             override fun onChange(selfChange: Boolean, uris: Collection<Uri>, flags: Int) {
@@ -70,7 +82,12 @@ class ObserverRegistry(
                     else -> ContentChangeType.UNKNOWN
                 }
                 for (changedUri in uris) {
-                    dispatchChange(observerId, contentUri, changedUri.toString(), changeType)
+                    dispatchChange(
+                        observerId, contentUri, changedUri.toString(),
+                        changeType,
+                        flags = flags,
+                        selfChange = selfChange,
+                    )
                 }
             }
         }
@@ -109,7 +126,9 @@ class ObserverRegistry(
         observerId: String,
         registeredUri: String,
         changedUri: String?,
-        changeType: ContentChangeType
+        changeType: ContentChangeType,
+        flags: Int?,
+        selfChange: Boolean,
     ) {
         // Already on main thread via mainHandler
         flutterApi.onContentChange(
@@ -117,14 +136,18 @@ class ObserverRegistry(
                 observerId = observerId,
                 uri = changedUri ?: registeredUri,
                 changeType = changeType,
+                // Pigeon expects Long? for flags.
+                flags = flags?.toLong(),
+                selfChange = selfChange,
             )
         ) { /* ignore callback result */ }
     }
 
     companion object {
-        // ContentObserver flag constants (API 30+)
-        private const val NOTIFY_INSERT = 1
-        private const val NOTIFY_UPDATE = 2
-        private const val NOTIFY_DELETE = 4
+        // ContentObserver flag constants — match Android's ContentResolver
+        // NOTFY_INSERT=4, NOTIFY_UPDATE=8, NOTIFY_DELETE=16.
+        private const val NOTIFY_INSERT = 4
+        private const val NOTIFY_UPDATE = 8
+        private const val NOTIFY_DELETE = 16
     }
 }

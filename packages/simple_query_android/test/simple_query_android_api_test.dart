@@ -1349,6 +1349,127 @@ void main() {
     await api.closeBinary(handle.handleId);
     expect(host.closedStreams, contains('s'));
   });
+
+  group('onContentChange — UNFY-270', () {
+    late SimpleQueryAndroidApi api;
+    late _FakeHostApi host;
+
+    setUp(() {
+      host = _FakeHostApi();
+      api = SimpleQueryAndroidApi(
+        hostApi: host,
+        registerFlutterApi: false,
+        enforceAndroidPlatformCheck: false,
+      );
+    });
+
+    test('parses a trailing integer URI segment into ObserveEvent.ids',
+        () async {
+      // Register an observer so onContentChange has a lookup target.
+      final stream = api.observe(
+        const iface.ObserveRequest(domain: iface.QueryDomain.messages),
+      );
+      final sub = stream.listen((_) {});
+      await Future<void>.delayed(Duration.zero);
+
+      final events = <iface.ObserveEvent>[];
+      final evtSub = api.subscribeToObserverEvents(events.add);
+
+      // The fake returns 'obs_$registerCount' — registerCount was
+      // incremented during ensureRegistered, so the id is 'obs_1'.
+      api.onContentChange(
+        p.ContentChangeEvent(
+          observerId: 'obs_1',
+          uri: 'content://sms/1571',
+          changeType: p.ContentChangeType.update,
+          flags: 2,
+          selfChange: false,
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(events, hasLength(1));
+      expect(events.single.ids, ['1571'],
+          reason: 'trailing segment parsed as row id');
+      expect(events.single.metadata?['selfChange'], false);
+      expect(events.single.metadata?['flags'], 2);
+
+      await evtSub.cancel();
+      await sub.cancel();
+    });
+
+    test('root-URI notify yields empty ids (no row id segment)', () async {
+      final stream = api.observe(
+        const iface.ObserveRequest(domain: iface.QueryDomain.messages),
+      );
+      final sub = stream.listen((_) {});
+      await Future<void>.delayed(Duration.zero);
+
+      final events = <iface.ObserveEvent>[];
+      final evtSub = api.subscribeToObserverEvents(events.add);
+
+      api.onContentChange(
+        p.ContentChangeEvent(
+          observerId: 'obs_1',
+          uri: 'content://sms',
+          changeType: p.ContentChangeType.unknown,
+          flags: null,
+          selfChange: true,
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(events, hasLength(1));
+      expect(events.single.ids, isEmpty,
+          reason: 'root URI has no row id segment');
+      expect(events.single.metadata?['selfChange'], true);
+
+      await evtSub.cancel();
+      await sub.cancel();
+    });
+
+    test('non-numeric trailing segment is dropped (no ids)', () async {
+      final stream = api.observe(
+        const iface.ObserveRequest(domain: iface.QueryDomain.messages),
+      );
+      final sub = stream.listen((_) {});
+      await Future<void>.delayed(Duration.zero);
+
+      final events = <iface.ObserveEvent>[];
+      final evtSub = api.subscribeToObserverEvents(events.add);
+
+      api.onContentChange(
+        p.ContentChangeEvent(
+          observerId: 'obs_1',
+          uri: 'content://sms/abc',
+          changeType: p.ContentChangeType.insert,
+          flags: 1,
+          selfChange: false,
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(events, hasLength(1));
+      expect(events.single.ids, isEmpty,
+          reason: 'non-numeric segment is not a valid row id');
+
+      await evtSub.cancel();
+      await sub.cancel();
+    });
+
+    test('unknown observer id is silently dropped', () {
+      api.onContentChange(
+        p.ContentChangeEvent(
+          observerId: 'no-such-observer',
+          uri: 'content://sms/1',
+          changeType: p.ContentChangeType.insert,
+          flags: 1,
+          selfChange: false,
+        ),
+      );
+      // No throw — unknown observer is silently dropped.
+    });
+  });
 }
 
 class _FakeHostApi extends p.QueryHostApi {

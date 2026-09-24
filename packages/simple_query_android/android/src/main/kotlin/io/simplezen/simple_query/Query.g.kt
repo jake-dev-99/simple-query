@@ -591,7 +591,13 @@ data class ContentChangeEvent (
   /** Type of change. */
   val changeType: ContentChangeType,
   /** Additional flags from the observer. */
-  val flags: Long? = null
+  val flags: Long? = null,
+  /**
+   * Whether this change originated from our own writes (vs. an external
+   * app or the system). Self-writes are already covered by the
+   * post-write reconcile, so consumers can skip a redundant pass.
+   */
+  val selfChange: Boolean
 )
  {
   companion object {
@@ -600,7 +606,8 @@ data class ContentChangeEvent (
       val uri = pigeonVar_list[1] as String
       val changeType = pigeonVar_list[2] as ContentChangeType
       val flags = pigeonVar_list[3] as Long?
-      return ContentChangeEvent(observerId, uri, changeType, flags)
+      val selfChange = pigeonVar_list[4] as Boolean
+      return ContentChangeEvent(observerId, uri, changeType, flags, selfChange)
     }
   }
   fun toList(): List<Any?> {
@@ -609,6 +616,7 @@ data class ContentChangeEvent (
       uri,
       changeType,
       flags,
+      selfChange,
     )
   }
 }
