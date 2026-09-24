@@ -43,7 +43,4 @@ android {
 
 dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
-    testImplementation("com.google.firebase.protos:protos:test:0.0.0")
-    testImplementation("androidx.test:androidx.test.mockk:0.0.0")
 }

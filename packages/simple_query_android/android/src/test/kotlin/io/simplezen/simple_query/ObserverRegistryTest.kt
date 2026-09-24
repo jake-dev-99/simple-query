@@ -1,13 +1,5 @@
 package io.simplezen.simple_query
 
-import android.content.ContentValues
-import android.database.Cursor
-import android.net.Uri
-import android.os.Handler
-import android.os.Looper
-import io.flutter.embedding.engine.plugins.FlutterPlugin
-import io.flutter.embedding.engine.plugins.activity.ActivityAware
-import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
 import kotlin.test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -17,12 +9,12 @@ import kotlin.test.assertTrue
  *
  * Verifies that flag constants, selfChange forwarding, and changeType mapping
  * are all wired through the dispatch pipeline correctly.
+ *
+ * These tests exercise the Kotlin-side semantics (constants, bit-tests)
+ * without requiring an Android device — the registry's private internals
+ * are accessed indirectly through the public constants.
  */
 class ObserverRegistryTest {
-    // The registry's internals are private, but we exercise the three
-    // dispatch branches via the constants and verify the Kotlin-side
-    // semantics that would be observed through the Flutter layer.
-
     @test
     fun flagConstantsMatchAndroidContentResolver() {
         // Android's ContentResolver uses these exact bit flags.
@@ -35,29 +27,26 @@ class ObserverRegistryTest {
     }
 
     @test
-    fun flagsAndSelfChangeBitsMapCorrectly() {
-        // Isolate each flag with a self-change bit set to demonstrate
-        // the bit-test in dispatchChange's when-block resolves correctly.
+    fun flagsMapCorrectlyForEachChangeType() {
+        // INSERT (4): matches NOTIFY_INSERT only
         assertTrue((4 and ObserverRegistry.NOTIFY_INSERT) != 0)
         assertTrue((4 and ObserverRegistry.NOTIFY_UPDATE) == 0)
         assertTrue((4 and ObserverRegistry.NOTIFY_DELETE) == 0)
-        assertTrue(selfChangeBitTest(4, true))
 
+        // UPDATE (8): matches NOTIFY_UPDATE only
         assertTrue((8 and ObserverRegistry.NOTIFY_INSERT) == 0)
         assertTrue((8 and ObserverRegistry.NOTIFY_UPDATE) != 0)
         assertTrue((8 and ObserverRegistry.NOTIFY_DELETE) == 0)
-        assertTrue(selfChangeBitTest(8, false))
 
+        // DELETE (16): matches NOTIFY_DELETE only
         assertTrue((16 and ObserverRegistry.NOTIFY_INSERT) == 0)
         assertTrue((16 and ObserverRegistry.NOTIFY_UPDATE) == 0)
         assertTrue((16 and ObserverRegistry.NOTIFY_DELETE) != 0)
-        assertTrue(selfChangeBitTest(16, true))
 
         // Mixed flags: INSERT | UPDATE = 12
         assertTrue((12 and ObserverRegistry.NOTIFY_INSERT) != 0)
         assertTrue((12 and ObserverRegistry.NOTIFY_UPDATE) != 0)
         assertTrue((12 and ObserverRegistry.NOTIFY_DELETE) == 0)
-        assertTrue(selfChangeBitTest(12, false))
     }
 
     @test
@@ -66,13 +55,5 @@ class ObserverRegistryTest {
         assertTrue((1 and ObserverRegistry.NOTIFY_INSERT) == 0)
         assertTrue((1 and ObserverRegistry.NOTIFY_UPDATE) == 0)
         assertTrue((1 and ObserverRegistry.NOTIFY_DELETE) == 0)
-    }
-
-    private fun selfChangeBitTest(flags: Int, selfChange: Boolean): Boolean {
-        // Stub: in the real registry this is resolved by the when-block in
-        // each onChange overload. We assert the bits here to prove the
-        // constants + bit tests are correct, independent of the Android
-        // framework.
-        return true
     }
 }
