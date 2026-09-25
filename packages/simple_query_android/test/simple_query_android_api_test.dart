@@ -944,7 +944,8 @@ void main() {
       );
     });
 
-    test('invalid sort field characters in platformSpecific throws invalidQuery',
+    test(
+        'invalid sort field characters in platformSpecific throws invalidQuery',
         () async {
       await expectLater(
         api.query(
@@ -1180,8 +1181,7 @@ void main() {
   });
 
   group('AndroidQueryPermissionResolver (raw permission strings)', () {
-    List<String> resolve(String uri,
-            {required bool write, int sdkInt = 33}) =>
+    List<String> resolve(String uri, {required bool write, int sdkInt = 33}) =>
         AndroidQueryPermissionResolver.permissionsForUri(
           uri,
           write: write,
@@ -1201,11 +1201,9 @@ void main() {
     });
 
     test('contacts read/write map to READ_CONTACTS / WRITE_CONTACTS', () {
-      expect(
-          resolve('content://com.android.contacts/contacts', write: false),
+      expect(resolve('content://com.android.contacts/contacts', write: false),
           <String>['android.permission.READ_CONTACTS']);
-      expect(
-          resolve('content://com.android.contacts/contacts', write: true),
+      expect(resolve('content://com.android.contacts/contacts', write: true),
           <String>['android.permission.WRITE_CONTACTS']);
     });
 
@@ -1217,11 +1215,9 @@ void main() {
     });
 
     test('calendar read/write map to READ_CALENDAR / WRITE_CALENDAR', () {
-      expect(
-          resolve('content://com.android.calendar/events', write: false),
+      expect(resolve('content://com.android.calendar/events', write: false),
           <String>['android.permission.READ_CALENDAR']);
-      expect(
-          resolve('content://com.android.calendar/events', write: true),
+      expect(resolve('content://com.android.calendar/events', write: true),
           <String>['android.permission.WRITE_CALENDAR']);
     });
 
@@ -1265,8 +1261,7 @@ void main() {
     });
 
     test('media generic file on API 32 → READ_EXTERNAL_STORAGE', () {
-      expect(
-          resolve('content://media/external/file', write: false, sdkInt: 32),
+      expect(resolve('content://media/external/file', write: false, sdkInt: 32),
           <String>['android.permission.READ_EXTERNAL_STORAGE']);
     });
 
@@ -1277,8 +1272,8 @@ void main() {
     });
 
     test('unknown uri returns empty (no gate)', () {
-      expect(resolve('content://com.example.custom/data', write: false),
-          isEmpty);
+      expect(
+          resolve('content://com.example.custom/data', write: false), isEmpty);
     });
   });
 
@@ -1301,14 +1296,14 @@ void main() {
               .having((e) => e.code, 'code',
                   iface.SimpleQueryErrorCode.permissionDenied)
               .having(
-                (e) => e.details?['permissions'],
-                'details.permissions',
-                <String>['android.permission.READ_CONTACTS'],
-              ),
+            (e) => e.details?['permissions'],
+            'details.permissions',
+            <String>['android.permission.READ_CONTACTS'],
+          ),
         ),
       );
-      expect(host.permissionChecks,
-          contains('android.permission.READ_CONTACTS'));
+      expect(
+          host.permissionChecks, contains('android.permission.READ_CONTACTS'));
     });
 
     test('proceeds when any candidate permission is granted', () async {
