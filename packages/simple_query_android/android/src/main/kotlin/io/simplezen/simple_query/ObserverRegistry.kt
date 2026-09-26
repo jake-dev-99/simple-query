@@ -7,6 +7,17 @@ import android.os.Handler
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
+private const val NOTIFY_INSERT = 4
+private const val NOTIFY_UPDATE = 8
+private const val NOTIFY_DELETE = 16
+
+internal fun contentChangeTypeFromFlags(flags: Int): ContentChangeType = when {
+    flags and NOTIFY_INSERT != 0 -> ContentChangeType.INSERT
+    flags and NOTIFY_UPDATE != 0 -> ContentChangeType.UPDATE
+    flags and NOTIFY_DELETE != 0 -> ContentChangeType.DELETE
+    else -> ContentChangeType.UNKNOWN
+}
+
 /**
  * Registry for ContentObserver instances.
  *
@@ -60,31 +71,19 @@ class ObserverRegistry(
             }
 
             override fun onChange(selfChange: Boolean, uri: Uri?, flags: Int) {
-                val changeType = when {
-                    flags and NOTIFY_INSERT != 0 -> ContentChangeType.INSERT
-                    flags and NOTIFY_UPDATE != 0 -> ContentChangeType.UPDATE
-                    flags and NOTIFY_DELETE != 0 -> ContentChangeType.DELETE
-                    else -> ContentChangeType.UNKNOWN
-                }
                 dispatchChange(
                     observerId, contentUri, uri?.toString(),
-                    changeType,
+                    contentChangeTypeFromFlags(flags),
                     flags = flags,
                     selfChange = selfChange,
                 )
             }
 
             override fun onChange(selfChange: Boolean, uris: Collection<Uri>, flags: Int) {
-                val changeType = when {
-                    flags and NOTIFY_INSERT != 0 -> ContentChangeType.INSERT
-                    flags and NOTIFY_UPDATE != 0 -> ContentChangeType.UPDATE
-                    flags and NOTIFY_DELETE != 0 -> ContentChangeType.DELETE
-                    else -> ContentChangeType.UNKNOWN
-                }
                 for (changedUri in uris) {
                     dispatchChange(
                         observerId, contentUri, changedUri.toString(),
-                        changeType,
+                        contentChangeTypeFromFlags(flags),
                         flags = flags,
                         selfChange = selfChange,
                     )
@@ -143,11 +142,4 @@ class ObserverRegistry(
         ) { /* ignore callback result */ }
     }
 
-    companion object {
-        // ContentObserver flag constants — match Android's ContentResolver
-        // NOTFY_INSERT=4, NOTIFY_UPDATE=8, NOTIFY_DELETE=16.
-        private const val NOTIFY_INSERT = 4
-        private const val NOTIFY_UPDATE = 8
-        private const val NOTIFY_DELETE = 16
-    }
 }
