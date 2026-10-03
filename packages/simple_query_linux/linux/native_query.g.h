@@ -3,134 +3,346 @@
 
 #ifndef PIGEON_NATIVE_QUERY_G_H_
 #define PIGEON_NATIVE_QUERY_G_H_
-#include <flutter/basic_message_channel.h>
-#include <flutter/binary_messenger.h>
-#include <flutter/encodable_value.h>
-#include <flutter/standard_message_codec.h>
 
-#include <map>
-#include <optional>
-#include <string>
+#include <flutter_linux/flutter_linux.h>
 
-namespace simple_query_linux {
+G_BEGIN_DECLS
 
+G_DECLARE_FINAL_TYPE(SqlqMessageCodec, sqlq_message_codec, SQLQ, MESSAGE_CODEC, FlStandardMessageCodec)
 
-// Generated class from Pigeon.
+G_DECLARE_FINAL_TYPE(SqlqNativeQueryHostApi, sqlq_native_query_host_api, SQLQ, NATIVE_QUERY_HOST_API, GObject)
 
-class FlutterError {
- public:
-  explicit FlutterError(const std::string& code)
-    : code_(code) {}
-  explicit FlutterError(const std::string& code, const std::string& message)
-    : code_(code), message_(message) {}
-  explicit FlutterError(const std::string& code, const std::string& message, const flutter::EncodableValue& details)
-    : code_(code), message_(message), details_(details) {}
+G_DECLARE_FINAL_TYPE(SqlqNativeQueryHostApiGetCapabilitiesResponse, sqlq_native_query_host_api_get_capabilities_response, SQLQ, NATIVE_QUERY_HOST_API_GET_CAPABILITIES_RESPONSE, GObject)
 
-  const std::string& code() const { return code_; }
-  const std::string& message() const { return message_; }
-  const flutter::EncodableValue& details() const { return details_; }
+/**
+ * sqlq_native_query_host_api_get_capabilities_response_new:
+ *
+ * Creates a new response to NativeQueryHostApi.getCapabilities.
+ *
+ * Returns: a new #SqlqNativeQueryHostApiGetCapabilitiesResponse
+ */
+SqlqNativeQueryHostApiGetCapabilitiesResponse* sqlq_native_query_host_api_get_capabilities_response_new(FlValue* return_value);
 
- private:
-  std::string code_;
-  std::string message_;
-  flutter::EncodableValue details_;
-};
+/**
+ * sqlq_native_query_host_api_get_capabilities_response_new_error:
+ * @code: error code.
+ * @message: error message.
+ * @details: (allow-none): error details or %NULL.
+ *
+ * Creates a new error response to NativeQueryHostApi.getCapabilities.
+ *
+ * Returns: a new #SqlqNativeQueryHostApiGetCapabilitiesResponse
+ */
+SqlqNativeQueryHostApiGetCapabilitiesResponse* sqlq_native_query_host_api_get_capabilities_response_new_error(const gchar* code, const gchar* message, FlValue* details);
 
-template<class T> class ErrorOr {
- public:
-  ErrorOr(const T& rhs) : v_(rhs) {}
-  ErrorOr(const T&& rhs) : v_(std::move(rhs)) {}
-  ErrorOr(const FlutterError& rhs) : v_(rhs) {}
-  ErrorOr(const FlutterError&& rhs) : v_(std::move(rhs)) {}
+G_DECLARE_FINAL_TYPE(SqlqNativeQueryHostApiQueryResponse, sqlq_native_query_host_api_query_response, SQLQ, NATIVE_QUERY_HOST_API_QUERY_RESPONSE, GObject)
 
-  bool has_error() const { return std::holds_alternative<FlutterError>(v_); }
-  const T& value() const { return std::get<T>(v_); };
-  const FlutterError& error() const { return std::get<FlutterError>(v_); };
+/**
+ * sqlq_native_query_host_api_query_response_new:
+ *
+ * Creates a new response to NativeQueryHostApi.query.
+ *
+ * Returns: a new #SqlqNativeQueryHostApiQueryResponse
+ */
+SqlqNativeQueryHostApiQueryResponse* sqlq_native_query_host_api_query_response_new(FlValue* return_value);
 
- private:
-  friend class NativeQueryHostApi;
-  friend class NativeQueryFlutterApi;
-  ErrorOr() = default;
-  T TakeValue() && { return std::get<T>(std::move(v_)); }
+/**
+ * sqlq_native_query_host_api_query_response_new_error:
+ * @code: error code.
+ * @message: error message.
+ * @details: (allow-none): error details or %NULL.
+ *
+ * Creates a new error response to NativeQueryHostApi.query.
+ *
+ * Returns: a new #SqlqNativeQueryHostApiQueryResponse
+ */
+SqlqNativeQueryHostApiQueryResponse* sqlq_native_query_host_api_query_response_new_error(const gchar* code, const gchar* message, FlValue* details);
 
-  std::variant<T, FlutterError> v_;
-};
+G_DECLARE_FINAL_TYPE(SqlqNativeQueryHostApiMutateResponse, sqlq_native_query_host_api_mutate_response, SQLQ, NATIVE_QUERY_HOST_API_MUTATE_RESPONSE, GObject)
 
+/**
+ * sqlq_native_query_host_api_mutate_response_new:
+ *
+ * Creates a new response to NativeQueryHostApi.mutate.
+ *
+ * Returns: a new #SqlqNativeQueryHostApiMutateResponse
+ */
+SqlqNativeQueryHostApiMutateResponse* sqlq_native_query_host_api_mutate_response_new(FlValue* return_value);
 
+/**
+ * sqlq_native_query_host_api_mutate_response_new_error:
+ * @code: error code.
+ * @message: error message.
+ * @details: (allow-none): error details or %NULL.
+ *
+ * Creates a new error response to NativeQueryHostApi.mutate.
+ *
+ * Returns: a new #SqlqNativeQueryHostApiMutateResponse
+ */
+SqlqNativeQueryHostApiMutateResponse* sqlq_native_query_host_api_mutate_response_new_error(const gchar* code, const gchar* message, FlValue* details);
 
-class PigeonInternalCodecSerializer : public flutter::StandardCodecSerializer {
- public:
-  PigeonInternalCodecSerializer();
-  inline static PigeonInternalCodecSerializer& GetInstance() {
-    static PigeonInternalCodecSerializer sInstance;
-    return sInstance;
-  }
+G_DECLARE_FINAL_TYPE(SqlqNativeQueryHostApiBatchResponse, sqlq_native_query_host_api_batch_response, SQLQ, NATIVE_QUERY_HOST_API_BATCH_RESPONSE, GObject)
 
-  void WriteValue(
-    const flutter::EncodableValue& value,
-    flutter::ByteStreamWriter* stream) const override;
+/**
+ * sqlq_native_query_host_api_batch_response_new:
+ *
+ * Creates a new response to NativeQueryHostApi.batch.
+ *
+ * Returns: a new #SqlqNativeQueryHostApiBatchResponse
+ */
+SqlqNativeQueryHostApiBatchResponse* sqlq_native_query_host_api_batch_response_new(FlValue* return_value);
 
- protected:
-  flutter::EncodableValue ReadValueOfType(
-    uint8_t type,
-    flutter::ByteStreamReader* stream) const override;
+/**
+ * sqlq_native_query_host_api_batch_response_new_error:
+ * @code: error code.
+ * @message: error message.
+ * @details: (allow-none): error details or %NULL.
+ *
+ * Creates a new error response to NativeQueryHostApi.batch.
+ *
+ * Returns: a new #SqlqNativeQueryHostApiBatchResponse
+ */
+SqlqNativeQueryHostApiBatchResponse* sqlq_native_query_host_api_batch_response_new_error(const gchar* code, const gchar* message, FlValue* details);
 
-};
+G_DECLARE_FINAL_TYPE(SqlqNativeQueryHostApiObserveStartResponse, sqlq_native_query_host_api_observe_start_response, SQLQ, NATIVE_QUERY_HOST_API_OBSERVE_START_RESPONSE, GObject)
 
-// Generated interface from Pigeon that represents a handler of messages from Flutter.
-class NativeQueryHostApi {
- public:
-  NativeQueryHostApi(const NativeQueryHostApi&) = delete;
-  NativeQueryHostApi& operator=(const NativeQueryHostApi&) = delete;
-  virtual ~NativeQueryHostApi() {}
-  virtual ErrorOr<flutter::EncodableMap> GetCapabilities() = 0;
-  virtual ErrorOr<flutter::EncodableMap> Query(const flutter::EncodableMap& request) = 0;
-  virtual ErrorOr<flutter::EncodableMap> Mutate(const flutter::EncodableMap& request) = 0;
-  virtual ErrorOr<flutter::EncodableMap> Batch(const flutter::EncodableMap& request) = 0;
-  virtual ErrorOr<std::string> ObserveStart(const flutter::EncodableMap& request) = 0;
-  virtual std::optional<FlutterError> ObserveStop(const std::string& observer_id) = 0;
-  virtual ErrorOr<flutter::EncodableMap> OpenBinary(const flutter::EncodableMap& request) = 0;
-  virtual std::optional<FlutterError> CloseBinary(const std::string& handle_id) = 0;
-  virtual ErrorOr<std::optional<flutter::EncodableMap>> CallExtension(
-    const std::string& namespace,
-    const std::string& method,
-    const flutter::EncodableMap* args) = 0;
+/**
+ * sqlq_native_query_host_api_observe_start_response_new:
+ *
+ * Creates a new response to NativeQueryHostApi.observeStart.
+ *
+ * Returns: a new #SqlqNativeQueryHostApiObserveStartResponse
+ */
+SqlqNativeQueryHostApiObserveStartResponse* sqlq_native_query_host_api_observe_start_response_new(const gchar* return_value);
 
-  // The codec used by NativeQueryHostApi.
-  static const flutter::StandardMessageCodec& GetCodec();
-  // Sets up an instance of `NativeQueryHostApi` to handle messages through the `binary_messenger`.
-  static void SetUp(
-    flutter::BinaryMessenger* binary_messenger,
-    NativeQueryHostApi* api);
-  static void SetUp(
-    flutter::BinaryMessenger* binary_messenger,
-    NativeQueryHostApi* api,
-    const std::string& message_channel_suffix);
-  static flutter::EncodableValue WrapError(std::string_view error_message);
-  static flutter::EncodableValue WrapError(const FlutterError& error);
+/**
+ * sqlq_native_query_host_api_observe_start_response_new_error:
+ * @code: error code.
+ * @message: error message.
+ * @details: (allow-none): error details or %NULL.
+ *
+ * Creates a new error response to NativeQueryHostApi.observeStart.
+ *
+ * Returns: a new #SqlqNativeQueryHostApiObserveStartResponse
+ */
+SqlqNativeQueryHostApiObserveStartResponse* sqlq_native_query_host_api_observe_start_response_new_error(const gchar* code, const gchar* message, FlValue* details);
 
- protected:
-  NativeQueryHostApi() = default;
+G_DECLARE_FINAL_TYPE(SqlqNativeQueryHostApiObserveStopResponse, sqlq_native_query_host_api_observe_stop_response, SQLQ, NATIVE_QUERY_HOST_API_OBSERVE_STOP_RESPONSE, GObject)
 
-};
-// Generated class from Pigeon that represents Flutter messages that can be called from C++.
-class NativeQueryFlutterApi {
- public:
-  NativeQueryFlutterApi(flutter::BinaryMessenger* binary_messenger);
-  NativeQueryFlutterApi(
-    flutter::BinaryMessenger* binary_messenger,
-    const std::string& message_channel_suffix);
-  static const flutter::StandardMessageCodec& GetCodec();
-  void OnObserveEvent(
-    const std::string& observer_id,
-    const flutter::EncodableMap& event,
-    std::function<void(void)>&& on_success,
-    std::function<void(const FlutterError&)>&& on_error);
+/**
+ * sqlq_native_query_host_api_observe_stop_response_new:
+ *
+ * Creates a new response to NativeQueryHostApi.observeStop.
+ *
+ * Returns: a new #SqlqNativeQueryHostApiObserveStopResponse
+ */
+SqlqNativeQueryHostApiObserveStopResponse* sqlq_native_query_host_api_observe_stop_response_new();
 
- private:
-  flutter::BinaryMessenger* binary_messenger_;
-  std::string message_channel_suffix_;
-};
+/**
+ * sqlq_native_query_host_api_observe_stop_response_new_error:
+ * @code: error code.
+ * @message: error message.
+ * @details: (allow-none): error details or %NULL.
+ *
+ * Creates a new error response to NativeQueryHostApi.observeStop.
+ *
+ * Returns: a new #SqlqNativeQueryHostApiObserveStopResponse
+ */
+SqlqNativeQueryHostApiObserveStopResponse* sqlq_native_query_host_api_observe_stop_response_new_error(const gchar* code, const gchar* message, FlValue* details);
 
-}  // namespace simple_query_linux
+G_DECLARE_FINAL_TYPE(SqlqNativeQueryHostApiOpenBinaryResponse, sqlq_native_query_host_api_open_binary_response, SQLQ, NATIVE_QUERY_HOST_API_OPEN_BINARY_RESPONSE, GObject)
+
+/**
+ * sqlq_native_query_host_api_open_binary_response_new:
+ *
+ * Creates a new response to NativeQueryHostApi.openBinary.
+ *
+ * Returns: a new #SqlqNativeQueryHostApiOpenBinaryResponse
+ */
+SqlqNativeQueryHostApiOpenBinaryResponse* sqlq_native_query_host_api_open_binary_response_new(FlValue* return_value);
+
+/**
+ * sqlq_native_query_host_api_open_binary_response_new_error:
+ * @code: error code.
+ * @message: error message.
+ * @details: (allow-none): error details or %NULL.
+ *
+ * Creates a new error response to NativeQueryHostApi.openBinary.
+ *
+ * Returns: a new #SqlqNativeQueryHostApiOpenBinaryResponse
+ */
+SqlqNativeQueryHostApiOpenBinaryResponse* sqlq_native_query_host_api_open_binary_response_new_error(const gchar* code, const gchar* message, FlValue* details);
+
+G_DECLARE_FINAL_TYPE(SqlqNativeQueryHostApiCloseBinaryResponse, sqlq_native_query_host_api_close_binary_response, SQLQ, NATIVE_QUERY_HOST_API_CLOSE_BINARY_RESPONSE, GObject)
+
+/**
+ * sqlq_native_query_host_api_close_binary_response_new:
+ *
+ * Creates a new response to NativeQueryHostApi.closeBinary.
+ *
+ * Returns: a new #SqlqNativeQueryHostApiCloseBinaryResponse
+ */
+SqlqNativeQueryHostApiCloseBinaryResponse* sqlq_native_query_host_api_close_binary_response_new();
+
+/**
+ * sqlq_native_query_host_api_close_binary_response_new_error:
+ * @code: error code.
+ * @message: error message.
+ * @details: (allow-none): error details or %NULL.
+ *
+ * Creates a new error response to NativeQueryHostApi.closeBinary.
+ *
+ * Returns: a new #SqlqNativeQueryHostApiCloseBinaryResponse
+ */
+SqlqNativeQueryHostApiCloseBinaryResponse* sqlq_native_query_host_api_close_binary_response_new_error(const gchar* code, const gchar* message, FlValue* details);
+
+G_DECLARE_FINAL_TYPE(SqlqNativeQueryHostApiCallExtensionResponse, sqlq_native_query_host_api_call_extension_response, SQLQ, NATIVE_QUERY_HOST_API_CALL_EXTENSION_RESPONSE, GObject)
+
+/**
+ * sqlq_native_query_host_api_call_extension_response_new:
+ *
+ * Creates a new response to NativeQueryHostApi.callExtension.
+ *
+ * Returns: a new #SqlqNativeQueryHostApiCallExtensionResponse
+ */
+SqlqNativeQueryHostApiCallExtensionResponse* sqlq_native_query_host_api_call_extension_response_new(FlValue* return_value);
+
+/**
+ * sqlq_native_query_host_api_call_extension_response_new_error:
+ * @code: error code.
+ * @message: error message.
+ * @details: (allow-none): error details or %NULL.
+ *
+ * Creates a new error response to NativeQueryHostApi.callExtension.
+ *
+ * Returns: a new #SqlqNativeQueryHostApiCallExtensionResponse
+ */
+SqlqNativeQueryHostApiCallExtensionResponse* sqlq_native_query_host_api_call_extension_response_new_error(const gchar* code, const gchar* message, FlValue* details);
+
+/**
+ * SqlqNativeQueryHostApiVTable:
+ *
+ * Table of functions exposed by NativeQueryHostApi to be implemented by the API provider.
+ */
+typedef struct {
+  SqlqNativeQueryHostApiGetCapabilitiesResponse* (*get_capabilities)(gpointer user_data);
+  SqlqNativeQueryHostApiQueryResponse* (*query)(FlValue* request, gpointer user_data);
+  SqlqNativeQueryHostApiMutateResponse* (*mutate)(FlValue* request, gpointer user_data);
+  SqlqNativeQueryHostApiBatchResponse* (*batch)(FlValue* request, gpointer user_data);
+  SqlqNativeQueryHostApiObserveStartResponse* (*observe_start)(FlValue* request, gpointer user_data);
+  SqlqNativeQueryHostApiObserveStopResponse* (*observe_stop)(const gchar* observer_id, gpointer user_data);
+  SqlqNativeQueryHostApiOpenBinaryResponse* (*open_binary)(FlValue* request, gpointer user_data);
+  SqlqNativeQueryHostApiCloseBinaryResponse* (*close_binary)(const gchar* handle_id, gpointer user_data);
+  SqlqNativeQueryHostApiCallExtensionResponse* (*call_extension)(const gchar* namespace_, const gchar* method, FlValue* args, gpointer user_data);
+} SqlqNativeQueryHostApiVTable;
+
+/**
+ * sqlq_native_query_host_api_set_method_handlers:
+ *
+ * @messenger: an #FlBinaryMessenger.
+ * @suffix: (allow-none): a suffix to add to the API or %NULL for none.
+ * @vtable: implementations of the methods in this API.
+ * @user_data: (closure): user data to pass to the functions in @vtable.
+ * @user_data_free_func: (allow-none): a function which gets called to free @user_data, or %NULL.
+ *
+ * Connects the method handlers in the NativeQueryHostApi API.
+ */
+void sqlq_native_query_host_api_set_method_handlers(FlBinaryMessenger* messenger, const gchar* suffix, const SqlqNativeQueryHostApiVTable* vtable, gpointer user_data, GDestroyNotify user_data_free_func);
+
+/**
+ * sqlq_native_query_host_api_clear_method_handlers:
+ *
+ * @messenger: an #FlBinaryMessenger.
+ * @suffix: (allow-none): a suffix to add to the API or %NULL for none.
+ *
+ * Clears the method handlers in the NativeQueryHostApi API.
+ */
+void sqlq_native_query_host_api_clear_method_handlers(FlBinaryMessenger* messenger, const gchar* suffix);
+
+G_DECLARE_FINAL_TYPE(SqlqNativeQueryFlutterApiOnObserveEventResponse, sqlq_native_query_flutter_api_on_observe_event_response, SQLQ, NATIVE_QUERY_FLUTTER_API_ON_OBSERVE_EVENT_RESPONSE, GObject)
+
+/**
+ * sqlq_native_query_flutter_api_on_observe_event_response_is_error:
+ * @response: a #SqlqNativeQueryFlutterApiOnObserveEventResponse.
+ *
+ * Checks if a response to NativeQueryFlutterApi.onObserveEvent is an error.
+ *
+ * Returns: a %TRUE if this response is an error.
+ */
+gboolean sqlq_native_query_flutter_api_on_observe_event_response_is_error(SqlqNativeQueryFlutterApiOnObserveEventResponse* response);
+
+/**
+ * sqlq_native_query_flutter_api_on_observe_event_response_get_error_code:
+ * @response: a #SqlqNativeQueryFlutterApiOnObserveEventResponse.
+ *
+ * Get the error code for this response.
+ *
+ * Returns: an error code or %NULL if not an error.
+ */
+const gchar* sqlq_native_query_flutter_api_on_observe_event_response_get_error_code(SqlqNativeQueryFlutterApiOnObserveEventResponse* response);
+
+/**
+ * sqlq_native_query_flutter_api_on_observe_event_response_get_error_message:
+ * @response: a #SqlqNativeQueryFlutterApiOnObserveEventResponse.
+ *
+ * Get the error message for this response.
+ *
+ * Returns: an error message.
+ */
+const gchar* sqlq_native_query_flutter_api_on_observe_event_response_get_error_message(SqlqNativeQueryFlutterApiOnObserveEventResponse* response);
+
+/**
+ * sqlq_native_query_flutter_api_on_observe_event_response_get_error_details:
+ * @response: a #SqlqNativeQueryFlutterApiOnObserveEventResponse.
+ *
+ * Get the error details for this response.
+ *
+ * Returns: (allow-none): an error details or %NULL.
+ */
+FlValue* sqlq_native_query_flutter_api_on_observe_event_response_get_error_details(SqlqNativeQueryFlutterApiOnObserveEventResponse* response);
+
+/**
+ * SqlqNativeQueryFlutterApi:
+ *
+ */
+
+G_DECLARE_FINAL_TYPE(SqlqNativeQueryFlutterApi, sqlq_native_query_flutter_api, SQLQ, NATIVE_QUERY_FLUTTER_API, GObject)
+
+/**
+ * sqlq_native_query_flutter_api_new:
+ * @messenger: an #FlBinaryMessenger.
+ * @suffix: (allow-none): a suffix to add to the API or %NULL for none.
+ *
+ * Creates a new object to access the NativeQueryFlutterApi API.
+ *
+ * Returns: a new #SqlqNativeQueryFlutterApi
+ */
+SqlqNativeQueryFlutterApi* sqlq_native_query_flutter_api_new(FlBinaryMessenger* messenger, const gchar* suffix);
+
+/**
+ * sqlq_native_query_flutter_api_on_observe_event:
+ * @api: a #SqlqNativeQueryFlutterApi.
+ * @observer_id: parameter for this method.
+ * @event: parameter for this method.
+ * @cancellable: (allow-none): a #GCancellable or %NULL.
+ * @callback: (scope async): (allow-none): a #GAsyncReadyCallback to call when the call is complete or %NULL to ignore the response.
+ * @user_data: (closure): user data to pass to @callback.
+ *
+ */
+void sqlq_native_query_flutter_api_on_observe_event(SqlqNativeQueryFlutterApi* api, const gchar* observer_id, FlValue* event, GCancellable* cancellable, GAsyncReadyCallback callback, gpointer user_data);
+
+/**
+ * sqlq_native_query_flutter_api_on_observe_event_finish:
+ * @api: a #SqlqNativeQueryFlutterApi.
+ * @result: a #GAsyncResult.
+ * @error: (allow-none): #GError location to store the error occurring, or %NULL to ignore.
+ *
+ * Completes a sqlq_native_query_flutter_api_on_observe_event() call.
+ *
+ * Returns: a #SqlqNativeQueryFlutterApiOnObserveEventResponse or %NULL on error.
+ */
+SqlqNativeQueryFlutterApiOnObserveEventResponse* sqlq_native_query_flutter_api_on_observe_event_finish(SqlqNativeQueryFlutterApi* api, GAsyncResult* result, GError** error);
+
+G_END_DECLS
+
 #endif  // PIGEON_NATIVE_QUERY_G_H_

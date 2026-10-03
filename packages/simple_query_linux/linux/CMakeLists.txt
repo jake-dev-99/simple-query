@@ -15,7 +15,7 @@ endif()
 
 add_library(${PLUGIN_NAME} SHARED
   "simple_query_linux_plugin.cc"
-  "native_query.g.cpp"
+  "native_query.g.cc"
 )
 
 set_target_properties(${PLUGIN_NAME} PROPERTIES
