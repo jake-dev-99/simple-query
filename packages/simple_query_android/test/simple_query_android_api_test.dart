@@ -944,7 +944,8 @@ void main() {
       );
     });
 
-    test('invalid sort field characters in platformSpecific throws invalidQuery',
+    test(
+        'invalid sort field characters in platformSpecific throws invalidQuery',
         () async {
       await expectLater(
         api.query(
@@ -1180,8 +1181,7 @@ void main() {
   });
 
   group('AndroidQueryPermissionResolver (raw permission strings)', () {
-    List<String> resolve(String uri,
-            {required bool write, int sdkInt = 33}) =>
+    List<String> resolve(String uri, {required bool write, int sdkInt = 33}) =>
         AndroidQueryPermissionResolver.permissionsForUri(
           uri,
           write: write,
@@ -1201,11 +1201,9 @@ void main() {
     });
 
     test('contacts read/write map to READ_CONTACTS / WRITE_CONTACTS', () {
-      expect(
-          resolve('content://com.android.contacts/contacts', write: false),
+      expect(resolve('content://com.android.contacts/contacts', write: false),
           <String>['android.permission.READ_CONTACTS']);
-      expect(
-          resolve('content://com.android.contacts/contacts', write: true),
+      expect(resolve('content://com.android.contacts/contacts', write: true),
           <String>['android.permission.WRITE_CONTACTS']);
     });
 
@@ -1217,11 +1215,9 @@ void main() {
     });
 
     test('calendar read/write map to READ_CALENDAR / WRITE_CALENDAR', () {
-      expect(
-          resolve('content://com.android.calendar/events', write: false),
+      expect(resolve('content://com.android.calendar/events', write: false),
           <String>['android.permission.READ_CALENDAR']);
-      expect(
-          resolve('content://com.android.calendar/events', write: true),
+      expect(resolve('content://com.android.calendar/events', write: true),
           <String>['android.permission.WRITE_CALENDAR']);
     });
 
@@ -1265,8 +1261,7 @@ void main() {
     });
 
     test('media generic file on API 32 → READ_EXTERNAL_STORAGE', () {
-      expect(
-          resolve('content://media/external/file', write: false, sdkInt: 32),
+      expect(resolve('content://media/external/file', write: false, sdkInt: 32),
           <String>['android.permission.READ_EXTERNAL_STORAGE']);
     });
 
@@ -1277,8 +1272,8 @@ void main() {
     });
 
     test('unknown uri returns empty (no gate)', () {
-      expect(resolve('content://com.example.custom/data', write: false),
-          isEmpty);
+      expect(
+          resolve('content://com.example.custom/data', write: false), isEmpty);
     });
   });
 
@@ -1301,14 +1296,14 @@ void main() {
               .having((e) => e.code, 'code',
                   iface.SimpleQueryErrorCode.permissionDenied)
               .having(
-                (e) => e.details?['permissions'],
-                'details.permissions',
-                <String>['android.permission.READ_CONTACTS'],
-              ),
+            (e) => e.details?['permissions'],
+            'details.permissions',
+            <String>['android.permission.READ_CONTACTS'],
+          ),
         ),
       );
-      expect(host.permissionChecks,
-          contains('android.permission.READ_CONTACTS'));
+      expect(
+          host.permissionChecks, contains('android.permission.READ_CONTACTS'));
     });
 
     test('proceeds when any candidate permission is granted', () async {
@@ -1348,6 +1343,120 @@ void main() {
     expect(handle.handleId, 's');
     await api.closeBinary(handle.handleId);
     expect(host.closedStreams, contains('s'));
+  });
+
+  group('onContentChange — UNFY-270', () {
+    late SimpleQueryAndroidApi api;
+    late _FakeHostApi host;
+
+    setUp(() {
+      host = _FakeHostApi();
+      api = SimpleQueryAndroidApi(
+        hostApi: host,
+        registerFlutterApi: false,
+        enforceAndroidPlatformCheck: false,
+      );
+    });
+
+    Future<iface.ObserveEvent> observeChange(
+      String uri, {
+      iface.QueryDomain domain = iface.QueryDomain.messages,
+      p.ContentChangeType changeType = p.ContentChangeType.update,
+      int? flags = 8,
+      bool selfChange = true,
+      String? registeredUri,
+    }) async {
+      final events = <iface.ObserveEvent>[];
+      final subscription = api
+          .observe(iface.ObserveRequest(
+            domain: domain,
+            entityType: 'messages',
+            platformData: {
+              'contentUri':
+                  registeredUri ?? 'content://${Uri.parse(uri).authority}'
+            },
+          ))
+          .listen(events.add);
+      addTearDown(subscription.cancel);
+      await Future<void>.delayed(Duration.zero);
+      api.onContentChange(p.ContentChangeEvent(
+        observerId: 'obs_1',
+        uri: uri,
+        changeType: changeType,
+        flags: flags,
+        selfChange: selfChange,
+      ));
+      await Future<void>.delayed(Duration.zero);
+      expect(events, hasLength(1));
+      return events.single;
+    }
+
+    for (final authority in ['sms', 'mms']) {
+      test('preserves direct $authority row identity and observer metadata',
+          () async {
+        final event = await observeChange('content://$authority/1571');
+        expect(event.ids, ['1571']);
+        expect(event.domain, iface.QueryDomain.messages);
+        expect(event.entityType, 'messages');
+        expect(event.changeType, iface.ObserveChangeType.update);
+        expect(event.source, 'android.content_observer');
+        expect(event.metadata, {
+          'uri': 'content://$authority/1571',
+          'flags': 8,
+          'selfChange': true,
+        });
+      });
+    }
+
+    for (final uri in [
+      'content://sms',
+      'content://mms',
+      'content://sms/abc',
+      'content://mms/part/1571',
+      'content://mms/1571/addr',
+      'content://mms-sms/conversations/1571',
+      'content://custom.provider/1571',
+      'https://sms/1571',
+    ]) {
+      test('keeps $uri identifier-free for full reconciliation', () async {
+        final event = await observeChange(uri, flags: null, selfChange: false);
+        expect(event.ids, isEmpty);
+        expect(event.metadata, {'uri': uri, 'selfChange': false});
+      });
+    }
+
+    test('preserves message identity for a platform-specific SMS observer',
+        () async {
+      final event = await observeChange('content://sms/1571',
+          domain: iface.QueryDomain.platformSpecific);
+      expect(event.ids, ['1571']);
+    });
+
+    for (final type in p.ContentChangeType.values) {
+      test('preserves the ${type.name} change type', () async {
+        final event =
+            await observeChange('content://sms/1571', changeType: type);
+        expect(event.changeType.name, type.name);
+      });
+    }
+
+    test('unknown observer id is silently dropped', () async {
+      final events = <iface.ObserveEvent>[];
+      final subscription = api
+          .observe(
+            const iface.ObserveRequest(domain: iface.QueryDomain.messages),
+          )
+          .listen(events.add);
+      addTearDown(subscription.cancel);
+      await Future<void>.delayed(Duration.zero);
+      api.onContentChange(p.ContentChangeEvent(
+        observerId: 'no-such-observer',
+        uri: 'content://sms/1',
+        changeType: p.ContentChangeType.insert,
+      ));
+      await Future<void>.delayed(Duration.zero);
+      expect(events, isEmpty);
+    });
   });
 }
 

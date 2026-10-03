@@ -7,6 +7,20 @@ import android.os.Handler
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
+private const val NOTIFY_INSERT = 4
+private const val NOTIFY_UPDATE = 8
+private const val NOTIFY_DELETE = 16
+
+// Android permits combined operations. Claim a specific type only when it is
+// unambiguous; modifier flags must not obscure that operation.
+internal fun contentChangeTypeFromFlags(flags: Int): ContentChangeType =
+    when (flags and (NOTIFY_INSERT or NOTIFY_UPDATE or NOTIFY_DELETE)) {
+        NOTIFY_INSERT -> ContentChangeType.INSERT
+        NOTIFY_UPDATE -> ContentChangeType.UPDATE
+        NOTIFY_DELETE -> ContentChangeType.DELETE
+        else -> ContentChangeType.UNKNOWN
+    }
+
 /**
  * Registry for ContentObserver instances.
  *
@@ -40,7 +54,12 @@ class ObserverRegistry(
 
         val observer = object : ContentObserver(mainHandler) {
             override fun onChange(selfChange: Boolean) {
-                dispatchChange(observerId, contentUri, null, ContentChangeType.UNKNOWN)
+                dispatchChange(
+                    observerId, contentUri, null,
+                    ContentChangeType.UNKNOWN,
+                    flags = null,
+                    selfChange = selfChange,
+                )
             }
 
             override fun onChange(selfChange: Boolean, uri: Uri?) {
@@ -48,29 +67,29 @@ class ObserverRegistry(
                     observerId,
                     contentUri,
                     uri?.toString(),
-                    ContentChangeType.UNKNOWN
+                    ContentChangeType.UNKNOWN,
+                    flags = null,
+                    selfChange = selfChange,
                 )
             }
 
             override fun onChange(selfChange: Boolean, uri: Uri?, flags: Int) {
-                val changeType = when {
-                    flags and NOTIFY_INSERT != 0 -> ContentChangeType.INSERT
-                    flags and NOTIFY_UPDATE != 0 -> ContentChangeType.UPDATE
-                    flags and NOTIFY_DELETE != 0 -> ContentChangeType.DELETE
-                    else -> ContentChangeType.UNKNOWN
-                }
-                dispatchChange(observerId, contentUri, uri?.toString(), changeType)
+                dispatchChange(
+                    observerId, contentUri, uri?.toString(),
+                    contentChangeTypeFromFlags(flags),
+                    flags = flags,
+                    selfChange = selfChange,
+                )
             }
 
             override fun onChange(selfChange: Boolean, uris: Collection<Uri>, flags: Int) {
-                val changeType = when {
-                    flags and NOTIFY_INSERT != 0 -> ContentChangeType.INSERT
-                    flags and NOTIFY_UPDATE != 0 -> ContentChangeType.UPDATE
-                    flags and NOTIFY_DELETE != 0 -> ContentChangeType.DELETE
-                    else -> ContentChangeType.UNKNOWN
-                }
                 for (changedUri in uris) {
-                    dispatchChange(observerId, contentUri, changedUri.toString(), changeType)
+                    dispatchChange(
+                        observerId, contentUri, changedUri.toString(),
+                        contentChangeTypeFromFlags(flags),
+                        flags = flags,
+                        selfChange = selfChange,
+                    )
                 }
             }
         }
@@ -109,7 +128,9 @@ class ObserverRegistry(
         observerId: String,
         registeredUri: String,
         changedUri: String?,
-        changeType: ContentChangeType
+        changeType: ContentChangeType,
+        flags: Int?,
+        selfChange: Boolean,
     ) {
         // Already on main thread via mainHandler
         flutterApi.onContentChange(
@@ -117,14 +138,11 @@ class ObserverRegistry(
                 observerId = observerId,
                 uri = changedUri ?: registeredUri,
                 changeType = changeType,
+                // Pigeon expects Long? for flags.
+                flags = flags?.toLong(),
+                selfChange = selfChange,
             )
         ) { /* ignore callback result */ }
     }
 
-    companion object {
-        // ContentObserver flag constants (API 30+)
-        private const val NOTIFY_INSERT = 1
-        private const val NOTIFY_UPDATE = 2
-        private const val NOTIFY_DELETE = 4
-    }
 }

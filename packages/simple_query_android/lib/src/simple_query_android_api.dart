@@ -132,8 +132,8 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
         ),
         selection: effectiveSelection,
         selectionArgs: effectiveArgs,
-        sortOrder: _sortOrderFrom(request.sort, domain: request.domain) ??
-            '_id ASC',
+        sortOrder:
+            _sortOrderFrom(request.sort, domain: request.domain) ?? '_id ASC',
         limit: request.page?.limit,
         offset: effectiveOffset,
       ),
@@ -424,15 +424,38 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
     final registration = _activeObservers[event.observerId];
     if (registration == null) return;
 
+    // Extract a trailing integer row id from the URI when present.
+    // Only accept direct message-row URIs (`content://sms/<id>` or
+    // `content://mms/<id>`) — descendant URIs like
+    // `content://mms/part/<id>` carry a part identifier, not a message
+    // identifier, and must not be parsed as a message id. Root-URI
+    // notifies (e.g. `content://sms`) have no such segment and yield an
+    // empty ids list, which the consumer treats as "reconcile the whole
+    // list".
+    final ids = <String>[];
+    final uri = Uri.parse(event.uri);
+    final segments = uri.pathSegments;
+    if (uri.scheme == 'content' &&
+        (uri.authority == 'sms' || uri.authority == 'mms') &&
+        segments.length == 1) {
+      // Direct message-row URI: `content://sms/<id>` or `content://mms/<id>`.
+      final lastSegment = segments.last;
+      if (int.tryParse(lastSegment) != null) {
+        ids.add(lastSegment);
+      }
+    }
+
     final mapped = iface.ObserveEvent(
       domain: registration.request.domain,
       entityType: registration.request.entityType,
       changeType: _observeType(event.changeType),
       timestamp: DateTime.now().toUtc(),
+      ids: ids,
       source: 'android.content_observer',
       metadata: <String, Object?>{
         'uri': event.uri,
         if (event.flags != null) 'flags': event.flags!,
+        'selfChange': event.selfChange,
       },
     );
 
@@ -507,8 +530,7 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
       message: candidates.length == 1
           ? 'simple_query: ${candidates.single} is required'
           : 'simple_query: one of ${candidates.join(', ')} is required',
-      operation:
-          write ? iface.QueryOperation.write : iface.QueryOperation.read,
+      operation: write ? iface.QueryOperation.write : iface.QueryOperation.read,
       details: <String, Object?>{
         'permissions': candidates,
         'contentUri': contentUri,

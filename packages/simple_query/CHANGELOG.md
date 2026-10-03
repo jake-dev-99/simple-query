@@ -1,3 +1,7 @@
+## Unreleased
+
+- Require simple_query_android >=0.2.2 so Android observer identity and metadata reach consumers (UNFY-270).
+
 ## 0.2.1
 
 ### Reset to align with pub.dev's published series
@@ -15,8 +19,6 @@ The 0.3 — 0.6 work described in the entries below is not lost —
 it lives in source and will surface in published form through
 subsequent patch / minor / major bumps as appropriate. Entries
 kept for archival reference.
-
-## Unreleased
 
 ## 0.6.0
 

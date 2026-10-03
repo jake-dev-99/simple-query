@@ -361,6 +361,7 @@ class ContentChangeEvent {
     required this.uri,
     required this.changeType,
     this.flags,
+    this.selfChange = false,
   });
 
   /// ID of the observer that fired.
@@ -374,6 +375,11 @@ class ContentChangeEvent {
 
   /// Additional flags from the observer.
   final int? flags;
+
+  /// Whether the notification explicitly targeted this observer via
+  /// `ContentResolver.notifyChange`. This does not identify writes made by
+  /// the current app. Consumers must reconcile regardless of this value.
+  final bool selfChange;
 }
 
 /// Request to register an observer.
