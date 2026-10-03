@@ -31,7 +31,22 @@ class ObserverRegistryTest {
     }
 
     @Test
-    fun insertTakesPriorityForMixedFlags() {
-        assertEquals(ContentChangeType.INSERT, contentChangeTypeFromFlags(12))
+    fun mixedOperationFlagsRemainUnknown() {
+        for (flags in listOf(12, 20, 24, 28)) {
+            assertEquals(ContentChangeType.UNKNOWN, contentChangeTypeFromFlags(flags), "flags=$flags")
+        }
+    }
+
+    @Test
+    fun nonOperationFlagsDoNotChangeASingleOperation() {
+        for ((operation, expected) in listOf(
+            4 to ContentChangeType.INSERT,
+            8 to ContentChangeType.UPDATE,
+            16 to ContentChangeType.DELETE,
+        )) {
+            for (modifiers in 0..3) {
+                assertEquals(expected, contentChangeTypeFromFlags(operation or modifiers))
+            }
+        }
     }
 }

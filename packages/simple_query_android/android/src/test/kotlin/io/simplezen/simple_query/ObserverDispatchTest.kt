@@ -113,6 +113,32 @@ class ObserverDispatchTest {
     }
 
     @Test
+    fun mixedOperationCallbacksPreserveFlagsWithoutClaimingASingleMutation() {
+        val operationFlags = listOf(
+            ContentResolver.NOTIFY_INSERT or ContentResolver.NOTIFY_UPDATE,
+            ContentResolver.NOTIFY_INSERT or ContentResolver.NOTIFY_DELETE,
+            ContentResolver.NOTIFY_UPDATE or ContentResolver.NOTIFY_DELETE,
+            ContentResolver.NOTIFY_INSERT or ContentResolver.NOTIFY_UPDATE or ContentResolver.NOTIFY_DELETE,
+        )
+        for (operations in operationFlags) {
+            for (modifiers in 0..3) {
+                val flags = operations or modifiers
+                observer.onChange(true, Uri.parse("content://sms/42"), flags)
+                observer.onChange(false, listOf(Uri.parse("content://sms/43")), flags)
+                assertEquals(
+                    listOf(
+                        listOf<Any?>(observerId, "content://sms/42", ContentChangeType.UNKNOWN, flags.toLong(), true),
+                        listOf<Any?>(observerId, "content://sms/43", ContentChangeType.UNKNOWN, flags.toLong(), false),
+                    ),
+                    events,
+                    "flags=$flags",
+                )
+                events.clear()
+            }
+        }
+    }
+
+    @Test
     fun collectionCallbackEmitsEachUriOnceWithAllMetadata() {
         observer.onChange(false, listOf(Uri.parse("content://sms/42"), Uri.parse("content://sms/43")), ContentResolver.NOTIFY_DELETE)
         assertEquals(

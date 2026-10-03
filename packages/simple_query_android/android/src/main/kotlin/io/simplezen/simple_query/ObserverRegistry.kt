@@ -11,12 +11,15 @@ private const val NOTIFY_INSERT = 4
 private const val NOTIFY_UPDATE = 8
 private const val NOTIFY_DELETE = 16
 
-internal fun contentChangeTypeFromFlags(flags: Int): ContentChangeType = when {
-    flags and NOTIFY_INSERT != 0 -> ContentChangeType.INSERT
-    flags and NOTIFY_UPDATE != 0 -> ContentChangeType.UPDATE
-    flags and NOTIFY_DELETE != 0 -> ContentChangeType.DELETE
-    else -> ContentChangeType.UNKNOWN
-}
+// Android permits combined operations. Claim a specific type only when it is
+// unambiguous; modifier flags must not obscure that operation.
+internal fun contentChangeTypeFromFlags(flags: Int): ContentChangeType =
+    when (flags and (NOTIFY_INSERT or NOTIFY_UPDATE or NOTIFY_DELETE)) {
+        NOTIFY_INSERT -> ContentChangeType.INSERT
+        NOTIFY_UPDATE -> ContentChangeType.UPDATE
+        NOTIFY_DELETE -> ContentChangeType.DELETE
+        else -> ContentChangeType.UNKNOWN
+    }
 
 /**
  * Registry for ContentObserver instances.

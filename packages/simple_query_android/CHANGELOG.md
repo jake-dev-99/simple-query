@@ -1,5 +1,6 @@
 ## Unreleased
 
+- Keep callbacks with multiple Android mutation flags unknown while preserving their raw flags (UNFY-270).
 - Preserve Android observer selfChange, raw flags, change type, and direct SMS/MMS row IDs; keep unsupported and descendant URIs identifier-free (UNFY-270).
 - Exercise all native observer callbacks and public Dart event mapping; align generated selfChange documentation.
 
