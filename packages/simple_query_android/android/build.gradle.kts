@@ -36,6 +36,10 @@ android {
         targetCompatibility = JavaVersion.VERSION_21
     }
 
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+    }
+
     kotlinOptions {
         jvmTarget = JavaVersion.VERSION_21.toString()
     }
@@ -44,4 +48,5 @@ android {
 dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     testImplementation(kotlin("test"))
+    testImplementation("org.robolectric:robolectric:4.14.1")
 }

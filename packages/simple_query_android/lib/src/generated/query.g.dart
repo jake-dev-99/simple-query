@@ -639,9 +639,9 @@ class ContentChangeEvent {
   /// Additional flags from the observer.
   int? flags;
 
-  /// Whether this change originated from our own writes (vs. an external
-  /// app or the system). Self-writes are already covered by the
-  /// post-write reconcile, so consumers can skip a redundant pass.
+  /// Whether the notification explicitly targeted this observer via
+  /// `ContentResolver.notifyChange`. This does not identify writes made by
+  /// the current app. Consumers must reconcile regardless of this value.
   bool selfChange;
 
   Object encode() {

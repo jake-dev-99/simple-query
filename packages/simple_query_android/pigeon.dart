@@ -376,14 +376,9 @@ class ContentChangeEvent {
   /// Additional flags from the observer.
   final int? flags;
 
-  /// Whether this change originated from the app's own ContentResolver
-  /// calls (vs. an external app or the system). Per Android's
-  /// [ContentObserver](https://developer.android.com/reference/android/database/ContentObserver)
-  /// contract, `selfChange` is set when the notification was triggered by
-  /// an explicit `notifyChange` call that passed this observer — it does
-  /// NOT indicate whether Unify initiated the write. Unify never enables
-  /// self-notifications on its observers, so this flag is unreliable for
-  /// identifying Unify writes. Consumers should always reconcile.
+  /// Whether the notification explicitly targeted this observer via
+  /// `ContentResolver.notifyChange`. This does not identify writes made by
+  /// the current app. Consumers must reconcile regardless of this value.
   final bool selfChange;
 }
 

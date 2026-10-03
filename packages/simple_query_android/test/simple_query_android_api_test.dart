@@ -1358,111 +1358,104 @@ void main() {
       );
     });
 
-    test('parses a trailing integer URI segment into ObserveEvent.ids',
+    Future<iface.ObserveEvent> observeChange(
+      String uri, {
+      iface.QueryDomain domain = iface.QueryDomain.messages,
+      p.ContentChangeType changeType = p.ContentChangeType.update,
+      int? flags = 8,
+      bool selfChange = true,
+      String? registeredUri,
+    }) async {
+      final events = <iface.ObserveEvent>[];
+      final subscription = api
+          .observe(iface.ObserveRequest(
+            domain: domain,
+            entityType: 'messages',
+            platformData: {
+              'contentUri':
+                  registeredUri ?? 'content://${Uri.parse(uri).authority}'
+            },
+          ))
+          .listen(events.add);
+      addTearDown(subscription.cancel);
+      await Future<void>.delayed(Duration.zero);
+      api.onContentChange(p.ContentChangeEvent(
+        observerId: 'obs_1',
+        uri: uri,
+        changeType: changeType,
+        flags: flags,
+        selfChange: selfChange,
+      ));
+      await Future<void>.delayed(Duration.zero);
+      expect(events, hasLength(1));
+      return events.single;
+    }
+
+    for (final authority in ['sms', 'mms']) {
+      test('preserves direct $authority row identity and observer metadata',
+          () async {
+        final event = await observeChange('content://$authority/1571');
+        expect(event.ids, ['1571']);
+        expect(event.domain, iface.QueryDomain.messages);
+        expect(event.entityType, 'messages');
+        expect(event.changeType, iface.ObserveChangeType.update);
+        expect(event.source, 'android.content_observer');
+        expect(event.metadata, {
+          'uri': 'content://$authority/1571',
+          'flags': 8,
+          'selfChange': true,
+        });
+      });
+    }
+
+    for (final uri in [
+      'content://sms',
+      'content://mms',
+      'content://sms/abc',
+      'content://mms/part/1571',
+      'content://mms/1571/addr',
+      'content://mms-sms/conversations/1571',
+      'content://custom.provider/1571',
+      'https://sms/1571',
+    ]) {
+      test('keeps $uri identifier-free for full reconciliation', () async {
+        final event = await observeChange(uri, flags: null, selfChange: false);
+        expect(event.ids, isEmpty);
+        expect(event.metadata, {'uri': uri, 'selfChange': false});
+      });
+    }
+
+    test('preserves message identity for a platform-specific SMS observer',
         () async {
-      // Register an observer so onContentChange has a lookup target.
-      final stream = api.observe(
-        const iface.ObserveRequest(domain: iface.QueryDomain.messages),
-      );
-      final sub = stream.listen((_) {});
-      await Future<void>.delayed(Duration.zero);
-
-      final events = <iface.ObserveEvent>[];
-      final evtSub = api.subscribeToObserverEvents(events.add);
-
-      // The fake returns 'obs_$registerCount' — registerCount was
-      // incremented during ensureRegistered, so the id is 'obs_1'.
-      api.onContentChange(
-        p.ContentChangeEvent(
-          observerId: 'obs_1',
-          uri: 'content://sms/1571',
-          changeType: p.ContentChangeType.update,
-          flags: 2,
-          selfChange: false,
-        ),
-      );
-      await Future<void>.delayed(Duration.zero);
-
-      expect(events, hasLength(1));
-      expect(events.single.ids, ['1571'],
-          reason: 'trailing segment parsed as row id');
-      expect(events.single.metadata?['selfChange'], false);
-      expect(events.single.metadata?['flags'], 2);
-
-      await evtSub.cancel();
-      await sub.cancel();
+      final event = await observeChange('content://sms/1571',
+          domain: iface.QueryDomain.platformSpecific);
+      expect(event.ids, ['1571']);
     });
 
-    test('root-URI notify yields empty ids (no row id segment)', () async {
-      final stream = api.observe(
-        const iface.ObserveRequest(domain: iface.QueryDomain.messages),
-      );
-      final sub = stream.listen((_) {});
-      await Future<void>.delayed(Duration.zero);
+    for (final type in p.ContentChangeType.values) {
+      test('preserves the ${type.name} change type', () async {
+        final event =
+            await observeChange('content://sms/1571', changeType: type);
+        expect(event.changeType.name, type.name);
+      });
+    }
 
+    test('unknown observer id is silently dropped', () async {
       final events = <iface.ObserveEvent>[];
-      final evtSub = api.subscribeToObserverEvents(events.add);
-
-      api.onContentChange(
-        p.ContentChangeEvent(
-          observerId: 'obs_1',
-          uri: 'content://sms',
-          changeType: p.ContentChangeType.unknown,
-          flags: null,
-          selfChange: true,
-        ),
-      );
+      final subscription = api
+          .observe(
+            const iface.ObserveRequest(domain: iface.QueryDomain.messages),
+          )
+          .listen(events.add);
+      addTearDown(subscription.cancel);
       await Future<void>.delayed(Duration.zero);
-
-      expect(events, hasLength(1));
-      expect(events.single.ids, isEmpty,
-          reason: 'root URI has no row id segment');
-      expect(events.single.metadata?['selfChange'], true);
-
-      await evtSub.cancel();
-      await sub.cancel();
-    });
-
-    test('non-numeric trailing segment is dropped (no ids)', () async {
-      final stream = api.observe(
-        const iface.ObserveRequest(domain: iface.QueryDomain.messages),
-      );
-      final sub = stream.listen((_) {});
+      api.onContentChange(p.ContentChangeEvent(
+        observerId: 'no-such-observer',
+        uri: 'content://sms/1',
+        changeType: p.ContentChangeType.insert,
+      ));
       await Future<void>.delayed(Duration.zero);
-
-      final events = <iface.ObserveEvent>[];
-      final evtSub = api.subscribeToObserverEvents(events.add);
-
-      api.onContentChange(
-        p.ContentChangeEvent(
-          observerId: 'obs_1',
-          uri: 'content://sms/abc',
-          changeType: p.ContentChangeType.insert,
-          flags: 1,
-          selfChange: false,
-        ),
-      );
-      await Future<void>.delayed(Duration.zero);
-
-      expect(events, hasLength(1));
-      expect(events.single.ids, isEmpty,
-          reason: 'non-numeric segment is not a valid row id');
-
-      await evtSub.cancel();
-      await sub.cancel();
-    });
-
-    test('unknown observer id is silently dropped', () {
-      api.onContentChange(
-        p.ContentChangeEvent(
-          observerId: 'no-such-observer',
-          uri: 'content://sms/1',
-          changeType: p.ContentChangeType.insert,
-          flags: 1,
-          selfChange: false,
-        ),
-      );
-      // No throw — unknown observer is silently dropped.
+      expect(events, isEmpty);
     });
   });
 }

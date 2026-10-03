@@ -1,3 +1,8 @@
+## Unreleased
+
+- Preserve Android observer selfChange, raw flags, change type, and direct SMS/MMS row IDs; keep unsupported and descendant URIs identifier-free (UNFY-270).
+- Exercise all native observer callbacks and public Dart event mapping; align generated selfChange documentation.
+
 ## 0.2.1
 
 ### Reset to align with pub.dev's published series
@@ -15,8 +20,6 @@ The 0.3 — 0.6 work described in the entries below is not lost —
 it lives in source and will surface in published form through
 subsequent patch / minor / major bumps as appropriate. Entries
 kept for archival reference.
-
-## Unreleased
 
 ## 0.6.0
 

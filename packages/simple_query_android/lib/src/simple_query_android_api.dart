@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:simple_query_platform_interface/simple_query_platform_interface.dart'
     as iface;
 
@@ -27,15 +26,6 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
       StreamController<iface.ObserveEvent>.broadcast();
   final _activeObservers = <String, _ObserverRegistration>{};
   final _openBinaryHandles = <String, String>{};
-
-  /// Test-only hook: subscribe to the global observer-events broadcast so
-  /// tests can assert on [ObserveEvent] fields (ids, selfChange, flags)
-  /// without going through a full channel integration.
-  @visibleForTesting
-  StreamSubscription<iface.ObserveEvent> subscribeToObserverEvents(
-      void Function(iface.ObserveEvent e) onEvent) {
-    return _observerEventsController.stream.listen(onEvent);
-  }
 
   Future<iface.CapabilitySnapshot> getCapabilities() async {
     return iface.RuntimeContractValidation.validateCapabilitySnapshot(
@@ -445,7 +435,9 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
     final ids = <String>[];
     final uri = Uri.parse(event.uri);
     final segments = uri.pathSegments;
-    if (segments.length == 1) {
+    if (uri.scheme == 'content' &&
+        (uri.authority == 'sms' || uri.authority == 'mms') &&
+        segments.length == 1) {
       // Direct message-row URI: `content://sms/<id>` or `content://mms/<id>`.
       final lastSegment = segments.last;
       if (int.tryParse(lastSegment) != null) {
