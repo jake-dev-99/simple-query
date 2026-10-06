@@ -12,6 +12,7 @@ if [[ -z "${flutter_root}" ]]; then
   flutter_executable="$(command -v flutter)"
   flutter_root="$(cd "$(dirname "${flutter_executable}")/.." && pwd)"
 fi
+flutter_executable="${flutter_root}/bin/flutter"
 
 case "$(uname -m)" in
   x86_64|amd64) engine_platform="linux-x64" ;;
@@ -33,6 +34,8 @@ fi
 
 build_root="$(mktemp -d "${TMPDIR:-/tmp}/simple-query-linux-native.XXXXXX")"
 trap 'rm -rf "${build_root}"' EXIT
+contract_root="${build_root}/contracts"
+mkdir -p "${contract_root}"
 
 cxx="${CXX:-clang++}"
 read -r -a gtk_flags <<<"$(pkg-config --cflags --libs gtk+-3.0 gio-2.0 glib-2.0)"
@@ -63,7 +66,7 @@ run_variant() {
   "${binary}"
 }
 
-run_variant no_eds
+SIMPLE_QUERY_CONTRACT_FIXTURE_DIR="${contract_root}" run_variant no_eds
 
 if pkg-config --exists libebook-1.2 libecal-2.0 libedataserver-1.2; then
   read -r -a eds_flags <<<"$(pkg-config --cflags --libs \
@@ -72,3 +75,18 @@ if pkg-config --exists libebook-1.2 libecal-2.0 libedataserver-1.2; then
 else
   echo "EDS development packages not found; skipped EDS-enabled native variant."
 fi
+
+if [[ "${SIMPLE_QUERY_NATIVE_ONLY:-0}" == "1" ]]; then
+  exit 0
+fi
+if [[ ! -f "${package_root}/.dart_tool/package_config.json" ]]; then
+  echo "Dart contract replay requires 'flutter pub get' in ${package_root}." >&2
+  exit 1
+fi
+
+(
+  cd "${package_root}"
+  DASH__SUPPRESS_ANALYTICS=true "${flutter_executable}" test --no-pub \
+    --dart-define="SIMPLE_QUERY_CONTRACT_FIXTURE_DIR=${contract_root}" \
+    test/native_contract_fixture_test.dart
+)

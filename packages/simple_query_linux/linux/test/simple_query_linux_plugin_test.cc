@@ -1,6 +1,7 @@
 #include <flutter_linux/flutter_linux.h>
 #include <glib/gstdio.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
@@ -52,25 +53,22 @@ G_DEFINE_TYPE(TestResponseHandle, test_response_handle,
               fl_binary_messenger_response_handle_get_type())
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(TestResponseHandle, g_object_unref)
 
-// Purpose: Release the response bytes captured by a fake response handle.
-// Parameters: object is the response handle being disposed.
-// Returns: Nothing. Throws: Never.
+/** Purpose: Release captured response bytes. @param object is the fake handle.
+ * @returns Nothing. @throws Nothing. */
 void test_response_handle_dispose(GObject* object) {
   auto* self = reinterpret_cast<TestResponseHandle*>(object);
   g_clear_pointer(&self->response, g_bytes_unref);
   G_OBJECT_CLASS(test_response_handle_parent_class)->dispose(object);
 }
 
-// Purpose: Install lifecycle behavior for the fake response handle type.
-// Parameters: klass is the class record initialized by GLib.
-// Returns: Nothing. Throws: Never.
+/** Purpose: Install fake response disposal. @param klass is the GLib class.
+ * @returns Nothing. @throws Nothing. */
 void test_response_handle_class_init(TestResponseHandleClass* klass) {
   G_OBJECT_CLASS(klass)->dispose = test_response_handle_dispose;
 }
 
-// Purpose: Initialize a fake response handle with no captured response.
-// Parameters: self is the newly allocated handle.
-// Returns: Nothing. Throws: Never.
+/** Purpose: Initialize empty response capture. @param self is the new handle.
+ * @returns Nothing. @throws Nothing. */
 void test_response_handle_init(TestResponseHandle* self) {
   self->response = nullptr;
 }
@@ -79,6 +77,7 @@ struct _TestBinaryMessenger {
   GObject parent_instance;
   GHashTable* handlers;
   FlValue* outgoing_response;
+  GBytes* last_outgoing_message;
   SendMode send_mode;
   GThread* send_thread;
   gint send_count;
@@ -111,9 +110,8 @@ G_DEFINE_AUTOPTR_CLEANUP_FUNC(TestBinaryMessenger, g_object_unref)
 
 using namespace simple_query_linux;
 
-// Purpose: Release a registered fake channel handler and its user data.
-// Parameters: data is the Handler allocated during registration.
-// Returns: Nothing. Throws: Never.
+/** Purpose: Release a registered fake handler. @param data owns the handler.
+ * @returns Nothing. @throws Nothing. */
 void handler_free(gpointer data) {
   auto* handler = static_cast<Handler*>(data);
   if (handler->destroy_notify != nullptr) {
@@ -122,10 +120,10 @@ void handler_free(gpointer data) {
   g_free(handler);
 }
 
-// Purpose: Store or remove a binary channel handler exactly as Flutter does.
-// Parameters: messenger owns the registry; channel identifies the handler;
-// callback, user_data, and destroy_notify describe its lifetime.
-// Returns: Nothing. Throws: Never.
+/** Purpose: Store or remove a channel handler with Flutter lifecycle rules.
+ * @param messenger owns registrations. @param channel names the handler.
+ * @param callback handles messages. @param user_data is callback context.
+ * @param destroy_notify releases context. @returns Nothing. @throws Nothing. */
 void test_set_message_handler(FlBinaryMessenger* messenger,
                               const gchar* channel,
                               FlBinaryMessengerMessageHandler callback,
@@ -143,10 +141,8 @@ void test_set_message_handler(FlBinaryMessenger* messenger,
   g_hash_table_replace(self->handlers, g_strdup(channel), handler);
 }
 
-// Purpose: Capture the response returned by a registered HostApi handler.
-// Parameters: response_handle receives response; response is copied; other
-// parameters match the binary messenger interface.
-// Returns: TRUE after capture. Throws: Never.
+/** Purpose: Capture a real HostApi response. @param response_handle receives
+ * bytes. @param response is copied. @returns True. @throws Nothing. */
 gboolean test_send_response(FlBinaryMessenger* messenger,
                             FlBinaryMessengerResponseHandle* response_handle,
                             GBytes* response, GError** error) {
@@ -160,9 +156,8 @@ struct PendingSend {
   GTask* task;
 };
 
-// Purpose: Complete one fake Dart-bound platform message asynchronously.
-// Parameters: user_data owns the pending GTask.
-// Returns: G_SOURCE_REMOVE after one completion. Throws: Never.
+/** Purpose: Complete one Dart-bound send asynchronously. @param user_data owns
+ * its task. @returns G_SOURCE_REMOVE. @throws Nothing. */
 gboolean complete_pending_send(gpointer user_data) {
   auto* pending = static_cast<PendingSend*>(user_data);
   auto* self = TEST_BINARY_MESSENGER(g_task_get_source_object(pending->task));
@@ -187,12 +182,9 @@ gboolean complete_pending_send(gpointer user_data) {
   return G_SOURCE_REMOVE;
 }
 
-// Purpose: Complete a deliberately held fake send only when plugin disposal
-// cancels it.
-// @param cancellable is the production observer's cancellation token.
-// @param user_data owns the pending GTask.
-// @returns Nothing.
-// @throws Nothing.
+/** Purpose: Complete a held send only after disposal cancellation.
+ * @param cancellable is the observer token. @param user_data owns its task.
+ * @returns Nothing. @throws Nothing. */
 void complete_cancelled_send(GCancellable* cancellable, gpointer user_data) {
   auto* pending = static_cast<PendingSend*>(user_data);
   auto* self = TEST_BINARY_MESSENGER(g_task_get_source_object(pending->task));
@@ -202,10 +194,11 @@ void complete_cancelled_send(GCancellable* cancellable, gpointer user_data) {
   g_free(pending);
 }
 
-// Purpose: Record and asynchronously answer a message sent to Dart.
-// Parameters: messenger and callback follow Flutter's async transport contract;
-// channel and message are observed by the fake; cancellable controls completion.
-// Returns: Nothing. Throws: Never.
+/** Purpose: Record and asynchronously answer one Dart-bound message.
+ * @param messenger is the fake transport. @param channel names the API.
+ * @param message is retained for replay. @param cancellable controls completion.
+ * @param callback receives completion. @param user_data is callback context.
+ * @returns Nothing. @throws Nothing. */
 void test_send_on_channel(FlBinaryMessenger* messenger, const gchar* channel,
                           GBytes* message, GCancellable* cancellable,
                           GAsyncReadyCallback callback, gpointer user_data) {
@@ -213,6 +206,8 @@ void test_send_on_channel(FlBinaryMessenger* messenger, const gchar* channel,
   self->send_thread = g_thread_self();
   self->send_count += 1;
   g_assert_cmpstr(channel, ==, kFlutterApiChannel);
+  g_clear_pointer(&self->last_outgoing_message, g_bytes_unref);
+  self->last_outgoing_message = g_bytes_ref(message);
 
   auto* pending = g_new0(PendingSend, 1);
   pending->task = g_task_new(self, cancellable, callback, user_data);
@@ -228,10 +223,9 @@ void test_send_on_channel(FlBinaryMessenger* messenger, const gchar* channel,
   g_source_unref(source);
 }
 
-// Purpose: Transfer the fake transport response to Flutter's channel wrapper.
-// Parameters: result is the GTask completed by test_send_on_channel; error
-// receives cancellation or transport failure.
-// Returns: Owned response bytes on success, otherwise nullptr. Throws: Never.
+/** Purpose: Transfer the fake transport result to Flutter's channel wrapper.
+ * @param result is the completed task. @param error receives failure.
+ * @returns Owned bytes or null. @throws Nothing. */
 GBytes* test_send_on_channel_finish(FlBinaryMessenger* messenger,
                                     GAsyncResult* result, GError** error) {
   auto* self = TEST_BINARY_MESSENGER(messenger);
@@ -243,11 +237,8 @@ GBytes* test_send_on_channel_finish(FlBinaryMessenger* messenger,
 void test_resize_channel(FlBinaryMessenger*, const gchar*, int64_t) {}
 void test_set_warns_on_overflow(FlBinaryMessenger*, const gchar*, bool) {}
 
-// Purpose: Model Flutter engine shutdown without mutating a handler table while
-// plugin disposal re-enters channel clearing.
-// @param messenger owns the current handler registry.
-// @returns Nothing.
-// @throws Nothing.
+/** Purpose: Model engine shutdown while plugin disposal clears handlers.
+ * @param messenger owns the registry. @returns Nothing. @throws Nothing. */
 void test_shutdown(FlBinaryMessenger* messenger) {
   auto* self = TEST_BINARY_MESSENGER(messenger);
   GHashTable* old_handlers = self->handlers;
@@ -257,9 +248,8 @@ void test_shutdown(FlBinaryMessenger* messenger) {
   g_hash_table_unref(old_handlers);
 }
 
-// Purpose: Bind the fake's transport behavior to FlBinaryMessenger.
-// Parameters: interface is Flutter's binary messenger vtable.
-// Returns: Nothing. Throws: Never.
+/** Purpose: Bind fake transport behavior. @param interface is its vtable.
+ * @returns Nothing. @throws Nothing. */
 void test_binary_messenger_iface_init(FlBinaryMessengerInterface* interface) {
   interface->set_message_handler_on_channel = test_set_message_handler;
   interface->send_response = test_send_response;
@@ -270,66 +260,58 @@ void test_binary_messenger_iface_init(FlBinaryMessengerInterface* interface) {
   interface->shutdown = test_shutdown;
 }
 
-// Purpose: Return the fake's binary-messenger interface to real registration.
-// @param registrar is the dual registrar/messenger fake.
-// @returns The registrar-owned binary messenger.
-// @throws Nothing.
+/** Purpose: Expose the fake messenger through the registrar contract.
+ * @param registrar is the dual fake. @returns Its borrowed messenger.
+ * @throws Nothing. */
 FlBinaryMessenger* test_registrar_get_messenger(FlPluginRegistrar* registrar) {
   return FL_BINARY_MESSENGER(registrar);
 }
 
-// Purpose: Keep texture registration out of this headless native test fixture.
-// @param registrar is the dual registrar/messenger fake.
-// @returns Null because no texture registrar is needed.
-// @throws Nothing.
+/** Purpose: Keep texture registration out of the headless fixture.
+ * @param registrar is the dual fake. @returns Null. @throws Nothing. */
 FlTextureRegistrar* test_registrar_get_texture_registrar(
     FlPluginRegistrar* registrar) {
   return nullptr;
 }
 
-// Purpose: Model a headless Flutter registrar for native plugin tests.
-// @param registrar is the dual registrar/messenger fake.
-// @returns Null because no Flutter view exists.
-// @throws Nothing.
+/** Purpose: Model a headless registrar view. @param registrar is the dual fake.
+ * @returns Null. @throws Nothing. */
 FlView* test_registrar_get_view(FlPluginRegistrar* registrar) {
   return nullptr;
 }
 
-// Purpose: Bind the fake to Flutter's public registrar contract.
-// @param interface is Flutter's plugin-registrar vtable.
-// @returns Nothing.
-// @throws Nothing.
+/** Purpose: Bind the fake registrar contract. @param interface is its vtable.
+ * @returns Nothing. @throws Nothing. */
 void test_plugin_registrar_iface_init(FlPluginRegistrarInterface* interface) {
   interface->get_messenger = test_registrar_get_messenger;
   interface->get_texture_registrar = test_registrar_get_texture_registrar;
   interface->get_view = test_registrar_get_view;
 }
 
-// Purpose: Release fake handlers and the configured outgoing response.
-// Parameters: object is the fake messenger being disposed.
-// Returns: Nothing. Throws: Never.
+/** Purpose: Release fake transport resources. @param object is the messenger.
+ * @returns Nothing. @throws Nothing. */
 void test_binary_messenger_dispose(GObject* object) {
   auto* self = TEST_BINARY_MESSENGER(object);
   g_clear_pointer(&self->handlers, g_hash_table_unref);
   g_clear_pointer(&self->outgoing_response, fl_value_unref);
+  g_clear_pointer(&self->last_outgoing_message, g_bytes_unref);
   G_OBJECT_CLASS(test_binary_messenger_parent_class)->dispose(object);
 }
 
-// Purpose: Install lifecycle behavior for the fake messenger type.
-// Parameters: klass is the class record initialized by GLib.
-// Returns: Nothing. Throws: Never.
+/** Purpose: Install fake messenger disposal. @param klass is the GLib class.
+ * @returns Nothing. @throws Nothing. */
 void test_binary_messenger_class_init(TestBinaryMessengerClass* klass) {
   G_OBJECT_CLASS(klass)->dispose = test_binary_messenger_dispose;
 }
 
-// Purpose: Initialize deterministic fake transport state.
-// Parameters: self is the newly allocated messenger.
-// Returns: Nothing. Throws: Never.
+/** Purpose: Initialize deterministic transport state. @param self is new.
+ * @returns Nothing. @throws Nothing. */
 void test_binary_messenger_init(TestBinaryMessenger* self) {
   self->handlers = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                          handler_free);
   self->outgoing_response = fl_value_new_list();
   fl_value_append_take(self->outgoing_response, fl_value_new_null());
+  self->last_outgoing_message = nullptr;
   self->send_mode = SendMode::kSuccess;
   self->send_thread = nullptr;
   self->send_count = 0;
@@ -337,18 +319,15 @@ void test_binary_messenger_init(TestBinaryMessenger* self) {
   self->cancellation_count = 0;
 }
 
-// Purpose: Create a fake messenger that exercises Flutter's real channel code.
-// Parameters: None.
-// Returns: A newly owned fake messenger. Throws: Never.
+/** Purpose: Create transport that exercises Flutter's real channels.
+ * @returns A newly owned fake messenger. @throws Nothing. */
 TestBinaryMessenger* NewMessenger() {
   return TEST_BINARY_MESSENGER(
       g_object_new(TEST_TYPE_BINARY_MESSENGER, nullptr));
 }
 
-// Purpose: Configure the value or error returned by Dart-bound sends.
-// Parameters: self is the fake; mode selects success, Dart error, or transport
-// error.
-// Returns: Nothing. Throws: Never.
+/** Purpose: Configure Dart-bound send results. @param self is the fake.
+ * @param mode selects success or failure. @returns Nothing. @throws Nothing. */
 void SetSendMode(TestBinaryMessenger* self, SendMode mode) {
   self->send_mode = mode;
   g_clear_pointer(&self->outgoing_response, fl_value_unref);
@@ -364,9 +343,9 @@ void SetSendMode(TestBinaryMessenger* self, SendMode mode) {
   }
 }
 
-// Purpose: Drive a GLib context until a behavioral condition becomes true.
-// Parameters: context is iterated; condition is polled; timeout bounds waiting.
-// Returns: True when the condition succeeds before the deadline. Throws: Never.
+/** Purpose: Drive a GLib context until a condition or deadline.
+ * @param context is iterated. @param condition is polled. @param timeout_ms
+ * bounds waiting. @returns True on success. @throws Nothing. */
 bool RunUntil(GMainContext* context, const std::function<bool()>& condition,
               int timeout_ms = 3000) {
   const gint64 deadline =
@@ -379,13 +358,12 @@ bool RunUntil(GMainContext* context, const std::function<bool()>& condition,
   return condition();
 }
 
-// Purpose: Invoke a registered Pigeon HostApi channel through real codecs.
-// Parameters: self owns handlers; method selects the channel; arguments is the
-// Pigeon argument list.
-// Returns: A decoded, newly owned Pigeon response. Throws: C++ host exceptions
-// until production catches them at the handler boundary.
+/** Purpose: Invoke a real registered HostApi channel and codecs. @param self
+ * owns handlers. @param method selects the channel. @param arguments is the
+ * Pigeon list. @param encoded_response optionally captures wire bytes.
+ * @returns A decoded owned response. @throws Escaped host exceptions. */
 FlValue* InvokeHost(TestBinaryMessenger* self, const std::string& method,
-                    FlValue* arguments) {
+                    FlValue* arguments, GBytes** encoded_response = nullptr) {
   const std::string channel = std::string(kHostApiPrefix) + method;
   auto* handler = static_cast<Handler*>(
       g_hash_table_lookup(self->handlers, channel.c_str()));
@@ -401,26 +379,43 @@ FlValue* InvokeHost(TestBinaryMessenger* self, const std::string& method,
                     FL_BINARY_MESSENGER_RESPONSE_HANDLE(handle),
                     handler->user_data);
   g_assert_nonnull(handle->response);
+  if (encoded_response != nullptr) {
+    *encoded_response = g_bytes_ref(handle->response);
+  }
   FlValue* response =
       fl_message_codec_decode_message(codec, handle->response, &error);
   g_assert_no_error(error);
   return response;
 }
 
-// Purpose: Exercise the public plugin registration entrypoint on the fake
-// registrar and verify all generated HostApi channels are installed.
-// @param self is the dual fake registrar and binary messenger.
-// @returns Nothing.
-// @throws NativeQueryHostApiImpl construction failures.
+/**
+ * Purpose: Persist real native codec bytes for the Dart boundary test.
+ * @param name selects the fixture filename under the configured directory.
+ * @param bytes contains one generated Pigeon message or response.
+ * @returns Nothing.
+ * @throws Nothing.
+ */
+void WriteContractFixture(const char* name, GBytes* bytes) {
+  const gchar* directory = g_getenv("SIMPLE_QUERY_CONTRACT_FIXTURE_DIR");
+  if (directory == nullptr) return;
+  g_autofree gchar* path = g_build_filename(directory, name, nullptr);
+  gsize length = 0;
+  const auto* data = static_cast<const gchar*>(g_bytes_get_data(bytes, &length));
+  g_autoptr(GError) error = nullptr;
+  g_assert_true(g_file_set_contents(path, data, length, &error));
+  g_assert_no_error(error);
+}
+
+/** Purpose: Exercise public registration and all HostApi channel installs.
+ * @param self is the dual fake. @returns Nothing. @throws Host construction
+ * failures. */
 void InstallHost(TestBinaryMessenger* self) {
   simple_query_linux_plugin_register_with_registrar(FL_PLUGIN_REGISTRAR(self));
   g_assert_cmpuint(g_hash_table_size(self->handlers), ==, 9);
 }
 
-// Purpose: Model engine teardown and prove generated handlers are all removed.
-// @param self is the dual fake registrar and binary messenger.
-// @returns Nothing.
-// @throws Nothing.
+/** Purpose: Model engine teardown and verify handler removal. @param self is
+ * the dual fake. @returns Nothing. @throws Nothing. */
 void ClearHost(TestBinaryMessenger* self) {
   auto* messenger = FL_BINARY_MESSENGER(self);
   FL_BINARY_MESSENGER_GET_IFACE(messenger)->shutdown(messenger);
@@ -428,19 +423,41 @@ void ClearHost(TestBinaryMessenger* self) {
   g_assert_cmpuint(g_hash_table_size(self->handlers), ==, 0);
 }
 
-// Purpose: Build a Pigeon argument list around one map request.
-// Parameters: request is transferred into the argument list.
-// Returns: A newly owned argument list. Throws: Never.
+/** Purpose: Wrap one request in Pigeon arguments. @param request transfers.
+ * @returns A newly owned list. @throws Nothing. */
 FlValue* RequestArguments(FlValue* request) {
   FlValue* args = fl_value_new_list();
   fl_value_append_take(args, request);
   return args;
 }
 
-// Purpose: Extract a structured error code from a Pigeon response envelope.
-// Parameters: response is the decoded response list.
-// Returns: The error code string, or empty for a success envelope. Throws:
-// Never.
+/**
+ * Purpose: Append one insert operation for ordered native batch tests.
+ * @param operations receives the new mutation map.
+ * @param domain identifies the mutation domain.
+ * @param path is null for an intentionally malformed insert.
+ * @param is_directory requests directory creation instead of a file.
+ * @returns Nothing.
+ * @throws Nothing.
+ */
+void AppendInsertOperation(FlValue* operations, const char* domain,
+                           const std::filesystem::path* path,
+                           bool is_directory = false) {
+  auto operation = Value(fl_value_new_map());
+  MapSetString(operation.get(), "domain", domain);
+  MapSetString(operation.get(), "type", "insert");
+  auto values = Value(fl_value_new_map());
+  if (path != nullptr) {
+    MapSetString(values.get(), "path", path->string());
+    MapSetString(values.get(), "content", "created");
+    MapSetBool(values.get(), "isDirectory", is_directory);
+  }
+  MapSet(operation.get(), "values", values.release());
+  fl_value_append_take(operations, operation.release());
+}
+
+/** Purpose: Read a response error code. @param response is the decoded list.
+ * @returns Its code or empty on success. @throws Nothing. */
 std::string ResponseErrorCode(FlValue* response) {
   if (fl_value_get_length(response) <= 1) {
     return "";
@@ -448,10 +465,8 @@ std::string ResponseErrorCode(FlValue* response) {
   return fl_value_get_string(fl_value_get_list_value(response, 0));
 }
 
-// Purpose: Extract a structured error message from a Pigeon response envelope.
-// Parameters: response is the decoded response list.
-// Returns: The error message string, or empty for a success envelope. Throws:
-// Never.
+/** Purpose: Read a response error message. @param response is decoded.
+ * @returns Its message or empty on success. @throws Nothing. */
 std::string ResponseErrorMessage(FlValue* response) {
   if (fl_value_get_length(response) <= 1) {
     return "";
@@ -459,102 +474,10 @@ std::string ResponseErrorMessage(FlValue* response) {
   return fl_value_get_string(fl_value_get_list_value(response, 1));
 }
 
-struct AsyncCapture {
-  gboolean completed = FALSE;
-  SqlqNativeQueryFlutterApiOnObserveEventResponse* response = nullptr;
-  GError* error = nullptr;
-};
+#include "generated_flutter_api_lifecycle_test.h"
 
-// Purpose: Finish the generated FlutterApi send exactly as plugin code must.
-// Parameters: object is the generated API; result is its async result;
-// user_data receives the decoded response or transport error.
-// Returns: Nothing. Throws: Never.
-void CaptureFlutterApiResult(GObject* object, GAsyncResult* result,
-                             gpointer user_data) {
-  auto* capture = static_cast<AsyncCapture*>(user_data);
-  capture->response = sqlq_native_query_flutter_api_on_observe_event_finish(
-      SQLQ_NATIVE_QUERY_FLUTTER_API(object), result, &capture->error);
-  capture->completed = TRUE;
-}
-
-// Purpose: Exercise generated async success, Dart error, transport error, and
-// cancellation with the real basic-message-channel stack.
-// Parameters: None. Returns: Nothing. Throws: Never.
-void TestGeneratedAsyncLifecycle() {
-  g_autoptr(TestBinaryMessenger) messenger = NewMessenger();
-  g_autoptr(SqlqNativeQueryFlutterApi) api =
-      sqlq_native_query_flutter_api_new(FL_BINARY_MESSENGER(messenger),
-                                        nullptr);
-  g_autoptr(FlValue) event = fl_value_new_map();
-
-  AsyncCapture success;
-  sqlq_native_query_flutter_api_on_observe_event(
-      api, "observer", event, nullptr, CaptureFlutterApiResult, &success);
-  g_assert_true(RunUntil(nullptr, [&] { return success.completed; }));
-  g_assert_no_error(success.error);
-  g_assert_nonnull(success.response);
-  g_assert_false(sqlq_native_query_flutter_api_on_observe_event_response_is_error(
-      success.response));
-  g_clear_object(&success.response);
-
-  SetSendMode(messenger, SendMode::kDartError);
-  AsyncCapture dart_error;
-  sqlq_native_query_flutter_api_on_observe_event(
-      api, "observer", event, nullptr, CaptureFlutterApiResult, &dart_error);
-  g_assert_true(RunUntil(nullptr, [&] { return dart_error.completed; }));
-  g_assert_no_error(dart_error.error);
-  g_assert_true(sqlq_native_query_flutter_api_on_observe_event_response_is_error(
-      dart_error.response));
-  g_assert_cmpstr(
-      sqlq_native_query_flutter_api_on_observe_event_response_get_error_code(
-          dart_error.response),
-      ==, "dart-error");
-  g_clear_object(&dart_error.response);
-
-  SetSendMode(messenger, SendMode::kTransportError);
-  AsyncCapture transport_error;
-  sqlq_native_query_flutter_api_on_observe_event(
-      api, "observer", event, nullptr, CaptureFlutterApiResult,
-      &transport_error);
-  g_assert_true(RunUntil(nullptr, [&] { return transport_error.completed; }));
-  g_assert_null(transport_error.response);
-  g_assert_error(transport_error.error, G_IO_ERROR, G_IO_ERROR_FAILED);
-  g_clear_error(&transport_error.error);
-
-  SetSendMode(messenger, SendMode::kSuccess);
-  g_autoptr(GCancellable) cancellable = g_cancellable_new();
-  AsyncCapture cancelled;
-  sqlq_native_query_flutter_api_on_observe_event(
-      api, "observer", event, cancellable, CaptureFlutterApiResult,
-      &cancelled);
-  g_cancellable_cancel(cancellable);
-  g_assert_true(RunUntil(nullptr, [&] { return cancelled.completed; }));
-  g_assert_null(cancelled.response);
-  g_assert_error(cancelled.error, G_IO_ERROR, G_IO_ERROR_CANCELLED);
-  g_clear_error(&cancelled.error);
-  g_assert_cmpint(messenger->finish_count, ==, 3);
-}
-
-// Purpose: Prove a generated async call with no completion callback releases
-// its task and source API after the transport completes.
-// Parameters: None. Returns: Nothing. Throws: Never.
-void TestGeneratedNullCallbackCleanup() {
-  g_autoptr(TestBinaryMessenger) messenger = NewMessenger();
-  auto* api = sqlq_native_query_flutter_api_new(FL_BINARY_MESSENGER(messenger),
-                                                nullptr);
-  gpointer weak_api = api;
-  g_object_add_weak_pointer(G_OBJECT(api), &weak_api);
-  g_autoptr(FlValue) event = fl_value_new_map();
-  sqlq_native_query_flutter_api_on_observe_event(
-      api, "observer", event, nullptr, nullptr, nullptr);
-  g_object_unref(api);
-  g_assert_true(RunUntil(nullptr, [&] { return weak_api == nullptr; }));
-  g_assert_cmpint(messenger->finish_count, ==, 0);
-}
-
-// Purpose: Verify filesystem query failures are stable HostApi errors rather
-// than C++ exceptions crossing the generated C callback.
-// Parameters: None. Returns: Nothing. Throws: Never.
+/** Purpose: Verify dangling-link failures become stable HostApi errors.
+ * @returns Nothing. @throws Nothing. */
 void TestDanglingSymlinkReturnsUnavailable() {
   g_autofree gchar* temporary = g_dir_make_tmp("simple-query-test-XXXXXX",
                                                nullptr);
@@ -625,11 +548,68 @@ void TestUnreadableRootReturnsUnavailable() {
   std::filesystem::remove_all(temporary, cleanup_error);
 }
 
-// Purpose: Prove an unexpected C++ filesystem exception is translated at the
-// real generated HostApi callback boundary.
-// @param None.
-// @returns Nothing.
-// @throws Nothing.
+/**
+ * Purpose: Prove update and delete permission failures are never false success.
+ * @returns Nothing.
+ * @throws Nothing.
+ */
+void TestMutationFilesystemErrorsReturnUnavailable() {
+  if (geteuid() == 0) {
+    g_test_skip("Permission isolation requires a non-root test process.");
+    return;
+  }
+  g_autofree gchar* temporary = g_dir_make_tmp("simple-query-test-XXXXXX",
+                                               nullptr);
+  const std::filesystem::path root(temporary);
+  const std::filesystem::path locked = root / "locked";
+  const std::filesystem::path file = locked / "record.txt";
+  std::filesystem::create_directory(locked);
+  std::ofstream(file) << "before";
+  g_autoptr(TestBinaryMessenger) messenger = NewMessenger();
+  InstallHost(messenger);
+
+  g_assert_cmpint(g_chmod(locked.c_str(), 0), ==, 0);
+  auto update = Value(fl_value_new_map());
+  MapSetString(update.get(), "domain", "files");
+  MapSetString(update.get(), "type", "update");
+  auto values = Value(fl_value_new_map());
+  MapSetString(values.get(), "path", file.string());
+  MapSetString(values.get(), "content", "after");
+  MapSet(update.get(), "values", values.release());
+  g_autoptr(FlValue) update_args = RequestArguments(update.release());
+  g_autoptr(FlValue) update_response =
+      InvokeHost(messenger, "mutate", update_args);
+  const std::string update_error = ResponseErrorCode(update_response);
+  g_assert_cmpstr(update_error.c_str(), ==, "unavailable");
+
+  g_assert_cmpint(g_chmod(locked.c_str(), 0500), ==, 0);
+  auto removal = Value(fl_value_new_map());
+  MapSetString(removal.get(), "domain", "files");
+  MapSetString(removal.get(), "type", "delete");
+  auto filter = Value(fl_value_new_map());
+  MapSetString(filter.get(), "field", "path");
+  MapSetString(filter.get(), "operator", "equals");
+  MapSetString(filter.get(), "value", file.string());
+  auto filters = Value(fl_value_new_list());
+  fl_value_append_take(filters.get(), filter.release());
+  MapSet(removal.get(), "filters", filters.release());
+  auto platform_data = Value(fl_value_new_map());
+  MapSetString(platform_data.get(), "rootPath", root.string());
+  MapSet(removal.get(), "platformData", platform_data.release());
+  g_autoptr(FlValue) removal_args = RequestArguments(removal.release());
+  g_autoptr(FlValue) removal_response =
+      InvokeHost(messenger, "mutate", removal_args);
+  const std::string removal_error = ResponseErrorCode(removal_response);
+  g_assert_cmpstr(removal_error.c_str(), ==, "unavailable");
+
+  ClearHost(messenger);
+  g_assert_cmpint(g_chmod(locked.c_str(), 0700), ==, 0);
+  std::error_code cleanup_error;
+  std::filesystem::remove_all(root, cleanup_error);
+}
+
+/** Purpose: Prove unexpected filesystem exceptions become HostApi errors.
+ * @returns Nothing. @throws Nothing. */
 void TestHostExceptionBoundaryReturnsUnavailable() {
   g_autofree gchar* original_directory = g_get_current_dir();
   g_autofree gchar* temporary = g_dir_make_tmp("simple-query-cwd-XXXXXX",
@@ -678,7 +658,19 @@ void TestHostExceptionBoundaryReturnsUnavailable() {
   fl_value_append_take(operations.get(), operation.release());
   MapSet(batch.get(), "operations", operations.release());
   g_autoptr(FlValue) batch_args = RequestArguments(batch.release());
-  assert_unavailable("batch", batch_args);
+  g_autoptr(FlValue) batch_response =
+      InvokeHost(messenger, "batch", batch_args);
+  FlValue* batch_payload = fl_value_get_list_value(batch_response, 0);
+  FlValue* batch_results = FindValue(batch_payload, "results");
+  g_assert_cmpuint(fl_value_get_length(batch_results), ==, 1);
+  FlValue* failed_result = fl_value_get_list_value(batch_results, 0);
+  FlValue* error = FindValue(FindValue(failed_result, "metadata"), "error");
+  g_assert_cmpstr(fl_value_get_string(FindValue(error, "code")), ==,
+                  "unavailable");
+  g_assert_cmpstr(fl_value_get_string(FindValue(error, "domain")), ==,
+                  "files");
+  g_assert_cmpstr(fl_value_get_string(FindValue(error, "operation")), ==,
+                  "write");
 
   auto extension_args = Value(fl_value_new_list());
   fl_value_append_take(extension_args.get(), fl_value_new_string("linux.xdg"));
@@ -691,9 +683,8 @@ void TestHostExceptionBoundaryReturnsUnavailable() {
   ClearHost(messenger);
 }
 
-// Purpose: Exercise query, mutate, batch, and extension boundaries through the
-// production HostApi channels and codecs.
-// Parameters: None. Returns: Nothing. Throws: Never.
+/** Purpose: Exercise query, mutate, batch, and extension channels and codecs.
+ * @returns Nothing. @throws Nothing. */
 void TestFilesystemAndExtensionBoundaries() {
   g_autofree gchar* temporary = g_dir_make_tmp("simple-query-test-XXXXXX",
                                                nullptr);
@@ -732,24 +723,33 @@ void TestFilesystemAndExtensionBoundaries() {
 
   auto batch = Value(fl_value_new_map());
   auto operations = Value(fl_value_new_list());
-  for (const char* name : {"batch-a.txt", "batch-b.txt"}) {
-    auto operation = Value(fl_value_new_map());
-    MapSetString(operation.get(), "domain", "files");
-    MapSetString(operation.get(), "type", "insert");
-    auto values = Value(fl_value_new_map());
-    MapSetString(values.get(), "path", (root / name).string());
-    MapSetString(values.get(), "content", name);
-    MapSet(operation.get(), "values", values.release());
-    fl_value_append_take(operations.get(), operation.release());
-  }
+  const std::filesystem::path successful_path = root / "batch-success.txt";
+  const std::filesystem::path blocker = root / "batch-blocker";
+  const std::filesystem::path failed_path = blocker / "nested";
+  std::ofstream(blocker) << "not a directory";
+  AppendInsertOperation(operations.get(), "files", &failed_path, true);
+  AppendInsertOperation(operations.get(), "files", &successful_path);
+  AppendInsertOperation(operations.get(), "files", nullptr);
   MapSet(batch.get(), "operations", operations.release());
   g_autoptr(FlValue) batch_args = RequestArguments(batch.release());
+  g_autoptr(GBytes) encoded_batch_response = nullptr;
   g_autoptr(FlValue) batch_response =
-      InvokeHost(messenger, "batch", batch_args);
+      InvokeHost(messenger, "batch", batch_args, &encoded_batch_response);
   g_assert_cmpuint(fl_value_get_length(batch_response), ==, 1);
   FlValue* batch_result = fl_value_get_list_value(batch_response, 0);
-  g_assert_cmpuint(fl_value_get_length(FindValue(batch_result, "results")), ==,
-                   2);
+  FlValue* native_results = FindValue(batch_result, "results");
+  g_assert_cmpuint(fl_value_get_length(native_results), ==, 3);
+  const std::array<const char*, 3> expected_codes = {"unavailable", nullptr,
+                                                     "invalidQuery"};
+  for (const size_t index : {0u, 2u}) {
+    FlValue* failed = fl_value_get_list_value(native_results, index);
+    FlValue* error = FindValue(FindValue(failed, "metadata"), "error");
+    g_assert_nonnull(error);
+    g_assert_cmpstr(fl_value_get_string(FindValue(error, "code")), ==,
+                    expected_codes[index]);
+  }
+  g_assert_true(std::filesystem::exists(successful_path));
+  WriteContractFixture("batch_response.bin", encoded_batch_response);
 
   auto extension_args = Value(fl_value_new_list());
   fl_value_append_take(extension_args.get(), fl_value_new_string("linux.xdg"));
@@ -765,9 +765,8 @@ void TestFilesystemAndExtensionBoundaries() {
   std::filesystem::remove_all(root, cleanup_error);
 }
 
-// Purpose: Prove observer events enter Flutter only on the captured platform
-// context and every send is finished.
-// Parameters: None. Returns: Nothing. Throws: Never.
+/** Purpose: Prove observer sends use the platform context and always finish.
+ * @returns Nothing. @throws Nothing. */
 void TestObserverDispatchesOnPlatformContext() {
   g_autoptr(GMainContext) context = g_main_context_new();
   g_main_context_push_thread_default(context);
@@ -803,6 +802,9 @@ void TestObserverDispatchesOnPlatformContext() {
   g_assert_true(RunUntil(context, [&] { return messenger->finish_count == 1; },
                          5000));
   g_assert_true(messenger->send_thread == platform_thread);
+  g_assert_nonnull(messenger->last_outgoing_message);
+  WriteContractFixture("observe_event.bin",
+                       messenger->last_outgoing_message);
 
   auto stop_args = Value(fl_value_new_list());
   fl_value_append_take(stop_args.get(), fl_value_new_string(observer_id));
@@ -816,9 +818,8 @@ void TestObserverDispatchesOnPlatformContext() {
   std::filesystem::remove_all(root, cleanup_error);
 }
 
-// Purpose: Verify stopping an observer destroys queued platform sources before
-// they can retain or deliver an event.
-// Parameters: None. Returns: Nothing. Throws: Never.
+/** Purpose: Verify stopping an observer destroys queued platform sources.
+ * @returns Nothing. @throws Nothing. */
 void TestObserverStopDropsQueuedDelivery() {
   g_autoptr(GMainContext) context = g_main_context_new();
   g_main_context_push_thread_default(context);
@@ -864,11 +865,8 @@ void TestObserverStopDropsQueuedDelivery() {
   std::filesystem::remove_all(root, cleanup_error);
 }
 
-// Purpose: Verify Dart and transport delivery failures are completed and
-// reported instead of being dropped silently.
-// @param None.
-// @returns Nothing.
-// @throws Nothing.
+/** Purpose: Verify Dart and transport delivery failures stay observable.
+ * @returns Nothing. @throws Nothing. */
 void TestObserverReportsDeliveryFailures() {
   g_autoptr(GMainContext) context = g_main_context_new();
   g_main_context_push_thread_default(context);
@@ -923,11 +921,8 @@ void TestObserverReportsDeliveryFailures() {
   std::filesystem::remove_all(root, cleanup_error);
 }
 
-// Purpose: Verify real plugin disposal cancels an in-flight observer send and
-// the generated completion still finishes safely afterward.
-// @param None.
-// @returns Nothing.
-// @throws Nothing.
+/** Purpose: Verify disposal cancels and safely finishes an in-flight send.
+ * @returns Nothing. @throws Nothing. */
 void TestObserverDisposalCancelsInFlightDelivery() {
   g_autoptr(GMainContext) context = g_main_context_new();
   g_main_context_push_thread_default(context);
@@ -967,9 +962,8 @@ void TestObserverDisposalCancelsInFlightDelivery() {
 
 }  // namespace
 
-// Purpose: Register and run Linux native behavioral regression tests.
-// Parameters: argc and argv are GLib test runner arguments.
-// Returns: The GLib test process exit status. Throws: Never.
+/** Purpose: Register and run native regressions. @param argc is argument count.
+ * @param argv supplies arguments. @returns GLib exit status. @throws Nothing. */
 int main(int argc, char** argv) {
   g_test_init(&argc, &argv, nullptr);
   g_test_add_func("/simple_query/generated/async_lifecycle",
@@ -980,6 +974,8 @@ int main(int argc, char** argv) {
                   TestDanglingSymlinkReturnsUnavailable);
   g_test_add_func("/simple_query/host/unreadable_root",
                   TestUnreadableRootReturnsUnavailable);
+  g_test_add_func("/simple_query/host/mutation_filesystem_errors",
+                  TestMutationFilesystemErrorsReturnUnavailable);
   g_test_add_func("/simple_query/host/exception_boundary",
                   TestHostExceptionBoundaryReturnsUnavailable);
   g_test_add_func("/simple_query/host/filesystem_and_extension",

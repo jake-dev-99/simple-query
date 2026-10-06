@@ -35,6 +35,13 @@ jobs:
       - name: Download Flutter Linux artifacts
         run: flutter precache --linux
 
+      - name: Link workspace dependencies
+        run: dart run melos bootstrap
+
+      - name: Install Linux package dependencies
+        working-directory: packages/simple_query_linux
+        run: flutter pub get
+
       - name: Exercise native callbacks and resource cleanup
         run: bash packages/simple_query_linux/tool/run_native_tests.sh
 

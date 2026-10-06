@@ -8,7 +8,7 @@ Current implementation:
 - Restricted domains (`messages`, `calls`) return deterministic `SimpleQueryErrorCode.notSupported`
 - `contacts` and `calendar` are read-only (contacts/calendar via native backend)
 - `linux.tracker` and `linux.xdg` extension methods provide diagnostic metadata
-- Batch fallback semantics are ordered and `sequentialBestEffort`, not atomic
+- Batch semantics are ordered and `sequentialBestEffort`, not atomic
 
 ## Generated Linux bindings
 
@@ -32,7 +32,8 @@ output is byte-reproducible across supported Flutter SDKs. The repository-level
 
 ## Native tests
 
-Run the Linux behavioral suite from this package directory:
+After `flutter pub get`, run the Linux behavioral suite from this package
+directory:
 
 ```sh
 bash tool/run_native_tests.sh
@@ -42,4 +43,12 @@ The runner uses `FLUTTER_ROOT` when set; otherwise it finds the Flutter SDK from
 the `flutter` executable on `PATH`. It requires `clang++`, `pkg-config`, and the
 GTK 3 development packages. It always builds the no-EDS variant and also builds
 the Evolution Data Server variant when `libebook-1.2`, `libecal-2.0`, and
-`libedataserver-1.2` are available through `pkg-config`.
+`libedataserver-1.2` are available through `pkg-config`. The no-EDS run captures
+the exact generated native bytes for an observer event and batch response; the
+runner then replays those bytes through the generated Dart channels and shared
+payload decoder. This cross-language replay is part of the default suite and
+fails if native and Dart wire contracts diverge.
+
+For a native-only diagnostic run, such as compiling against a read-only source
+mount, set `SIMPLE_QUERY_NATIVE_ONLY=1`. That mode deliberately skips the Dart
+wire-contract replay and is not a substitute for the default verification.

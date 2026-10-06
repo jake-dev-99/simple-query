@@ -41,6 +41,12 @@ namespace simple_query_linux {
 namespace {
 
 struct FlValueDeleter {
+  /**
+   * Purpose: Release a uniquely owned Flutter value through its C API.
+   * @param value is the nullable Flutter value leaving scope.
+   * @returns Nothing.
+   * @throws Nothing.
+   */
   void operator()(FlValue* value) const {
     if (value != nullptr) {
       fl_value_unref(value);
@@ -51,24 +57,41 @@ struct FlValueDeleter {
 using ValuePtr = std::unique_ptr<FlValue, FlValueDeleter>;
 using Rows = std::vector<ValuePtr>;
 
+/** Purpose: Adopt an owned Flutter value. @param value is transferred to the
+ * returned pointer. @returns An RAII Flutter value. @throws Nothing. */
 ValuePtr Value(FlValue* value) { return ValuePtr(value); }
 
+/** Purpose: Transfer a value into a string-keyed Flutter map. @param map is
+ * mutated. @param key identifies the entry. @param value is transferred.
+ * @returns Nothing. @throws Nothing. */
 void MapSet(FlValue* map, const char* key, FlValue* value) {
   fl_value_set_string_take(map, key, value);
 }
 
+/** Purpose: Store a copied string in a Flutter map. @param map is mutated.
+ * @param key identifies the entry. @param value supplies the string.
+ * @returns Nothing. @throws Nothing. */
 void MapSetString(FlValue* map, const char* key, const std::string& value) {
   MapSet(map, key, fl_value_new_string(value.c_str()));
 }
 
+/** Purpose: Store a Boolean in a Flutter map. @param map is mutated. @param key
+ * identifies the entry. @param value supplies the Boolean. @returns Nothing.
+ * @throws Nothing. */
 void MapSetBool(FlValue* map, const char* key, bool value) {
   MapSet(map, key, fl_value_new_bool(value));
 }
 
+/** Purpose: Store an integer in a Flutter map. @param map is mutated. @param key
+ * identifies the entry. @param value supplies the integer. @returns Nothing.
+ * @throws Nothing. */
 void MapSetInt(FlValue* map, const char* key, int64_t value) {
   MapSet(map, key, fl_value_new_int(value));
 }
 
+/** Purpose: Safely look up a string key only when the input is a map.
+ * @param map is the nullable candidate map. @param key identifies the entry.
+ * @returns A borrowed value or null. @throws Nothing. */
 FlValue* FindValue(FlValue* map, const std::string& key) {
   if (map == nullptr || fl_value_get_type(map) != FL_VALUE_TYPE_MAP) {
     return nullptr;
@@ -76,6 +99,9 @@ FlValue* FindValue(FlValue* map, const std::string& key) {
   return fl_value_lookup_string(map, key.c_str());
 }
 
+/** Purpose: Normalize scalar Flutter values to text for query comparison.
+ * @param value is the nullable scalar. @returns Text or null for unsupported
+ * types. @throws std::bad_alloc when text allocation fails. */
 std::optional<std::string> AsString(FlValue* value) {
   if (value == nullptr) {
     return std::nullopt;
@@ -94,11 +120,18 @@ std::optional<std::string> AsString(FlValue* value) {
   }
 }
 
+/** Purpose: Read a map string while preserving an explicit fallback.
+ * @param map supplies the value. @param key identifies it. @param fallback is
+ * used when conversion fails. @returns The converted or fallback text.
+ * @throws std::bad_alloc when text allocation fails. */
 std::string StringOr(FlValue* map, const std::string& key,
                      const std::string& fallback) {
   return AsString(FindValue(map, key)).value_or(fallback);
 }
 
+/** Purpose: Normalize numeric Flutter values to a signed integer.
+ * @param value is the nullable scalar. @returns An integer or null for an
+ * unsupported type. @throws Nothing. */
 std::optional<int64_t> AsInt(FlValue* value) {
   if (value == nullptr) {
     return std::nullopt;
@@ -113,6 +146,10 @@ std::optional<int64_t> AsInt(FlValue* value) {
   }
 }
 
+/** Purpose: Read a strict Boolean map field without coercion. @param map
+ * supplies the value. @param key identifies it. @param fallback is used when
+ * absent or mistyped. @returns The decoded or fallback Boolean.
+ * @throws Nothing. */
 bool BoolOr(FlValue* map, const std::string& key, bool fallback) {
   FlValue* value = FindValue(map, key);
   if (value == nullptr || fl_value_get_type(value) != FL_VALUE_TYPE_BOOL) {
@@ -121,18 +158,25 @@ bool BoolOr(FlValue* map, const std::string& key, bool fallback) {
   return fl_value_get_bool(value);
 }
 
+/** Purpose: Validate a Flutter value as a map. @param value is borrowed.
+ * @returns The same borrowed value or null. @throws Nothing. */
 FlValue* AsMap(FlValue* value) {
   return value != nullptr && fl_value_get_type(value) == FL_VALUE_TYPE_MAP
              ? value
              : nullptr;
 }
 
+/** Purpose: Validate a Flutter value as a list. @param value is borrowed.
+ * @returns The same borrowed value or null. @throws Nothing. */
 FlValue* AsList(FlValue* value) {
   return value != nullptr && fl_value_get_type(value) == FL_VALUE_TYPE_LIST
              ? value
              : nullptr;
 }
 
+/** Purpose: Copy a Flutter map container while retaining each mapped value.
+ * @param map is borrowed and may be null or mistyped. @returns A new map.
+ * @throws Nothing. */
 ValuePtr CloneMap(FlValue* map) {
   auto clone = Value(fl_value_new_map());
   if (AsMap(map) == nullptr) {
@@ -155,7 +199,7 @@ ValuePtr CloneMap(FlValue* map) {
  * @param value is encoded and decoded on the platform thread.
  * @param error_message receives a stable simple_query failure on codec error.
  * @returns A deep copy safe for exclusive worker-thread ownership.
- * @throws Nothing.
+ * @throws std::bad_alloc if the returned string cannot be allocated.
  */
 ValuePtr CopyValueForWorker(FlValue* value, std::string* error_message) {
   g_autoptr(FlStandardMessageCodec) codec =
@@ -180,6 +224,9 @@ ValuePtr CopyValueForWorker(FlValue* value, std::string* error_message) {
   return Value(copy);
 }
 
+/** Purpose: Normalize ASCII metadata for case-insensitive matching.
+ * @param value is copied for in-place normalization. @returns Lowercase text.
+ * @throws Nothing after the input copy succeeds. */
 std::string Lower(std::string value) {
   std::transform(value.begin(), value.end(), value.begin(),
                  [](unsigned char c) {
@@ -188,6 +235,9 @@ std::string Lower(std::string value) {
   return value;
 }
 
+/** Purpose: Infer the stable MIME value exposed for a filesystem record.
+ * @param path supplies the filename extension. @returns A known MIME type or
+ * application/octet-stream. @throws std::bad_alloc on string allocation. */
 std::string MimeFromPath(const std::filesystem::path& path) {
   const std::string ext = Lower(path.extension().string());
   if (ext == ".jpg" || ext == ".jpeg") return "image/jpeg";
@@ -205,11 +255,17 @@ std::string MimeFromPath(const std::filesystem::path& path) {
   return "application/octet-stream";
 }
 
+/** Purpose: Decide whether a MIME value belongs to the media query domain.
+ * @param mime is the normalized MIME value. @returns True for image, video, or
+ * audio prefixes. @throws Nothing. */
 bool IsMediaMime(const std::string& mime) {
   return mime.rfind("image/", 0) == 0 || mime.rfind("video/", 0) == 0 ||
          mime.rfind("audio/", 0) == 0;
 }
 
+/** Purpose: Project a MIME value to the portable media type field.
+ * @param mime is the normalized MIME value. @returns image, video, audio, or
+ * other. @throws Nothing. */
 std::string MediaType(const std::string& mime) {
   if (mime.rfind("image/", 0) == 0) return "image";
   if (mime.rfind("video/", 0) == 0) return "video";
@@ -234,6 +290,9 @@ struct DomainRowsResult {
   std::optional<std::string> error;
 };
 
+/** Purpose: Discover EDS sources through the session-bus object manager.
+ * @returns Source descriptors or a stable unavailable diagnostic.
+ * @throws std::bad_alloc when result allocation fails. */
 EdsSourcesResult QueryEdsSources() {
   EdsSourcesResult result;
   GError* error = nullptr;
@@ -328,6 +387,9 @@ EdsSourcesResult QueryEdsSources() {
   return result;
 }
 
+/** Purpose: Read portable contact rows from libebook or EDS discovery.
+ * @returns Contact rows or a stable source error. @throws std::bad_alloc when
+ * result allocation fails. */
 DomainRowsResult ListContactRecords() {
   DomainRowsResult result;
 
@@ -443,6 +505,9 @@ DomainRowsResult ListContactRecords() {
   return result;
 }
 
+/** Purpose: Read portable event rows from libecal or EDS discovery.
+ * @returns Calendar rows or a stable source error. @throws std::bad_alloc when
+ * result allocation fails. */
 DomainRowsResult ListCalendarRecords() {
   DomainRowsResult result;
 
@@ -581,6 +646,10 @@ DomainRowsResult ListCalendarRecords() {
   return result;
 }
 
+/** Purpose: Filter discovered EDS sources for one extension API.
+ * @param address_books selects address books instead of calendars.
+ * @returns Matching sources or the discovery error. @throws std::bad_alloc
+ * when result allocation fails. */
 EdsSourcesResult ListEdsDomainSources(bool address_books) {
   EdsSourcesResult result;
   const auto sources = QueryEdsSources();
@@ -629,10 +698,32 @@ int64_t ModifiedEpochMs(const std::filesystem::directory_entry& entry,
   return std::chrono::duration_cast<std::chrono::milliseconds>(ticks).count();
 }
 
+/**
+ * Purpose: Encode observation time in the ISO-8601 UTC format Dart requires.
+ * @returns A timestamp with fixed millisecond precision and a literal Z suffix.
+ * @throws std::bad_alloc if the returned string cannot be allocated.
+ */
+std::string IsoUtcTimestamp() {
+  g_autoptr(GDateTime) now = g_date_time_new_now_utc();
+  g_autofree gchar* prefix =
+      g_date_time_format(now, "%Y-%m-%dT%H:%M:%S");
+  g_autofree gchar* suffix =
+      g_strdup_printf(".%03dZ", g_date_time_get_microsecond(now) / 1000);
+  return std::string(prefix) + suffix;
+}
+
+/** Purpose: Read a record field as comparable text. @param row is the record.
+ * @param key selects its field. @returns Converted text or an empty string.
+ * @throws std::bad_alloc when text allocation fails. */
 std::string ValueAsString(FlValue* row, const std::string& key) {
   return AsString(FindValue(row, key)).value_or("");
 }
 
+/** Purpose: Encode one runtime capability descriptor. @param domain names the
+ * domain. @param can_read permits reads. @param can_write permits writes.
+ * @param can_observe permits observation. @param can_stream permits binary
+ * streams. @param reason explains a restriction. @returns A new descriptor.
+ * @throws Nothing. */
 ValuePtr Capability(const std::string& domain, bool can_read, bool can_write,
                     bool can_observe, bool can_stream,
                     const std::optional<std::string>& reason = std::nullopt) {
@@ -648,6 +739,10 @@ ValuePtr Capability(const std::string& domain, bool can_read, bool can_write,
   return map;
 }
 
+/** Purpose: Resolve a requested filesystem root or the current directory.
+ * @param request may contain platformData.rootPath. @returns The selected path.
+ * @throws std::filesystem::filesystem_error when current-directory lookup
+ * fails, and std::bad_alloc on path allocation. */
 std::filesystem::path ResolveRootPath(FlValue* request) {
   FlValue* platform_data = AsMap(FindValue(request, "platformData"));
   if (platform_data != nullptr) {
@@ -778,6 +873,9 @@ DomainRowsResult ListRecords(const std::filesystem::path& root,
   return result;
 }
 
+/** Purpose: Apply portable equality, containment, and list filters in order.
+ * @param rows owns candidate records. @param filters is the borrowed filter
+ * list. @returns The retained records. @throws std::bad_alloc on allocation. */
 Rows ApplyFilters(Rows rows, FlValue* filters) {
   if (filters == nullptr || fl_value_get_length(filters) == 0) {
     return rows;
@@ -838,6 +936,9 @@ Rows ApplyFilters(Rows rows, FlValue* filters) {
   return filtered;
 }
 
+/** Purpose: Apply the first requested portable sort to native records.
+ * @param rows owns records reordered in place. @param sort is the borrowed sort
+ * list. @returns Nothing. @throws std::bad_alloc during text comparison. */
 void ApplySort(Rows* rows, FlValue* sort) {
   if (sort == nullptr || fl_value_get_length(sort) == 0) {
     return;
@@ -862,6 +963,9 @@ void ApplySort(Rows* rows, FlValue* sort) {
             });
 }
 
+/** Purpose: Project native rows to the exact requested field set.
+ * @param rows supplies source records. @param projection lists field names.
+ * @returns A new Flutter list of projected records. @throws Nothing. */
 ValuePtr ApplyProjection(const Rows& rows, FlValue* projection) {
   auto projected_rows = Value(fl_value_new_list());
   if (projection == nullptr || fl_value_get_length(projection) == 0) {
@@ -931,6 +1035,9 @@ SnapshotResult BuildSnapshotForDomain(FlValue* request,
   return result;
 }
 
+/** Purpose: Identify records added, removed, or changed between snapshots.
+ * @param previous is the last delivered snapshot. @param current is the newest
+ * snapshot. @returns A new Flutter list of changed IDs. @throws Nothing. */
 ValuePtr ChangedIds(const Snapshot& previous, const Snapshot& current) {
   auto ids = Value(fl_value_new_list());
   for (const auto& [id, modified] : previous) {
@@ -968,12 +1075,68 @@ struct ValueResult {
   std::optional<NativeError> error;
 };
 
+/** Purpose: Wrap an owned Flutter payload as a successful native result.
+ * @param value is transferred. @returns A success result. @throws Nothing. */
 ValueResult Success(ValuePtr value) {
   return ValueResult{std::move(value), std::nullopt};
 }
 
+/** Purpose: Wrap a stable code and message as a native operation failure.
+ * @param code is the transport error code. @param message is user-readable.
+ * @returns A failed native result. @throws std::bad_alloc while copying text. */
 ValueResult Failure(const std::string& code, const std::string& message) {
   return ValueResult{ValuePtr(), NativeError{code, message}};
+}
+
+/**
+ * Purpose: Convert native transport codes to public SimpleQueryErrorCode names.
+ * @param code is the kebab-case native error code.
+ * @returns The camel-case code name, or null when native code drift is found.
+ * @throws Nothing.
+ */
+std::optional<std::string> PortableErrorCodeName(const std::string& code) {
+  if (code == "not-supported") return "notSupported";
+  if (code == "permission-denied") return "permissionDenied";
+  if (code == "invalid-query") return "invalidQuery";
+  if (code == "transient") return "transientFailure";
+  if (code == "unavailable") return "unavailable";
+  return std::nullopt;
+}
+
+/**
+ * Purpose: Attach sequential-best-effort metadata to one ordered batch result.
+ * @param operation supplies the domain for structured error context.
+ * @param result is the mutation value or native failure for this operation.
+ * @returns A successful or failed MutationResult-shaped payload.
+ * @throws Nothing.
+ */
+ValuePtr BatchOperationResult(FlValue* operation, ValueResult result) {
+  auto payload = result.value != nullptr ? std::move(result.value)
+                                         : Value(fl_value_new_map());
+  if (result.error.has_value()) {
+    MapSetInt(payload.get(), "affectedCount", 0);
+  }
+  auto metadata = CloneMap(AsMap(FindValue(payload.get(), "metadata")));
+  MapSetString(metadata.get(), "batchSemantics", "sequentialBestEffort");
+  MapSetString(metadata.get(), "implementation", "native_linux");
+  if (result.error.has_value()) {
+    auto error = Value(fl_value_new_map());
+    const auto portable_code = PortableErrorCodeName(result.error->code);
+    MapSetString(error.get(), "code",
+                 portable_code.value_or("unavailable"));
+    const std::string message =
+        portable_code.has_value()
+            ? result.error->message
+            : result.error->message + " (unrecognized native error code: " +
+                  result.error->code + ")";
+    MapSetString(error.get(), "message", message);
+    MapSetString(error.get(), "domain",
+                 StringOr(operation, "domain", "platformSpecific"));
+    MapSetString(error.get(), "operation", "write");
+    MapSet(metadata.get(), "error", error.release());
+  }
+  MapSet(payload.get(), "metadata", metadata.release());
+  return payload;
 }
 
 struct StringResult {
@@ -1005,6 +1168,9 @@ class NativeQueryHostApiImpl {
     g_clear_pointer(&platform_context_, g_main_context_unref);
   }
 
+  /** Purpose: Describe currently reachable Linux domains and extensions.
+   * @returns A portable capability snapshot. @throws std::bad_alloc when the
+   * snapshot cannot be allocated. */
   ValueResult GetCapabilities() {
     const auto contacts_probe = ListContactRecords();
     const auto calendar_probe = ListCalendarRecords();
@@ -1051,6 +1217,10 @@ class NativeQueryHostApiImpl {
     return Success(std::move(result));
   }
 
+  /** Purpose: Execute one validated native read and portable result projection.
+   * @param request is the decoded Pigeon query payload. @returns Query records
+   * or a structured native error. @throws Native allocation or filesystem
+   * exceptions for the outer callback boundary to translate. */
   ValueResult Query(FlValue* request) {
     const std::string domain =
         StringOr(request, "domain", "platformSpecific");
@@ -1123,6 +1293,10 @@ class NativeQueryHostApiImpl {
     return Success(std::move(result));
   }
 
+  /** Purpose: Execute one filesystem mutation with fail-closed I/O handling.
+   * @param request is the decoded Pigeon mutation payload. @returns A mutation
+   * result or structured native error. @throws Native allocation exceptions
+   * for the outer callback boundary to translate. */
   ValueResult Mutate(FlValue* request) {
     const std::string domain =
         StringOr(request, "domain", "platformSpecific");
@@ -1147,17 +1321,39 @@ class NativeQueryHostApiImpl {
       }
 
       std::error_code error;
+      const std::filesystem::path output_path(*path);
       if (BoolOr(values, "isDirectory", false)) {
-        std::filesystem::create_directories(*path, error);
+        std::filesystem::create_directories(output_path, error);
+        if (error) {
+          return Failure(
+              "unavailable",
+              FileSystemFailure("filesystem directory creation", output_path,
+                                error));
+        }
       } else {
-        const auto file_path = std::filesystem::path(*path);
-        std::filesystem::create_directories(file_path.parent_path(), error);
-        std::ofstream stream(*path, std::ios::binary);
+        const auto parent_path = output_path.parent_path();
+        if (!parent_path.empty()) {
+          std::filesystem::create_directories(parent_path, error);
+          if (error) {
+            return Failure(
+                "unavailable",
+                FileSystemFailure("filesystem directory creation",
+                                  parent_path, error));
+          }
+        }
+        std::ofstream stream(output_path, std::ios::binary);
         if (!stream.is_open()) {
           return Failure("unavailable",
-                         "simple_query: could not create output file");
+                         "simple_query: could not create output file " +
+                             output_path.string());
         }
         stream << AsString(FindValue(values, "content")).value_or("");
+        stream.flush();
+        if (!stream.good()) {
+          return Failure("unavailable",
+                         "simple_query: could not write output file " +
+                             output_path.string());
+        }
       }
 
       auto result = Value(fl_value_new_map());
@@ -1192,8 +1388,13 @@ class NativeQueryHostApiImpl {
             continue;
           }
           std::error_code error;
-          deleted += static_cast<int64_t>(
-              std::filesystem::remove_all(*path, error));
+          const auto removed = std::filesystem::remove_all(*path, error);
+          if (error) {
+            return Failure(
+                "unavailable",
+                FileSystemFailure("filesystem delete", *path, error));
+          }
+          deleted += static_cast<int64_t>(removed);
         }
       }
 
@@ -1251,7 +1452,14 @@ class NativeQueryHostApiImpl {
       for (const auto& original_path : target_paths) {
         std::error_code error;
         std::filesystem::path effective_path(original_path);
-        if (!std::filesystem::exists(effective_path, error)) {
+        const bool exists = std::filesystem::exists(effective_path, error);
+        if (error) {
+          return Failure(
+              "unavailable",
+              FileSystemFailure("filesystem existence check", effective_path,
+                                error));
+        }
+        if (!exists) {
           continue;
         }
 
@@ -1260,16 +1468,36 @@ class NativeQueryHostApiImpl {
         if (new_path.has_value() && !new_path->empty() &&
             *new_path != original_path) {
           const std::filesystem::path next_path(*new_path);
-          std::filesystem::create_directories(next_path.parent_path(), error);
-          error.clear();
-          std::filesystem::rename(effective_path, next_path, error);
-          if (!error) {
-            effective_path = next_path;
-            changed = true;
+          const auto parent_path = next_path.parent_path();
+          if (!parent_path.empty()) {
+            std::filesystem::create_directories(parent_path, error);
+            if (error) {
+              return Failure(
+                  "unavailable",
+                  FileSystemFailure("filesystem directory creation",
+                                    parent_path, error));
+            }
           }
+          std::filesystem::rename(effective_path, next_path, error);
+          if (error) {
+            return Failure(
+                "unavailable",
+                FileSystemFailure("filesystem rename", effective_path,
+                                  error));
+          }
+          effective_path = next_path;
+          changed = true;
         }
 
-        if (!std::filesystem::is_directory(effective_path, error)) {
+        const bool is_directory =
+            std::filesystem::is_directory(effective_path, error);
+        if (error) {
+          return Failure(
+              "unavailable",
+              FileSystemFailure("filesystem metadata", effective_path,
+                                error));
+        }
+        if (!is_directory) {
           FlValue* bytes = FindValue(values, "bytes");
           if (bytes != nullptr) {
             if (fl_value_get_type(bytes) != FL_VALUE_TYPE_UINT8_LIST) {
@@ -1287,6 +1515,12 @@ class NativeQueryHostApiImpl {
             stream.write(
                 reinterpret_cast<const char*>(fl_value_get_uint8_list(bytes)),
                 static_cast<std::streamsize>(fl_value_get_length(bytes)));
+            stream.flush();
+            if (!stream.good()) {
+              return Failure("unavailable",
+                             "simple_query: could not write file " +
+                                 effective_path.string());
+            }
             changed = true;
           } else if (FlValue* content = FindValue(values, "content");
                      content != nullptr) {
@@ -1297,6 +1531,12 @@ class NativeQueryHostApiImpl {
                              "simple_query: could not open file for update");
             }
             stream << AsString(content).value_or("");
+            stream.flush();
+            if (!stream.good()) {
+              return Failure("unavailable",
+                             "simple_query: could not write file " +
+                                 effective_path.string());
+            }
             changed = true;
           }
         }
@@ -1315,6 +1555,10 @@ class NativeQueryHostApiImpl {
                    "simple_query: unknown mutation type " + type);
   }
 
+  /** Purpose: Execute every well-formed mutation in stable input order.
+   * @param request is the decoded batch payload. @returns One annotated result
+   * per operation, preserving failures. @throws Native allocation exceptions
+   * before or after per-operation containment. */
   ValueResult Batch(FlValue* request) {
     FlValue* operations = AsList(FindValue(request, "operations"));
     if (operations == nullptr) {
@@ -1322,13 +1566,16 @@ class NativeQueryHostApiImpl {
                      "simple_query: batch requires operations");
     }
 
-    auto results = Value(fl_value_new_list());
     for (size_t index = 0; index < fl_value_get_length(operations); index++) {
-      FlValue* operation = AsMap(fl_value_get_list_value(operations, index));
-      if (operation == nullptr) {
+      if (AsMap(fl_value_get_list_value(operations, index)) == nullptr) {
         return Failure("invalid-query",
                        "simple_query: batch operation must be a map");
       }
+    }
+
+    auto results = Value(fl_value_new_list());
+    for (size_t index = 0; index < fl_value_get_length(operations); index++) {
+      FlValue* operation = AsMap(fl_value_get_list_value(operations, index));
       auto merged = CloneMap(operation);
       if (FindValue(operation, "platformData") == nullptr &&
           FindValue(request, "platformData") != nullptr) {
@@ -1336,11 +1583,21 @@ class NativeQueryHostApiImpl {
                fl_value_ref(FindValue(request, "platformData")));
       }
 
-      auto result = Mutate(merged.get());
-      if (result.error.has_value()) {
-        return result;
+      ValueResult result;
+      try {
+        result = Mutate(merged.get());
+      } catch (const std::exception& error) {
+        result = Failure(
+            "unavailable",
+            "simple_query: Linux batch operation failed - " +
+                std::string(error.what()));
+      } catch (...) {
+        result = Failure("unavailable",
+                         "simple_query: Linux batch operation failed");
       }
-      fl_value_append_take(results.get(), result.value.release());
+      fl_value_append_take(
+          results.get(),
+          BatchOperationResult(operation, std::move(result)).release());
     }
 
     auto response = Value(fl_value_new_map());
@@ -1348,6 +1605,10 @@ class NativeQueryHostApiImpl {
     return Success(std::move(response));
   }
 
+  /** Purpose: Start one cancellable polling worker for a supported domain.
+   * @param request is the decoded observation payload. @returns Its observer ID
+   * or a structured error. @throws Thread or allocation exceptions for the
+   * outer callback boundary to translate. */
   StringResult ObserveStart(FlValue* request) {
     const std::string domain =
         StringOr(request, "domain", "platformSpecific");
@@ -1386,6 +1647,9 @@ class NativeQueryHostApiImpl {
     return StringResult{observer_id, std::nullopt};
   }
 
+  /** Purpose: Stop and remove one observer without failing repeated cleanup.
+   * @param observer_id selects the observer. @returns No error after cleanup.
+   * @throws Nothing after lookup succeeds. */
   std::optional<NativeError> ObserveStop(const std::string& observer_id) {
     std::shared_ptr<ObserverState> state;
     {
@@ -1401,6 +1665,10 @@ class NativeQueryHostApiImpl {
     return std::nullopt;
   }
 
+  /** Purpose: Validate and expose one filesystem resource as a binary handle.
+   * @param request identifies the native resource. @returns Handle metadata or
+   * a structured error. @throws Native allocation exceptions for the outer
+   * callback boundary to translate. */
   ValueResult OpenBinary(FlValue* request) {
     const std::string domain =
         StringOr(request, "domain", "platformSpecific");
@@ -1448,11 +1716,18 @@ class NativeQueryHostApiImpl {
     return Success(std::move(result));
   }
 
+  /** Purpose: Release one binary handle idempotently. @param handle_id selects
+   * the handle. @returns No error after cleanup. @throws Nothing. */
   std::optional<NativeError> CloseBinary(const std::string& handle_id) {
     open_handles_.erase(handle_id);
     return std::nullopt;
   }
 
+  /** Purpose: Dispatch a namespaced Linux diagnostic extension.
+   * @param name_space selects the extension. @param method selects its action.
+   * @param args contains optional decoded arguments. @returns Extension data or
+   * a structured error. @throws Native allocation exceptions for the outer
+   * callback boundary to translate. */
   ValueResult CallExtension(const std::string& name_space,
                             const std::string& method, FlValue* args) {
     args = AsMap(args);
@@ -1759,12 +2034,7 @@ class NativeQueryHostApiImpl {
         auto event = Value(fl_value_new_map());
         MapSetString(event.get(), "domain", domain);
         MapSetString(event.get(), "changeType", "unknown");
-        MapSetString(event.get(), "timestamp",
-                     std::to_string(std::chrono::duration_cast<
-                                        std::chrono::milliseconds>(
-                                        std::chrono::system_clock::now()
-                                            .time_since_epoch())
-                                        .count()));
+        MapSetString(event.get(), "timestamp", IsoUtcTimestamp());
         MapSet(event.get(), "ids",
                ChangedIds(previous.snapshot, current.snapshot).release());
         MapSetString(event.get(), "source", "linux-host");
@@ -1850,6 +2120,9 @@ G_DEFINE_TYPE(SimpleQueryLinuxPlugin, simple_query_linux_plugin, G_TYPE_OBJECT)
 
 namespace {
 
+/** Purpose: Resolve the host implementation retained by a plugin callback.
+ * @param user_data owns the registered plugin. @returns Its borrowed host API.
+ * @throws Nothing. */
 simple_query_linux::NativeQueryHostApiImpl* GetHostApi(gpointer user_data) {
   return SIMPLE_QUERY_LINUX_PLUGIN(user_data)->host_api;
 }
@@ -2107,6 +2380,9 @@ const SqlqNativeQueryHostApiVTable kHostApiVTable = {
 
 }  // namespace
 
+/** Purpose: Unregister channels before destroying observers and native state.
+ * @param object is the plugin instance being disposed. @returns Nothing.
+ * @throws Nothing. */
 static void simple_query_linux_plugin_dispose(GObject* object) {
   auto* self = SIMPLE_QUERY_LINUX_PLUGIN(object);
   if (self->registrar != nullptr) {
@@ -2129,6 +2405,9 @@ static void simple_query_linux_plugin_init(SimpleQueryLinuxPlugin* self) {
   self->host_api = nullptr;
 }
 
+/** Purpose: Register the generated HostApi with registrar-owned transport.
+ * @param registrar supplies the messenger and owns plugin integration.
+ * @returns Nothing. @throws Nothing across the public C boundary. */
 void simple_query_linux_plugin_register_with_registrar(
     FlPluginRegistrar* registrar) {
   auto* plugin = SIMPLE_QUERY_LINUX_PLUGIN(
