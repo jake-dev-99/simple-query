@@ -2,6 +2,7 @@
 
 #include "eds_service_contract_test.h"
 #include "observer_delivery_test.h"
+#include "mutation_scope_test.h"
 
 /** Purpose: Register every native production-boundary regression.
  * @param None. @returns Nothing.
@@ -25,6 +26,12 @@ void RegisterNativeTests() {
                   TestDeleteRequiresRootForFilesAndMedia);
   g_test_add_func("/simple_query/host/media_mutation_path",
                   TestMediaMutationUsesPortableRecordPath);
+  g_test_add_func("/simple_query/host/mutations_require_root", TestAllMutationsRequireRoot);
+  g_test_add_func("/simple_query/host/mutation_outside_targets", TestMutationRejectsOutsideTargets);
+  g_test_add_func("/simple_query/host/mutation_outside_renames", TestMutationRejectsOutsideRenames);
+  g_test_add_func("/simple_query/host/mutation_symlink_escapes", TestMutationRejectsSymlinkEscapes);
+  g_test_add_func("/simple_query/host/mutation_relative_paths", TestMutationResolvesRelativePaths);
+  g_test_add_func("/simple_query/host/batch_mutation_scope", TestBatchPreservesMutationScope);
   g_test_add_func("/simple_query/host/lightweight_capabilities",
                   TestCapabilitiesUseOneLightweightEdsProbe);
 #if !defined(HAS_LIBEBOOK) && !defined(HAS_LIBECAL)

@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <exception>
 #include <fstream>
 #include <set>
@@ -62,6 +63,80 @@ ValuePtr BatchOperationResult(FlValue* operation, ValueResult result) {
 }  // namespace
 
 namespace {
+
+/** Purpose: Require explicit filesystem scope before accepting a native write.
+ * @param request supplies platformData.rootPath.
+ * @returns Its absolute canonical root or a structured input/I/O failure.
+ * @throws std::bad_alloc when path or diagnostic strings are allocated. */
+StringResult MutationRoot(FlValue* request) {
+  const auto root = AsString(FindValue(AsMap(FindValue(request, "platformData")),
+                                      "rootPath"));
+  if (!root.has_value() || root->empty()) {
+    return StringResult{"", NativeError{
+        "invalid-query", "simple_query: mutation requires nonempty platformData.rootPath"}};
+  }
+  std::error_code error;
+  auto absolute = std::filesystem::absolute(std::filesystem::path(*root), error);
+  if (!error) absolute = std::filesystem::weakly_canonical(absolute, error);
+  if (error) {
+    return StringResult{"", NativeError{"unavailable",
+        FileSystemFailure("filesystem root resolution", *root, error)}};
+  }
+  return StringResult{absolute.string(), std::nullopt};
+}
+
+/** Purpose: Reject traversal and existing symlink escapes before filesystem writes.
+ * @param root is the previously normalized explicit filesystem scope.
+ * @param candidate supplies an absolute target or a root-relative path.
+ * @returns A normalized path with in-scope targets, or a structured failure.
+ * @throws std::bad_alloc when path or diagnostic strings are allocated. */
+StringResult ScopedMutationPath(const std::filesystem::path& root,
+                                const std::string& candidate) {
+  std::error_code error;
+  const std::filesystem::path input(candidate);
+  const auto normalized = (input.is_absolute() ? input : root / input).lexically_normal();
+  const auto resolved = std::filesystem::weakly_canonical(
+      normalized, error);
+  if (error) {
+    return StringResult{"", NativeError{"unavailable",
+        FileSystemFailure("filesystem path resolution", input, error)}};
+  }
+  const auto mismatch = std::mismatch(root.begin(), root.end(),
+                                      resolved.begin(), resolved.end());
+  if (mismatch.first != root.end()) {
+    return StringResult{"", NativeError{
+        "invalid-query", "simple_query: mutation path must stay within platformData.rootPath"}};
+  }
+  // Retain the selected path: rename/delete must affect a symlink itself,
+  // not silently substitute its validated in-scope destination.
+  return StringResult{normalized.string(), std::nullopt};
+}
+
+/** Purpose: Validate every explicit write or rename path before side effects.
+ * @param request is the borrowed original native mutation request.
+ * @returns An owned request with normalized scope and validated path inputs.
+ * @throws std::bad_alloc when request fields or diagnostics are allocated. */
+ValueResult ScopedMutationRequest(FlValue* request) {
+  auto root = MutationRoot(request);
+  if (root.error.has_value()) return ValueResult{ValuePtr(), root.error};
+  auto scoped = CloneMap(request);
+  auto platform = CloneMap(AsMap(FindValue(request, "platformData")));
+  MapSetString(platform.get(), "rootPath", root.value);
+  MapSet(scoped.get(), "platformData", platform.release());
+  FlValue* original_values = AsMap(FindValue(request, "values"));
+  if (original_values != nullptr) {
+    auto values = CloneMap(original_values);
+    for (const char* key : {"path", "id", "newPath"}) {
+      const auto candidate = AsString(FindValue(values.get(), key));
+      if (!candidate.has_value() || candidate->empty()) continue;
+      auto path = ScopedMutationPath(root.value, *candidate);
+      if (path.error.has_value()) return ValueResult{ValuePtr(), path.error};
+      MapSetString(values.get(), key, path.value);
+    }
+    MapSet(scoped.get(), "values", values.release());
+  }
+  return Success(std::move(scoped));
+}
 
 /** Purpose: Build a portable mutation result with an affected count.
  * @param count is the number of changed records. @param inserted_id is the
@@ -142,21 +217,6 @@ ValuePtr MutationQuery(const std::string& domain, FlValue* request) {
   return query;
 }
 
-/** Purpose: Require an explicit scope before a query-backed deletion.
- * @param request supplies platformData.rootPath.
- * @returns No error for a nonempty root, otherwise invalid-query.
- * @throws Nothing. */
-std::optional<NativeError> ValidateDeleteRoot(FlValue* request) {
-  FlValue* platform_data = AsMap(FindValue(request, "platformData"));
-  const auto root_path = platform_data == nullptr
-                             ? std::optional<std::string>()
-                             : AsString(FindValue(platform_data, "rootPath"));
-  if (root_path.has_value() && !root_path->empty()) return std::nullopt;
-  return NativeError{
-      "invalid-query",
-      "simple_query: delete requires nonempty platformData.rootPath"};
-}
-
 /** Purpose: Resolve the filesystem path common to file and media records.
  * @param record is a borrowed queried record.
  * @returns Its canonical path, or null when the record is malformed.
@@ -175,27 +235,31 @@ std::optional<std::string> RecordPath(FlValue* record) {
  * @throws Nothing. */
 ValueResult DeleteMutation(NativeQueryHostApiImpl* host,
                            const std::string& domain, FlValue* request) {
-  if (auto error = ValidateDeleteRoot(request); error.has_value()) {
-    return ValueResult{ValuePtr(), std::move(error)};
-  }
+  auto root = MutationRoot(request);
+  if (root.error.has_value()) return ValueResult{ValuePtr(), root.error};
   auto query = MutationQuery(domain, request);
   auto queried = host->Query(query.get());
   if (queried.error.has_value()) return queried;
   FlValue* records = AsList(FindValue(queried.value.get(), "records"));
-  int64_t deleted = 0;
+  std::vector<std::string> paths;
   if (records != nullptr) {
     for (size_t index = 0; index < fl_value_get_length(records); index++) {
       FlValue* record = AsMap(fl_value_get_list_value(records, index));
       const auto path = RecordPath(record);
       if (!path.has_value() || path->empty()) continue;
-      std::error_code error;
-      const auto removed = std::filesystem::remove_all(*path, error);
-      if (error) {
-        return Failure("unavailable",
-                       FileSystemFailure("filesystem delete", *path, error));
-      }
-      deleted += static_cast<int64_t>(removed);
+      auto scoped = ScopedMutationPath(root.value, *path);
+      if (scoped.error.has_value()) return ValueResult{ValuePtr(), scoped.error};
+      paths.push_back(std::move(scoped.value));
     }
+  }
+  int64_t deleted = 0;
+  for (const auto& path : paths) {
+    std::error_code error;
+    const auto removed = std::filesystem::remove_all(path, error);
+    if (error) {
+      return Failure("unavailable", FileSystemFailure("filesystem delete", path, error));
+    }
+    deleted += static_cast<int64_t>(removed);
   }
   return AffectedMutation(deleted);
 }
@@ -218,6 +282,11 @@ MutationPaths ResolveMutationPaths(NativeQueryHostApiImpl* host,
                                    const std::string& domain, FlValue* request,
                                    FlValue* values) {
   MutationPaths result;
+  auto root = MutationRoot(request);
+  if (root.error.has_value()) {
+    result.error = root.error;
+    return result;
+  }
   const auto path = AsString(FindValue(values, "path"));
   const auto id = AsString(FindValue(values, "id"));
   if (path.has_value() && !path->empty()) {
@@ -238,7 +307,12 @@ MutationPaths ResolveMutationPaths(NativeQueryHostApiImpl* host,
     FlValue* record = AsMap(fl_value_get_list_value(records, index));
     const auto record_path = RecordPath(record);
     if (record_path.has_value() && !record_path->empty()) {
-      result.values.insert(*record_path);
+      auto scoped = ScopedMutationPath(root.value, *record_path);
+      if (scoped.error.has_value()) {
+        result.error = scoped.error;
+        return result;
+      }
+      result.values.insert(std::move(scoped.value));
     }
   }
   return result;
@@ -374,6 +448,25 @@ ValueResult UpdateMutation(NativeQueryHostApiImpl* host,
   if (paths.error.has_value()) {
     return ValueResult{ValuePtr(), paths.error};
   }
+  const auto destination = AsString(FindValue(values, "newPath"));
+  if (destination.has_value() && !destination->empty()) {
+    auto root = MutationRoot(request);
+    if (root.error.has_value()) return ValueResult{ValuePtr(), root.error};
+    for (const auto& path : paths.values) {
+      std::error_code error;
+      if (!std::filesystem::is_symlink(path, error)) continue;
+      const auto target = std::filesystem::read_symlink(path, error);
+      if (error) return Failure("unavailable", FileSystemFailure("filesystem link resolution", path, error));
+      const auto parent = std::filesystem::weakly_canonical(
+          std::filesystem::path(*destination).parent_path(), error);
+      if (error) return Failure("unavailable", FileSystemFailure("filesystem rename resolution", *destination, error));
+      // Moving a relative symlink can retarget it outside the root; validate
+      // its future physical target before rename or replacement-content writes.
+      auto projected = ScopedMutationPath(root.value,
+          (target.is_absolute() ? target : parent / target).string());
+      if (projected.error.has_value()) return ValueResult{ValuePtr(), projected.error};
+    }
+  }
   int64_t updated = 0;
   for (const auto& original_path : paths.values) {
     auto prepared = PrepareUpdatePath(original_path, values);
@@ -404,6 +497,12 @@ ValueResult NativeQueryHostApiImpl::Mutate(FlValue* request) {
                        domain + " on Linux host");
   }
   const std::string type = StringOr(request, "type", "");
+  if (type != "insert" && type != "delete" && type != "update") {
+    return Failure("invalid-query", "simple_query: unknown mutation type " + type);
+  }
+  auto scoped = ScopedMutationRequest(request);
+  if (scoped.error.has_value()) return scoped;
+  request = scoped.value.get();
   if (type == "insert") {
     return InsertMutation(AsMap(FindValue(request, "values")));
   }
@@ -439,11 +538,15 @@ ValueResult NativeQueryHostApiImpl::Batch(FlValue* request) {
   for (size_t index = 0; index < fl_value_get_length(operations); index++) {
     FlValue* operation = AsMap(fl_value_get_list_value(operations, index));
     auto merged = CloneMap(operation);
-    if (FindValue(operation, "platformData") == nullptr &&
-        FindValue(request, "platformData") != nullptr) {
-      MapSet(merged.get(), "platformData",
-             fl_value_ref(FindValue(request, "platformData")));
+    auto platform = CloneMap(AsMap(FindValue(request, "platformData")));
+    FlValue* operation_platform = AsMap(FindValue(operation, "platformData"));
+    if (operation_platform != nullptr) {
+      for (size_t field = 0; field < fl_value_get_length(operation_platform); field++) {
+        fl_value_set(platform.get(), fl_value_get_map_key(operation_platform, field),
+                     fl_value_get_map_value(operation_platform, field));
+      }
     }
+    MapSet(merged.get(), "platformData", platform.release());
 
     ValueResult result;
     try {

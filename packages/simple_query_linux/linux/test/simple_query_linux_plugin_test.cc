@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <string>
 #include <thread>
 
@@ -613,6 +614,9 @@ void TestMutationFilesystemErrorsReturnUnavailable() {
   MapSetString(values.get(), "path", file.string());
   MapSetString(values.get(), "content", "after");
   MapSet(update.get(), "values", values.release());
+  auto update_platform = Value(fl_value_new_map());
+  MapSetString(update_platform.get(), "rootPath", root.string());
+  MapSet(update.get(), "platformData", update_platform.release());
   g_autoptr(FlValue) update_args = RequestArguments(update.release());
   g_autoptr(FlValue) update_response =
       InvokeHost(messenger, "mutate", update_args);
@@ -759,6 +763,9 @@ void TestFilesystemAndExtensionBoundaries() {
   MapSetString(insert_values.get(), "path", (root / "inserted.txt").string());
   MapSetString(insert_values.get(), "content", "created");
   MapSet(insert.get(), "values", insert_values.release());
+  auto insert_platform = Value(fl_value_new_map());
+  MapSetString(insert_platform.get(), "rootPath", root.string());
+  MapSet(insert.get(), "platformData", insert_platform.release());
   g_autoptr(FlValue) insert_args = RequestArguments(insert.release());
   g_autoptr(FlValue) insert_response =
       InvokeHost(messenger, "mutate", insert_args);
@@ -775,6 +782,9 @@ void TestFilesystemAndExtensionBoundaries() {
   AppendInsertOperation(operations.get(), "files", &successful_path);
   AppendInsertOperation(operations.get(), "files", nullptr);
   MapSet(batch.get(), "operations", operations.release());
+  auto batch_platform = Value(fl_value_new_map());
+  MapSetString(batch_platform.get(), "rootPath", root.string());
+  MapSet(batch.get(), "platformData", batch_platform.release());
   g_autoptr(FlValue) batch_args = RequestArguments(batch.release());
   g_autoptr(GBytes) encoded_batch_response = nullptr;
   g_autoptr(FlValue) batch_response =
