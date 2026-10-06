@@ -6,9 +6,11 @@
 #include <atomic>
 #include <chrono>
 #include <cctype>
+#include <condition_variable>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -145,6 +147,37 @@ ValuePtr CloneMap(FlValue* map) {
            fl_value_ref(fl_value_get_map_value(map, index)));
   }
   return clone;
+}
+
+/**
+ * Purpose: Give an observer thread a fully independent FlValue because
+ * Flutter Linux FlValue reference counts are not atomic.
+ * @param value is encoded and decoded on the platform thread.
+ * @param error_message receives a stable simple_query failure on codec error.
+ * @returns A deep copy safe for exclusive worker-thread ownership.
+ * @throws Nothing.
+ */
+ValuePtr CopyValueForWorker(FlValue* value, std::string* error_message) {
+  g_autoptr(FlStandardMessageCodec) codec =
+      fl_standard_message_codec_new();
+  g_autoptr(GError) error = nullptr;
+  g_autoptr(GBytes) encoded = fl_message_codec_encode_message(
+      FL_MESSAGE_CODEC(codec), value, &error);
+  if (encoded == nullptr) {
+    *error_message =
+        std::string("simple_query: could not copy observation request - ") +
+        (error != nullptr ? error->message : "encoding failed");
+    return ValuePtr();
+  }
+  FlValue* copy = fl_message_codec_decode_message(
+      FL_MESSAGE_CODEC(codec), encoded, &error);
+  if (copy == nullptr) {
+    *error_message =
+        std::string("simple_query: could not copy observation request - ") +
+        (error != nullptr ? error->message : "decoding failed");
+    return ValuePtr();
+  }
+  return Value(copy);
 }
 
 std::string Lower(std::string value) {
@@ -564,8 +597,35 @@ EdsSourcesResult ListEdsDomainSources(bool address_books) {
   return result;
 }
 
-int64_t ModifiedEpochMs(const std::filesystem::directory_entry& entry) {
-  auto ticks = entry.last_write_time().time_since_epoch();
+/**
+ * Purpose: Build the stable unavailable detail used for filesystem failures.
+ * @param operation describes the failed filesystem action.
+ * @param path identifies the record that could not be inspected.
+ * @param error contains the operating-system failure.
+ * @returns A simple_query-prefixed diagnostic safe to cross the host boundary.
+ * @throws Nothing.
+ */
+std::string FileSystemFailure(const char* operation,
+                              const std::filesystem::path& path,
+                              const std::error_code& error) {
+  return "simple_query: " + std::string(operation) + " failed for " +
+         path.string() + " - " + error.message();
+}
+
+/**
+ * Purpose: Read a file timestamp without allowing filesystem exceptions to
+ * escape a Linux HostApi callback or observation worker.
+ * @param entry is the directory record being inspected.
+ * @param error receives any operating-system failure.
+ * @returns The implementation-defined file timestamp in milliseconds.
+ * @throws Nothing.
+ */
+int64_t ModifiedEpochMs(const std::filesystem::directory_entry& entry,
+                        std::error_code& error) {
+  const auto ticks = entry.last_write_time(error).time_since_epoch();
+  if (error) {
+    return 0;
+  }
   return std::chrono::duration_cast<std::chrono::milliseconds>(ticks).count();
 }
 
@@ -599,45 +659,84 @@ std::filesystem::path ResolveRootPath(FlValue* request) {
   return std::filesystem::current_path();
 }
 
-Rows ListRecords(const std::filesystem::path& root, bool media_only) {
-  Rows rows;
+/**
+ * Purpose: Enumerate files without converting access failures into empty data.
+ * @param root is the filesystem root selected by the caller.
+ * @param media_only filters results to supported media MIME types.
+ * @returns Rows on success or a stable simple_query error on inspection failure.
+ * @throws Nothing.
+ */
+DomainRowsResult ListRecords(const std::filesystem::path& root,
+                             bool media_only) {
+  DomainRowsResult result;
   std::error_code error;
-  if (!std::filesystem::exists(root, error)) {
-    return rows;
+  const bool root_exists = std::filesystem::exists(root, error);
+  if (error) {
+    result.error = FileSystemFailure("filesystem query", root, error);
+    return result;
+  }
+  if (!root_exists) {
+    return result;
   }
 
-  for (auto iterator = std::filesystem::recursive_directory_iterator(
-           root, std::filesystem::directory_options::skip_permission_denied,
-           error);
-       iterator != std::filesystem::recursive_directory_iterator();
-       iterator.increment(error)) {
+  std::filesystem::recursive_directory_iterator iterator(
+      root, std::filesystem::directory_options::none, error);
+  const std::filesystem::recursive_directory_iterator end;
+  if (error) {
+    result.error = FileSystemFailure("filesystem query", root, error);
+    return result;
+  }
+  while (iterator != end) {
+    const auto entry = *iterator;
+    const auto path = entry.path();
+    error.clear();
+    const bool is_directory = entry.is_directory(error);
     if (error) {
-      error.clear();
-      continue;
+      result.error = FileSystemFailure("filesystem metadata", path, error);
+      return result;
     }
 
-    const auto& entry = *iterator;
-    const auto path = entry.path();
-    const bool is_directory = entry.is_directory(error);
     const std::string mime = MimeFromPath(path);
-
     auto row = Value(fl_value_new_map());
     if (media_only) {
       if (is_directory || !IsMediaMime(mime)) {
+        iterator.increment(error);
+        if (error) {
+          result.error = FileSystemFailure("filesystem query", root, error);
+          return result;
+        }
         continue;
       }
       MapSetString(row.get(), "id", path.string());
       MapSetString(row.get(), "uriOrPath", path.string());
       MapSetString(row.get(), "mediaType", MediaType(mime));
       MapSetString(row.get(), "mimeType", mime);
-      if (entry.is_regular_file(error)) {
+      const bool is_regular = entry.is_regular_file(error);
+      if (error) {
+        result.error = FileSystemFailure("filesystem metadata", path, error);
+        return result;
+      }
+      if (is_regular) {
         MapSetInt(row.get(), "size",
                   static_cast<int64_t>(entry.file_size(error)));
+        if (error) {
+          result.error = FileSystemFailure("filesystem size", path, error);
+          return result;
+        }
       }
-      const auto modified = ModifiedEpochMs(entry);
+      const auto modified = ModifiedEpochMs(entry, error);
+      if (error) {
+        result.error = FileSystemFailure("filesystem timestamp", path, error);
+        return result;
+      }
       MapSetString(row.get(), "createdAt", std::to_string(modified));
       MapSetString(row.get(), "modifiedAt", std::to_string(modified));
-      rows.push_back(std::move(row));
+      result.rows.push_back(std::move(row));
+      iterator.increment(error);
+      if (error) {
+        result.error = FileSystemFailure("filesystem query", root, error);
+        return result;
+      }
       continue;
     }
 
@@ -645,20 +744,38 @@ Rows ListRecords(const std::filesystem::path& root, bool media_only) {
     MapSetString(row.get(), "path", path.string());
     MapSetString(row.get(), "name", path.filename().string());
     MapSetBool(row.get(), "isDirectory", is_directory);
-    if (entry.is_regular_file(error)) {
+    const bool is_regular = entry.is_regular_file(error);
+    if (error) {
+      result.error = FileSystemFailure("filesystem metadata", path, error);
+      return result;
+    }
+    if (is_regular) {
       MapSetInt(row.get(), "size",
                 static_cast<int64_t>(entry.file_size(error)));
+      if (error) {
+        result.error = FileSystemFailure("filesystem size", path, error);
+        return result;
+      }
     }
-    const auto modified = ModifiedEpochMs(entry);
+    const auto modified = ModifiedEpochMs(entry, error);
+    if (error) {
+      result.error = FileSystemFailure("filesystem timestamp", path, error);
+      return result;
+    }
     MapSetString(row.get(), "modifiedAt", std::to_string(modified));
     MapSetString(row.get(), "mimeType", mime);
     MapSetString(row.get(), "type", is_directory ? "directory" : "file");
     MapSetString(row.get(), "extension", path.extension().string());
     MapSetInt(row.get(), "modifiedEpochMs", modified);
-    rows.push_back(std::move(row));
+    result.rows.push_back(std::move(row));
+    iterator.increment(error);
+    if (error) {
+      result.error = FileSystemFailure("filesystem query", root, error);
+      return result;
+    }
   }
 
-  return rows;
+  return result;
 }
 
 Rows ApplyFilters(Rows rows, FlValue* filters) {
@@ -770,18 +887,36 @@ ValuePtr ApplyProjection(const Rows& rows, FlValue* projection) {
 
 using Snapshot = std::map<std::string, int64_t>;
 
-Snapshot BuildSnapshotForDomain(FlValue* request, const std::string& domain) {
+struct SnapshotResult {
   Snapshot snapshot;
-  Rows rows;
+  std::optional<std::string> error;
+};
+
+/**
+ * Purpose: Build an observer snapshot while preserving data-source failures.
+ * @param request is the observer's independent request value.
+ * @param domain selects the native record source.
+ * @returns A snapshot or a stable simple_query error; errors are never treated
+ * as an empty snapshot.
+ * @throws Nothing.
+ */
+SnapshotResult BuildSnapshotForDomain(FlValue* request,
+                                      const std::string& domain) {
+  SnapshotResult result;
+  DomainRowsResult records;
   if (domain == "files" || domain == "media") {
-    rows = ListRecords(ResolveRootPath(request), domain == "media");
+    records = ListRecords(ResolveRootPath(request), domain == "media");
   } else if (domain == "contacts") {
-    rows = ListContactRecords().rows;
+    records = ListContactRecords();
   } else if (domain == "calendar") {
-    rows = ListCalendarRecords().rows;
+    records = ListCalendarRecords();
+  }
+  if (records.error.has_value()) {
+    result.error = records.error;
+    return result;
   }
 
-  for (const auto& row : rows) {
+  for (const auto& row : records.rows) {
     const auto id = AsString(FindValue(row.get(), "id"));
     if (!id.has_value()) {
       continue;
@@ -791,9 +926,9 @@ Snapshot BuildSnapshotForDomain(FlValue* request, const std::string& domain) {
             .value_or(AsInt(FindValue(row.get(), "updatedAt"))
                           .value_or(AsInt(FindValue(row.get(), "startAt"))
                                         .value_or(0)));
-    snapshot[*id] = modified;
+    result.snapshot[*id] = modified;
   }
-  return snapshot;
+  return result;
 }
 
 ValuePtr ChangedIds(const Snapshot& previous, const Snapshot& current) {
@@ -814,7 +949,13 @@ ValuePtr ChangedIds(const Snapshot& previous, const Snapshot& current) {
 
 struct ObserverState {
   std::atomic<bool> active{true};
+  std::atomic<bool> delivery_pending{false};
   std::thread worker;
+  std::condition_variable wakeup;
+  std::mutex wakeup_mutex;
+  std::mutex sources_mutex;
+  std::set<GSource*> pending_sources;
+  GCancellable* cancellable = nullptr;
 };
 
 struct NativeError {
@@ -844,12 +985,24 @@ struct StringResult {
 
 class NativeQueryHostApiImpl {
  public:
+  /**
+   * Purpose: Bind Linux host behavior to Dart and capture the platform GLib
+   * context used for all future Flutter engine interaction.
+   * @param messenger is the registrar-owned Flutter binary messenger.
+   * @throws Nothing.
+   */
   explicit NativeQueryHostApiImpl(FlBinaryMessenger* messenger)
-      : flutter_api_(sqlq_native_query_flutter_api_new(messenger, nullptr)) {}
+      : flutter_api_(sqlq_native_query_flutter_api_new(messenger, nullptr)),
+        platform_context_(g_main_context_ref_thread_default()) {}
 
+  /**
+   * Purpose: Stop workers, cancel deliveries, and release platform resources.
+   * @throws Nothing.
+   */
   ~NativeQueryHostApiImpl() {
     ShutdownObservers();
     g_clear_object(&flutter_api_);
+    g_clear_pointer(&platform_context_, g_main_context_unref);
   }
 
   ValueResult GetCapabilities() {
@@ -911,7 +1064,12 @@ class NativeQueryHostApiImpl {
 
     Rows rows;
     if (domain == "files" || domain == "media") {
-      rows = ListRecords(ResolveRootPath(request), domain == "media");
+      auto file_rows =
+          ListRecords(ResolveRootPath(request), domain == "media");
+      if (file_rows.error.has_value()) {
+        return Failure("unavailable", *file_rows.error);
+      }
+      rows = std::move(file_rows.rows);
     } else if (domain == "contacts") {
       auto contact_rows = ListContactRecords();
       if (contact_rows.error.has_value()) {
@@ -1207,65 +1365,39 @@ class NativeQueryHostApiImpl {
     const std::string observer_id =
         std::string("linux_observer_") +
         std::to_string(++observer_counter_);
-    auto state = std::make_unique<ObserverState>();
-    auto* state_ptr = state.get();
+    std::string copy_error;
+    auto request_copy = CopyValueForWorker(request, &copy_error);
+    if (request_copy == nullptr) {
+      return StringResult{"", NativeError{"unavailable", copy_error}};
+    }
+    auto state = std::make_shared<ObserverState>();
+    state->cancellable = g_cancellable_new();
     {
       std::lock_guard<std::mutex> lock(observers_mutex_);
-      observers_[observer_id] = std::move(state);
+      observers_[observer_id] = state;
     }
 
-    auto request_copy = Value(fl_value_ref(request));
-    state_ptr->worker = std::thread(
+    state->worker = std::thread(
         [this, observer_id, domain, request = std::move(request_copy),
-         interval_ms, state_ptr]() {
-          Snapshot previous = BuildSnapshotForDomain(request.get(), domain);
-          while (state_ptr->active.load()) {
-            std::this_thread::sleep_for(
-                std::chrono::milliseconds(interval_ms));
-            if (!state_ptr->active.load()) {
-              break;
-            }
-            Snapshot current = BuildSnapshotForDomain(request.get(), domain);
-            if (current == previous) {
-              continue;
-            }
-
-            auto event = Value(fl_value_new_map());
-            MapSetString(event.get(), "domain", domain);
-            MapSetString(event.get(), "changeType", "unknown");
-            MapSetString(
-                event.get(), "timestamp",
-                std::to_string(
-                    std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::system_clock::now().time_since_epoch())
-                        .count()));
-            MapSet(event.get(), "ids",
-                   ChangedIds(previous, current).release());
-            MapSetString(event.get(), "source", "linux-host");
-            previous = std::move(current);
-            sqlq_native_query_flutter_api_on_observe_event(
-                flutter_api_, observer_id.c_str(), event.get(), nullptr,
-                nullptr, nullptr);
-          }
+         interval_ms, state]() mutable {
+          RunObserver(observer_id, domain, std::move(request), interval_ms,
+                      state);
         });
     return StringResult{observer_id, std::nullopt};
   }
 
   std::optional<NativeError> ObserveStop(const std::string& observer_id) {
-    std::unique_ptr<ObserverState> state;
+    std::shared_ptr<ObserverState> state;
     {
       std::lock_guard<std::mutex> lock(observers_mutex_);
       const auto found = observers_.find(observer_id);
       if (found == observers_.end()) {
         return std::nullopt;
       }
-      state = std::move(found->second);
+      state = found->second;
       observers_.erase(found);
     }
-    state->active.store(false);
-    if (state->worker.joinable()) {
-      state->worker.join();
-    }
+    StopObserver(state);
     return std::nullopt;
   }
 
@@ -1456,8 +1588,235 @@ class NativeQueryHostApiImpl {
   }
 
  private:
+  struct ObserveDelivery {
+    NativeQueryHostApiImpl* host;
+    std::shared_ptr<ObserverState> state;
+    std::string observer_id;
+    ValuePtr event;
+    GSource* source;
+    bool started = false;
+  };
+
+  struct ObserveCompletion {
+    std::shared_ptr<ObserverState> state;
+    std::string observer_id;
+  };
+
+  /**
+   * Purpose: Release a queued delivery and reopen the bounded delivery slot
+   * when it was destroyed before reaching Flutter.
+   * @param user_data is the ObserveDelivery owned by one GLib source.
+   * @returns Nothing.
+   * @throws Nothing.
+   */
+  static void DestroyObserveDelivery(gpointer user_data) {
+    std::unique_ptr<ObserveDelivery> delivery(
+        static_cast<ObserveDelivery*>(user_data));
+    if (!delivery->started) {
+      delivery->state->delivery_pending.store(false);
+    }
+  }
+
+  /**
+   * Purpose: Finish every generated FlutterApi send and surface Dart or
+   * transport rejection without retaining the plugin host.
+   * @param object is the generated FlutterApi that initiated the send.
+   * @param result is the generated asynchronous result.
+   * @param user_data owns observer completion context.
+   * @returns Nothing.
+   * @throws Nothing.
+   */
+  static void FinishObserveDelivery(GObject* object, GAsyncResult* result,
+                                    gpointer user_data) {
+    std::unique_ptr<ObserveCompletion> completion(
+        static_cast<ObserveCompletion*>(user_data));
+    g_autoptr(GError) error = nullptr;
+    g_autoptr(SqlqNativeQueryFlutterApiOnObserveEventResponse) response =
+        sqlq_native_query_flutter_api_on_observe_event_finish(
+            SQLQ_NATIVE_QUERY_FLUTTER_API(object), result, &error);
+    if (error != nullptr &&
+        !g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
+      g_warning("simple_query: observer %s delivery failed - %s",
+                completion->observer_id.c_str(), error->message);
+    } else if (response == nullptr && error == nullptr) {
+      g_warning("simple_query: observer %s delivery returned no response",
+                completion->observer_id.c_str());
+    } else if (response != nullptr &&
+               sqlq_native_query_flutter_api_on_observe_event_response_is_error(
+                   response)) {
+      g_warning("simple_query: observer %s delivery rejected (%s) - %s",
+                completion->observer_id.c_str(),
+                sqlq_native_query_flutter_api_on_observe_event_response_get_error_code(
+                    response),
+                sqlq_native_query_flutter_api_on_observe_event_response_get_error_message(
+                    response));
+    }
+    completion->state->delivery_pending.store(false);
+  }
+
+  /**
+   * Purpose: Run a queued observation delivery only when the platform context
+   * advances, never synchronously on the polling worker.
+   * @param user_data is the ObserveDelivery attached to the idle source.
+   * @returns G_SOURCE_REMOVE after starting at most one FlutterApi send.
+   * @throws Nothing.
+   */
+  static gboolean DeliverObserveEvent(gpointer user_data) {
+    auto* delivery = static_cast<ObserveDelivery*>(user_data);
+    {
+      std::lock_guard<std::mutex> lock(delivery->state->sources_mutex);
+      if (delivery->state->pending_sources.erase(delivery->source) != 0) {
+        g_source_unref(delivery->source);
+      }
+    }
+    if (!delivery->state->active.load()) {
+      return G_SOURCE_REMOVE;
+    }
+    delivery->started = true;
+    auto* completion = new ObserveCompletion{delivery->state,
+                                              delivery->observer_id};
+    sqlq_native_query_flutter_api_on_observe_event(
+        delivery->host->flutter_api_, delivery->observer_id.c_str(),
+        delivery->event.get(), delivery->state->cancellable,
+        FinishObserveDelivery, completion);
+    return G_SOURCE_REMOVE;
+  }
+
+  /**
+   * Purpose: Bound each observer to one queued or in-flight event and attach
+   * the queued work explicitly to the captured platform context.
+   * @param observer_id identifies the event recipient.
+   * @param state owns cancellation and pending-source tracking.
+   * @param event is transferred into the queued delivery.
+   * @returns True when the event was queued; false under backpressure or stop.
+   * @throws Nothing.
+   */
+  bool QueueObserveEvent(const std::string& observer_id,
+                         const std::shared_ptr<ObserverState>& state,
+                         ValuePtr event) {
+    bool expected = false;
+    if (!state->active.load() || !state->delivery_pending.compare_exchange_strong(
+                                    expected, true)) {
+      return false;
+    }
+    GSource* source = g_idle_source_new();
+    auto* delivery = new ObserveDelivery{this, state, observer_id,
+                                         std::move(event), source};
+    g_source_set_callback(source, DeliverObserveEvent, delivery,
+                          DestroyObserveDelivery);
+    {
+      std::lock_guard<std::mutex> lock(state->sources_mutex);
+      if (!state->active.load()) {
+        g_source_unref(source);
+        return false;
+      }
+      state->pending_sources.insert(source);
+      g_source_attach(source, platform_context_);
+    }
+    return true;
+  }
+
+  /**
+   * Purpose: Poll one native domain without letting failures escape the worker
+   * or masquerade as an empty snapshot.
+   * @param observer_id identifies log and callback context.
+   * @param domain selects the native source.
+   * @param request is exclusively owned by this worker.
+   * @param interval_ms is the polling cadence.
+   * @param state owns cancellation and lifecycle coordination.
+   * @returns Nothing.
+   * @throws Nothing.
+   */
+  void RunObserver(const std::string& observer_id, const std::string& domain,
+                   ValuePtr request, int64_t interval_ms,
+                   const std::shared_ptr<ObserverState>& state) noexcept {
+    try {
+      auto previous = BuildSnapshotForDomain(request.get(), domain);
+      if (previous.error.has_value()) {
+        g_warning("simple_query: observer %s stopped - %s",
+                  observer_id.c_str(), previous.error->c_str());
+        state->active.store(false);
+        return;
+      }
+      while (state->active.load()) {
+        std::unique_lock<std::mutex> lock(state->wakeup_mutex);
+        if (state->wakeup.wait_for(
+                lock, std::chrono::milliseconds(interval_ms),
+                [&state] { return !state->active.load(); })) {
+          break;
+        }
+        lock.unlock();
+        auto current = BuildSnapshotForDomain(request.get(), domain);
+        if (current.error.has_value()) {
+          g_warning("simple_query: observer %s stopped - %s",
+                    observer_id.c_str(), current.error->c_str());
+          state->active.store(false);
+          return;
+        }
+        if (current.snapshot == previous.snapshot) {
+          continue;
+        }
+        auto event = Value(fl_value_new_map());
+        MapSetString(event.get(), "domain", domain);
+        MapSetString(event.get(), "changeType", "unknown");
+        MapSetString(event.get(), "timestamp",
+                     std::to_string(std::chrono::duration_cast<
+                                        std::chrono::milliseconds>(
+                                        std::chrono::system_clock::now()
+                                            .time_since_epoch())
+                                        .count()));
+        MapSet(event.get(), "ids",
+               ChangedIds(previous.snapshot, current.snapshot).release());
+        MapSetString(event.get(), "source", "linux-host");
+        if (QueueObserveEvent(observer_id, state, std::move(event))) {
+          previous = std::move(current);
+        }
+      }
+    } catch (const std::exception& error) {
+      g_warning("simple_query: observer %s stopped - %s", observer_id.c_str(),
+                error.what());
+      state->active.store(false);
+    } catch (...) {
+      g_warning("simple_query: observer %s stopped - unknown native failure",
+                observer_id.c_str());
+      state->active.store(false);
+    }
+  }
+
+  /**
+   * Purpose: Stop one worker, destroy queued sources, and cancel in-flight
+   * delivery before releasing observer state.
+   * @param state is the observer removed from the public registry.
+   * @returns Nothing.
+   * @throws Nothing.
+   */
+  void StopObserver(const std::shared_ptr<ObserverState>& state) {
+    state->active.store(false);
+    state->wakeup.notify_all();
+    if (state->worker.joinable()) {
+      state->worker.join();
+    }
+    {
+      std::lock_guard<std::mutex> lock(state->sources_mutex);
+      for (GSource* source : state->pending_sources) {
+        g_source_destroy(source);
+        g_source_unref(source);
+      }
+      state->pending_sources.clear();
+    }
+    if (state->cancellable != nullptr) {
+      g_cancellable_cancel(state->cancellable);
+      g_clear_object(&state->cancellable);
+    }
+  }
+
+  /**
+   * Purpose: Apply StopObserver to every observer during plugin disposal.
+   * @returns Nothing.
+   * @throws Nothing.
+   */
   void ShutdownObservers() {
-    std::vector<std::unique_ptr<ObserverState>> states;
+    std::vector<std::shared_ptr<ObserverState>> states;
     {
       std::lock_guard<std::mutex> lock(observers_mutex_);
       for (auto& item : observers_) {
@@ -1466,18 +1825,16 @@ class NativeQueryHostApiImpl {
       observers_.clear();
     }
     for (auto& state : states) {
-      state->active.store(false);
-      if (state->worker.joinable()) {
-        state->worker.join();
-      }
+      StopObserver(state);
     }
   }
 
   SqlqNativeQueryFlutterApi* flutter_api_;
+  GMainContext* platform_context_;
   int64_t handle_counter_ = 0;
   int64_t observer_counter_ = 0;
   std::map<std::string, std::string> open_handles_;
-  std::map<std::string, std::unique_ptr<ObserverState>> observers_;
+  std::map<std::string, std::shared_ptr<ObserverState>> observers_;
   std::mutex observers_mutex_;
 };
 
@@ -1497,6 +1854,13 @@ simple_query_linux::NativeQueryHostApiImpl* GetHostApi(gpointer user_data) {
   return SIMPLE_QUERY_LINUX_PLUGIN(user_data)->host_api;
 }
 
+/**
+ * Purpose: Convert a known native domain error into its generated envelope.
+ * @param error supplies the stable code and simple_query-prefixed message.
+ * @param constructor creates the method-specific generated response.
+ * @returns A newly owned generated error response.
+ * @throws Nothing.
+ */
 template <typename Response>
 Response* ErrorResponse(
     const simple_query_linux::NativeError& error,
@@ -1504,99 +1868,235 @@ Response* ErrorResponse(
   return constructor(error.code.c_str(), error.message.c_str(), nullptr);
 }
 
+/**
+ * Purpose: Prevent every C++ exception from crossing a generated C callback.
+ * @param callback executes one concrete Linux HostApi operation.
+ * @param constructor creates the method-specific generated error response.
+ * @returns The operation response or a stable unavailable error response.
+ * @throws Nothing; all native exceptions are translated.
+ */
+template <typename Response, typename Callback>
+Response* GuardHostCallback(
+    Callback&& callback,
+    Response* (*constructor)(const gchar*, const gchar*, FlValue*)) noexcept {
+  try {
+    return callback();
+  } catch (const std::exception& error) {
+    g_autofree gchar* message = g_strdup_printf(
+        "simple_query: Linux native operation failed - %s", error.what());
+    return constructor("unavailable", message, nullptr);
+  } catch (...) {
+    return constructor("unavailable",
+                       "simple_query: Linux native operation failed", nullptr);
+  }
+}
+
+/**
+ * Purpose: Execute capability discovery behind the C++ exception boundary.
+ * @param user_data owns the registered plugin and host implementation.
+ * @returns A newly owned generated capability response.
+ * @throws Nothing.
+ */
 SqlqNativeQueryHostApiGetCapabilitiesResponse* HandleGetCapabilities(
     gpointer user_data) {
-  auto result = GetHostApi(user_data)->GetCapabilities();
-  if (result.error.has_value()) {
-    return ErrorResponse(*result.error,
-                         sqlq_native_query_host_api_get_capabilities_response_new_error);
-  }
-  return sqlq_native_query_host_api_get_capabilities_response_new(
-      result.value.get());
+  return GuardHostCallback<SqlqNativeQueryHostApiGetCapabilitiesResponse>(
+      [&] {
+        auto result = GetHostApi(user_data)->GetCapabilities();
+        if (result.error.has_value()) {
+          return ErrorResponse(
+              *result.error,
+              sqlq_native_query_host_api_get_capabilities_response_new_error);
+        }
+        return sqlq_native_query_host_api_get_capabilities_response_new(
+            result.value.get());
+      },
+      sqlq_native_query_host_api_get_capabilities_response_new_error);
 }
 
+/**
+ * Purpose: Execute one query behind the C++ exception boundary.
+ * @param request is the decoded Pigeon query request.
+ * @param user_data owns the registered plugin and host implementation.
+ * @returns A newly owned generated query response.
+ * @throws Nothing.
+ */
 SqlqNativeQueryHostApiQueryResponse* HandleQuery(FlValue* request,
                                                  gpointer user_data) {
-  auto result = GetHostApi(user_data)->Query(request);
-  if (result.error.has_value()) {
-    return ErrorResponse(*result.error,
-                         sqlq_native_query_host_api_query_response_new_error);
-  }
-  return sqlq_native_query_host_api_query_response_new(result.value.get());
+  return GuardHostCallback<SqlqNativeQueryHostApiQueryResponse>(
+      [&] {
+        auto result = GetHostApi(user_data)->Query(request);
+        if (result.error.has_value()) {
+          return ErrorResponse(
+              *result.error,
+              sqlq_native_query_host_api_query_response_new_error);
+        }
+        return sqlq_native_query_host_api_query_response_new(
+            result.value.get());
+      },
+      sqlq_native_query_host_api_query_response_new_error);
 }
 
+/**
+ * Purpose: Execute one mutation behind the C++ exception boundary.
+ * @param request is the decoded Pigeon mutation request.
+ * @param user_data owns the registered plugin and host implementation.
+ * @returns A newly owned generated mutation response.
+ * @throws Nothing.
+ */
 SqlqNativeQueryHostApiMutateResponse* HandleMutate(FlValue* request,
                                                    gpointer user_data) {
-  auto result = GetHostApi(user_data)->Mutate(request);
-  if (result.error.has_value()) {
-    return ErrorResponse(*result.error,
-                         sqlq_native_query_host_api_mutate_response_new_error);
-  }
-  return sqlq_native_query_host_api_mutate_response_new(result.value.get());
+  return GuardHostCallback<SqlqNativeQueryHostApiMutateResponse>(
+      [&] {
+        auto result = GetHostApi(user_data)->Mutate(request);
+        if (result.error.has_value()) {
+          return ErrorResponse(
+              *result.error,
+              sqlq_native_query_host_api_mutate_response_new_error);
+        }
+        return sqlq_native_query_host_api_mutate_response_new(
+            result.value.get());
+      },
+      sqlq_native_query_host_api_mutate_response_new_error);
 }
 
+/**
+ * Purpose: Execute one batch behind the C++ exception boundary.
+ * @param request is the decoded Pigeon batch request.
+ * @param user_data owns the registered plugin and host implementation.
+ * @returns A newly owned generated batch response.
+ * @throws Nothing.
+ */
 SqlqNativeQueryHostApiBatchResponse* HandleBatch(FlValue* request,
                                                  gpointer user_data) {
-  auto result = GetHostApi(user_data)->Batch(request);
-  if (result.error.has_value()) {
-    return ErrorResponse(*result.error,
-                         sqlq_native_query_host_api_batch_response_new_error);
-  }
-  return sqlq_native_query_host_api_batch_response_new(result.value.get());
+  return GuardHostCallback<SqlqNativeQueryHostApiBatchResponse>(
+      [&] {
+        auto result = GetHostApi(user_data)->Batch(request);
+        if (result.error.has_value()) {
+          return ErrorResponse(
+              *result.error,
+              sqlq_native_query_host_api_batch_response_new_error);
+        }
+        return sqlq_native_query_host_api_batch_response_new(
+            result.value.get());
+      },
+      sqlq_native_query_host_api_batch_response_new_error);
 }
 
+/**
+ * Purpose: Start one observer behind the C++ exception boundary.
+ * @param request is the decoded Pigeon observation request.
+ * @param user_data owns the registered plugin and host implementation.
+ * @returns A newly owned generated observer identifier response.
+ * @throws Nothing.
+ */
 SqlqNativeQueryHostApiObserveStartResponse* HandleObserveStart(
     FlValue* request, gpointer user_data) {
-  auto result = GetHostApi(user_data)->ObserveStart(request);
-  if (result.error.has_value()) {
-    return ErrorResponse(*result.error,
-                         sqlq_native_query_host_api_observe_start_response_new_error);
-  }
-  return sqlq_native_query_host_api_observe_start_response_new(
-      result.value.c_str());
+  return GuardHostCallback<SqlqNativeQueryHostApiObserveStartResponse>(
+      [&] {
+        auto result = GetHostApi(user_data)->ObserveStart(request);
+        if (result.error.has_value()) {
+          return ErrorResponse(
+              *result.error,
+              sqlq_native_query_host_api_observe_start_response_new_error);
+        }
+        return sqlq_native_query_host_api_observe_start_response_new(
+            result.value.c_str());
+      },
+      sqlq_native_query_host_api_observe_start_response_new_error);
 }
 
+/**
+ * Purpose: Stop one observer behind the C++ exception boundary.
+ * @param observer_id identifies the observer to stop.
+ * @param user_data owns the registered plugin and host implementation.
+ * @returns A newly owned generated stop response.
+ * @throws Nothing.
+ */
 SqlqNativeQueryHostApiObserveStopResponse* HandleObserveStop(
     const gchar* observer_id, gpointer user_data) {
-  auto error = GetHostApi(user_data)->ObserveStop(observer_id);
-  if (error.has_value()) {
-    return ErrorResponse(*error,
-                         sqlq_native_query_host_api_observe_stop_response_new_error);
-  }
-  return sqlq_native_query_host_api_observe_stop_response_new();
+  return GuardHostCallback<SqlqNativeQueryHostApiObserveStopResponse>(
+      [&] {
+        auto error = GetHostApi(user_data)->ObserveStop(observer_id);
+        if (error.has_value()) {
+          return ErrorResponse(
+              *error,
+              sqlq_native_query_host_api_observe_stop_response_new_error);
+        }
+        return sqlq_native_query_host_api_observe_stop_response_new();
+      },
+      sqlq_native_query_host_api_observe_stop_response_new_error);
 }
 
+/**
+ * Purpose: Open binary content behind the C++ exception boundary.
+ * @param request is the decoded Pigeon binary request.
+ * @param user_data owns the registered plugin and host implementation.
+ * @returns A newly owned generated binary-handle response.
+ * @throws Nothing.
+ */
 SqlqNativeQueryHostApiOpenBinaryResponse* HandleOpenBinary(
     FlValue* request, gpointer user_data) {
-  auto result = GetHostApi(user_data)->OpenBinary(request);
-  if (result.error.has_value()) {
-    return ErrorResponse(*result.error,
-                         sqlq_native_query_host_api_open_binary_response_new_error);
-  }
-  return sqlq_native_query_host_api_open_binary_response_new(result.value.get());
+  return GuardHostCallback<SqlqNativeQueryHostApiOpenBinaryResponse>(
+      [&] {
+        auto result = GetHostApi(user_data)->OpenBinary(request);
+        if (result.error.has_value()) {
+          return ErrorResponse(
+              *result.error,
+              sqlq_native_query_host_api_open_binary_response_new_error);
+        }
+        return sqlq_native_query_host_api_open_binary_response_new(
+            result.value.get());
+      },
+      sqlq_native_query_host_api_open_binary_response_new_error);
 }
 
+/**
+ * Purpose: Close binary content behind the C++ exception boundary.
+ * @param handle_id identifies the native handle to close.
+ * @param user_data owns the registered plugin and host implementation.
+ * @returns A newly owned generated close response.
+ * @throws Nothing.
+ */
 SqlqNativeQueryHostApiCloseBinaryResponse* HandleCloseBinary(
     const gchar* handle_id, gpointer user_data) {
-  auto error = GetHostApi(user_data)->CloseBinary(handle_id);
-  if (error.has_value()) {
-    return ErrorResponse(*error,
-                         sqlq_native_query_host_api_close_binary_response_new_error);
-  }
-  return sqlq_native_query_host_api_close_binary_response_new();
+  return GuardHostCallback<SqlqNativeQueryHostApiCloseBinaryResponse>(
+      [&] {
+        auto error = GetHostApi(user_data)->CloseBinary(handle_id);
+        if (error.has_value()) {
+          return ErrorResponse(
+              *error,
+              sqlq_native_query_host_api_close_binary_response_new_error);
+        }
+        return sqlq_native_query_host_api_close_binary_response_new();
+      },
+      sqlq_native_query_host_api_close_binary_response_new_error);
 }
 
+/**
+ * Purpose: Call a Linux extension behind the C++ exception boundary.
+ * @param name_space selects the registered extension namespace.
+ * @param method selects the extension method.
+ * @param args contains optional decoded arguments.
+ * @param user_data owns the registered plugin and host implementation.
+ * @returns A newly owned generated extension response.
+ * @throws Nothing.
+ */
 SqlqNativeQueryHostApiCallExtensionResponse* HandleCallExtension(
     const gchar* name_space, const gchar* method, FlValue* args,
     gpointer user_data) {
-  auto result =
-      GetHostApi(user_data)->CallExtension(name_space, method, args);
-  if (result.error.has_value()) {
-    return ErrorResponse(*result.error,
-                         sqlq_native_query_host_api_call_extension_response_new_error);
-  }
-  return sqlq_native_query_host_api_call_extension_response_new(
-      result.value.get());
+  return GuardHostCallback<SqlqNativeQueryHostApiCallExtensionResponse>(
+      [&] {
+        auto result =
+            GetHostApi(user_data)->CallExtension(name_space, method, args);
+        if (result.error.has_value()) {
+          return ErrorResponse(
+              *result.error,
+              sqlq_native_query_host_api_call_extension_response_new_error);
+        }
+        return sqlq_native_query_host_api_call_extension_response_new(
+            result.value.get());
+      },
+      sqlq_native_query_host_api_call_extension_response_new_error);
 }
 
 const SqlqNativeQueryHostApiVTable kHostApiVTable = {

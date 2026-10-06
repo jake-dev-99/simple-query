@@ -747,8 +747,8 @@ FlValue* sqlq_native_query_flutter_api_on_observe_event_response_get_error_detai
 }
 
 static void sqlq_native_query_flutter_api_on_observe_event_cb(GObject* object, GAsyncResult* result, gpointer user_data) {
-  GTask* task = G_TASK(user_data);
-  g_task_return_pointer(task, result, g_object_unref);
+  g_autoptr(GTask) task = G_TASK(user_data);
+  g_task_return_pointer(task, g_object_ref(result), g_object_unref);
 }
 
 void sqlq_native_query_flutter_api_on_observe_event(SqlqNativeQueryFlutterApi* self, const gchar* observer_id, FlValue* event, GCancellable* cancellable, GAsyncReadyCallback callback, gpointer user_data) {
@@ -764,8 +764,11 @@ void sqlq_native_query_flutter_api_on_observe_event(SqlqNativeQueryFlutterApi* s
 }
 
 SqlqNativeQueryFlutterApiOnObserveEventResponse* sqlq_native_query_flutter_api_on_observe_event_finish(SqlqNativeQueryFlutterApi* self, GAsyncResult* result, GError** error) {
-  g_autoptr(GTask) task = G_TASK(result);
-  GAsyncResult* r = G_ASYNC_RESULT(g_task_propagate_pointer(task, nullptr));
+  GTask* task = G_TASK(result);
+  g_autoptr(GAsyncResult) r = G_ASYNC_RESULT(g_task_propagate_pointer(task, error));
+  if (r == nullptr) {
+    return nullptr;
+  }
   FlBasicMessageChannel* channel = FL_BASIC_MESSAGE_CHANNEL(g_task_get_task_data(task));
   g_autoptr(FlValue) response = fl_basic_message_channel_send_finish(channel, r, error);
   if (response == nullptr) {

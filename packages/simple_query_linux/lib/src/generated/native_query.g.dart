@@ -47,6 +47,9 @@ class _PigeonCodec extends StandardMessageCodec {
   }
 }
 
+/// Purpose: Defines the Linux host operations used by the shared Dart bridge.
+///
+/// @throws PlatformException when Linux returns a structured native error.
 class NativeQueryHostApi {
   /// Constructor for [NativeQueryHostApi].  The [binaryMessenger] named argument is
   /// available for dependency injection.  If it is left null, the default
@@ -62,6 +65,10 @@ class NativeQueryHostApi {
 
   final String pigeonVar_messageChannelSuffix;
 
+  /// Purpose: Reports Linux domain and extension availability.
+  ///
+  /// @returns A capability payload understood by the shared bridge.
+  /// @throws PlatformException when capability discovery is unavailable.
   Future<Map<String?, Object?>> getCapabilities() async {
     final String pigeonVar_channelName =
         'dev.flutter.pigeon.simple_query_linux.NativeQueryHostApi.getCapabilities$pigeonVar_messageChannelSuffix';
@@ -92,6 +99,11 @@ class NativeQueryHostApi {
     }
   }
 
+  /// Purpose: Executes a read request against a supported Linux domain.
+  ///
+  /// @param request is the serialized cross-platform query request.
+  /// @returns A serialized page of matching records.
+  /// @throws PlatformException for invalid, unsupported, or unavailable reads.
   Future<Map<String?, Object?>> query(Map<String?, Object?> request) async {
     final String pigeonVar_channelName =
         'dev.flutter.pigeon.simple_query_linux.NativeQueryHostApi.query$pigeonVar_messageChannelSuffix';
@@ -122,6 +134,11 @@ class NativeQueryHostApi {
     }
   }
 
+  /// Purpose: Executes one filesystem or media mutation on Linux.
+  ///
+  /// @param request is the serialized cross-platform mutation request.
+  /// @returns The serialized mutation result.
+  /// @throws PlatformException for invalid, unsupported, or unavailable writes.
   Future<Map<String?, Object?>> mutate(Map<String?, Object?> request) async {
     final String pigeonVar_channelName =
         'dev.flutter.pigeon.simple_query_linux.NativeQueryHostApi.mutate$pigeonVar_messageChannelSuffix';
@@ -152,6 +169,11 @@ class NativeQueryHostApi {
     }
   }
 
+  /// Purpose: Executes an ordered group of Linux mutations.
+  ///
+  /// @param request contains the serialized mutation operations.
+  /// @returns The serialized per-operation results.
+  /// @throws PlatformException when the batch request itself is invalid.
   Future<Map<String?, Object?>> batch(Map<String?, Object?> request) async {
     final String pigeonVar_channelName =
         'dev.flutter.pigeon.simple_query_linux.NativeQueryHostApi.batch$pigeonVar_messageChannelSuffix';
@@ -182,6 +204,11 @@ class NativeQueryHostApi {
     }
   }
 
+  /// Purpose: Starts polling a supported Linux domain for changes.
+  ///
+  /// @param request is the serialized observation request.
+  /// @returns The opaque identifier used to stop this observer.
+  /// @throws PlatformException when the domain cannot be observed.
   Future<String> observeStart(Map<String?, Object?> request) async {
     final String pigeonVar_channelName =
         'dev.flutter.pigeon.simple_query_linux.NativeQueryHostApi.observeStart$pigeonVar_messageChannelSuffix';
@@ -211,6 +238,11 @@ class NativeQueryHostApi {
     }
   }
 
+  /// Purpose: Stops one Linux observer and cancels its pending deliveries.
+  ///
+  /// @param observerId identifies the observer returned by observeStart.
+  /// @returns Nothing.
+  /// @throws PlatformException when native cleanup fails.
   Future<void> observeStop(String observerId) async {
     final String pigeonVar_channelName =
         'dev.flutter.pigeon.simple_query_linux.NativeQueryHostApi.observeStop$pigeonVar_messageChannelSuffix';
@@ -235,6 +267,11 @@ class NativeQueryHostApi {
     }
   }
 
+  /// Purpose: Opens a supported Linux file as binary content.
+  ///
+  /// @param request identifies the file or media record.
+  /// @returns A serialized binary-content handle.
+  /// @throws PlatformException when the resource is invalid or unavailable.
   Future<Map<String?, Object?>> openBinary(
       Map<String?, Object?> request) async {
     final String pigeonVar_channelName =
@@ -266,6 +303,11 @@ class NativeQueryHostApi {
     }
   }
 
+  /// Purpose: Releases a previously opened Linux binary handle.
+  ///
+  /// @param handleId identifies the native binary handle.
+  /// @returns Nothing.
+  /// @throws PlatformException when native cleanup fails.
   Future<void> closeBinary(String handleId) async {
     final String pigeonVar_channelName =
         'dev.flutter.pigeon.simple_query_linux.NativeQueryHostApi.closeBinary$pigeonVar_messageChannelSuffix';
@@ -290,6 +332,13 @@ class NativeQueryHostApi {
     }
   }
 
+  /// Purpose: Calls a namespaced Linux-only diagnostic extension.
+  ///
+  /// @param namespace_ selects the registered Linux extension namespace.
+  /// @param method selects the extension operation.
+  /// @param args contains optional extension-specific arguments.
+  /// @returns The serialized extension response, or null when appropriate.
+  /// @throws PlatformException for invalid or unsupported extension calls.
   Future<Map<String?, Object?>?> callExtension(
       String namespace_, String method, Map<String?, Object?>? args) async {
     final String pigeonVar_channelName =
@@ -317,9 +366,16 @@ class NativeQueryHostApi {
   }
 }
 
+/// Purpose: Delivers native Linux observation events to the Dart bridge.
 abstract class NativeQueryFlutterApi {
   static const MessageCodec<Object?> pigeonChannelCodec = _PigeonCodec();
 
+  /// Purpose: Reports one completed native observation change.
+  ///
+  /// @param observerId identifies the active native observer.
+  /// @param event is the serialized cross-platform observation event.
+  /// @returns Nothing.
+  /// @throws PlatformException when Dart rejects the event delivery.
   void onObserveEvent(String observerId, Map<String?, Object?> event);
 
   static void setUp(

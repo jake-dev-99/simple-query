@@ -304,6 +304,7 @@ FlValue* sqlq_native_query_flutter_api_on_observe_event_response_get_error_detai
 /**
  * SqlqNativeQueryFlutterApi:
  *
+ * Purpose: Delivers native Linux observation events to the Dart bridge.
  */
 
 G_DECLARE_FINAL_TYPE(SqlqNativeQueryFlutterApi, sqlq_native_query_flutter_api, SQLQ, NATIVE_QUERY_FLUTTER_API, GObject)
@@ -328,6 +329,12 @@ SqlqNativeQueryFlutterApi* sqlq_native_query_flutter_api_new(FlBinaryMessenger* 
  * @callback: (scope async): (allow-none): a #GAsyncReadyCallback to call when the call is complete or %NULL to ignore the response.
  * @user_data: (closure): user data to pass to @callback.
  *
+ * Purpose: Reports one completed native observation change.
+ *
+ * @param observerId identifies the active native observer.
+ * @param event is the serialized cross-platform observation event.
+ * @returns Nothing.
+ * @throws PlatformException when Dart rejects the event delivery.
  */
 void sqlq_native_query_flutter_api_on_observe_event(SqlqNativeQueryFlutterApi* api, const gchar* observer_id, FlValue* event, GCancellable* cancellable, GAsyncReadyCallback callback, gpointer user_data);
 

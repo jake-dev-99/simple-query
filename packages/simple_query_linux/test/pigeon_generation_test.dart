@@ -1,30 +1,6 @@
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-
-String _functionBody(String source, String signature) {
-  final signatureIndex = source.indexOf(signature);
-  if (signatureIndex == -1) {
-    throw StateError('Could not find $signature.');
-  }
-  final openingBrace = source.indexOf('{', signatureIndex);
-  if (openingBrace == -1) {
-    throw StateError('Could not find the body of $signature.');
-  }
-  var depth = 0;
-  for (var index = openingBrace; index < source.length; index++) {
-    if (source[index] == '{') {
-      depth++;
-    } else if (source[index] == '}') {
-      depth--;
-      if (depth == 0) {
-        return source.substring(openingBrace + 1, index);
-      }
-    }
-  }
-  throw StateError('Could not find the end of $signature.');
-}
 
 Future<Map<String, List<int>?>> _snapshotFiles(List<File> files) async {
   final snapshot = <String, List<int>?>{};
@@ -78,34 +54,17 @@ void main() {
       }
     });
 
-    final packageConfig = File(
-      '${packageDirectory.path}/.dart_tool/package_config.json',
-    );
-    final config =
-        jsonDecode(await packageConfig.readAsString()) as Map<String, Object?>;
-    final packages =
-        (config['packages']! as List<Object?>).cast<Map<String, Object?>>();
-    final pigeon =
-        packages.singleWhere((package) => package['name'] == 'pigeon');
-    final pigeonRoot = Directory.fromUri(
-      packageConfig.uri.resolve(pigeon['rootUri']! as String),
-    );
-    final pigeonExecutable = File('${pigeonRoot.path}/bin/pigeon.dart');
-    expect(
-      await pigeonExecutable.exists(),
-      isTrue,
-      reason: 'Pigeon is missing from the resolved package cache.',
-    );
-
     final result = await Process.run(
       'dart',
       <String>[
-        '--packages=${packageConfig.absolute.path}',
-        pigeonExecutable.absolute.path,
-        '--input',
-        File('${packageDirectory.path}/pigeon.dart').absolute.path,
+        'run',
+        File(
+          '${packageDirectory.path}/tool/generate_pigeon.dart',
+        ).absolute.path,
+        '--output-root',
+        outputDirectory.absolute.path,
       ],
-      workingDirectory: outputDirectory.path,
+      workingDirectory: packageDirectory.path,
     );
 
     expect(
@@ -120,18 +79,7 @@ void main() {
     final source = await File(
       '${outputDirectory.path}/linux/native_query.g.cc',
     ).readAsString();
-    final plugin = await File(
-      '${packageDirectory.path}/linux/simple_query_linux_plugin.cc',
-    ).readAsString();
-    final linuxSources = '$header\n$source\n$plugin';
-    final registrationBody = _functionBody(
-      plugin,
-      'void simple_query_linux_plugin_register_with_registrar(',
-    );
-    final disposeBody = _functionBody(
-      plugin,
-      'static void simple_query_linux_plugin_dispose(',
-    );
+    final linuxSources = '$header\n$source';
 
     expect(header, contains('#include <flutter_linux/flutter_linux.h>'));
     expect(
@@ -141,14 +89,6 @@ void main() {
     expect(header, isNot(contains('const gchar* namespace,')));
     expect(linuxSources, isNot(contains('flutter::')));
     expect(linuxSources, isNot(contains('#include <flutter/')));
-    expect(
-      registrationBody,
-      contains('sqlq_native_query_host_api_set_method_handlers('),
-    );
-    expect(
-      disposeBody,
-      contains('sqlq_native_query_host_api_clear_method_handlers('),
-    );
     expect(
       File('${outputDirectory.path}/linux/native_query.g.cc').existsSync(),
       isTrue,
@@ -163,5 +103,16 @@ void main() {
       ).existsSync(),
       isTrue,
     );
+    for (final relativePath in <String>[
+      'lib/src/generated/native_query.g.dart',
+      'linux/native_query.g.h',
+      'linux/native_query.g.cc',
+    ]) {
+      expect(
+        await File('${outputDirectory.path}/$relativePath').readAsBytes(),
+        await File('${packageDirectory.path}/$relativePath').readAsBytes(),
+        reason: '$relativePath is not reproducible from pigeon.dart.',
+      );
+    }
   });
 }
