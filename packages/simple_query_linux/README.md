@@ -52,3 +52,25 @@ fails if native and Dart wire contracts diverge.
 For a native-only diagnostic run, such as compiling against a read-only source
 mount, set `SIMPLE_QUERY_NATIVE_ONLY=1`. That mode deliberately skips the Dart
 wire-contract replay and is not a substitute for the default verification.
+
+The native implementation is split into private helper, query, mutation,
+observer, and registration translation units. CMake and the native runner
+compile those same production sources separately, so the tests also verify
+their real linkage rather than including implementation files into the test.
+
+## Flutter Linux consumer build
+
+From the repository root on Linux, build the integration fixture:
+
+```sh
+bash tool/build_linux_consumer.sh
+```
+
+This requires Flutter's Linux artifacts, `clang`, `cmake`, `ninja`, `pkg-config`,
+and GTK 3 development packages. The fixture creates a temporary Flutter Linux
+application, selects the current local Linux package, and overrides its shared
+and platform-interface dependencies with the local workspace packages. It
+builds the real Flutter runner and verifies the generated plugin registrar,
+then removes the fixture without editing the checkout. Continuous integration
+runs this build alongside the native behavioral suite. This proves compilation
+and registration wiring, not application deployment or runtime behavior.

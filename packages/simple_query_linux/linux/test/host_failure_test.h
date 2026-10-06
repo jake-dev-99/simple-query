@@ -71,3 +71,55 @@ void TestObserverThreadStartupRollback() {
   g_assert_null(g_observed_cancellable);
   ClearHost(messenger);
 }
+
+/**
+ * Purpose: Reject an unreadable binary without publishing a native handle.
+ * @returns Nothing.
+ * @throws Nothing.
+ */
+void TestUnreadableBinaryReturnsUnavailable() {
+  if (geteuid() == 0) {
+    g_test_skip("Permission isolation requires a non-root test process.");
+    return;
+  }
+  g_autofree gchar* temporary =
+      g_dir_make_tmp("simple-query-test-XXXXXX", nullptr);
+  g_assert_nonnull(temporary);
+  const std::filesystem::path root(temporary);
+  const std::filesystem::path locked_directory = root / "locked";
+  std::filesystem::create_directory(locked_directory);
+  const std::filesystem::path binary_path = locked_directory / "payload.bin";
+  std::ofstream(binary_path, std::ios::binary) << "payload";
+  g_assert_cmpint(g_chmod(locked_directory.c_str(), 0), ==, 0);
+
+  g_autoptr(TestBinaryMessenger) messenger = NewMessenger();
+  InstallHost(messenger);
+  auto request = Value(fl_value_new_map());
+  MapSetString(request.get(), "domain", "files");
+  MapSetString(request.get(), "recordId", binary_path.string());
+  g_autoptr(FlValue) arguments = RequestArguments(request.release());
+  g_autoptr(FlValue) response = InvokeHost(messenger, "openBinary", arguments);
+  g_assert_cmpint(g_chmod(locked_directory.c_str(), 0700), ==, 0);
+
+  const std::string error_code = ResponseErrorCode(response);
+  const std::string error_message = ResponseErrorMessage(response);
+  g_assert_cmpstr(error_code.c_str(), ==, "unavailable");
+  g_assert_nonnull(
+      g_strstr_len(error_message.c_str(), -1, "binary existence check"));
+  g_assert_nonnull(
+      g_strstr_len(error_message.c_str(), -1, binary_path.c_str()));
+
+  auto retry = Value(fl_value_new_map());
+  MapSetString(retry.get(), "domain", "files");
+  MapSetString(retry.get(), "recordId", binary_path.string());
+  g_autoptr(FlValue) retry_arguments = RequestArguments(retry.release());
+  g_autoptr(FlValue) retry_response =
+      InvokeHost(messenger, "openBinary", retry_arguments);
+  FlValue* retry_payload = fl_value_get_list_value(retry_response, 0);
+  g_assert_cmpstr(fl_value_get_string(FindValue(retry_payload, "handleId")), ==,
+                  "linux_handle_1");
+
+  ClearHost(messenger);
+  std::error_code cleanup_error;
+  std::filesystem::remove_all(root, cleanup_error);
+}

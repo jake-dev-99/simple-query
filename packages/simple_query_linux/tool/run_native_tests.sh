@@ -39,6 +39,15 @@ mkdir -p "${contract_root}"
 
 cxx="${CXX:-clang++}"
 read -r -a gtk_flags <<<"$(pkg-config --cflags --libs gtk+-3.0 gio-2.0 glib-2.0)"
+native_sources=(
+  "${package_root}/linux/test/simple_query_linux_plugin_test.cc"
+  "${package_root}/linux/simple_query_linux_plugin.cc"
+  "${package_root}/linux/simple_query_linux_helpers.cc"
+  "${package_root}/linux/simple_query_linux_query.cc"
+  "${package_root}/linux/simple_query_linux_mutation.cc"
+  "${package_root}/linux/simple_query_linux_observer.cc"
+  "${package_root}/linux/native_query.g.cc"
+)
 common_flags=(
   -std=c++17
   -Wall
@@ -48,9 +57,10 @@ common_flags=(
   -pthread
   -I"${flutter_headers}"
   -I"${package_root}/linux"
-  "${package_root}/linux/test/simple_query_linux_plugin_test.cc"
+  "${native_sources[@]}"
   -L"${engine_root}"
   -Wl,-rpath,"${engine_root}"
+  -Wl,--wrap=g_cancellable_new
   -lflutter_linux_gtk
   "${gtk_flags[@]}"
 )

@@ -1,5 +1,9 @@
+#include "../include/simple_query_linux/simple_query_linux_plugin.h"
+
 #include <flutter_linux/flutter_linux.h>
 #include <glib/gstdio.h>
+#include <sys/resource.h>
+#include <unistd.h>
 
 #include <array>
 #include <atomic>
@@ -8,26 +12,22 @@
 #include <fstream>
 #include <functional>
 #include <string>
-#include <sys/resource.h>
 #include <thread>
-#include <unistd.h>
 
-#include "../native_query.g.cc"
+#include "../native_query.g.h"
+#include "../simple_query_linux_plugin_private.h"
 
 gpointer g_observed_cancellable = nullptr;
 
 /** Purpose: Expose cancellable lifetime through a GLib weak pointer.
  * @returns A newly owned cancellable. @throws Nothing. */
-GCancellable* NewObservedCancellable() {
-  auto* cancellable = g_cancellable_new();
+extern "C" GCancellable* __real_g_cancellable_new();
+extern "C" GCancellable* __wrap_g_cancellable_new() {
+  auto* cancellable = __real_g_cancellable_new();
   g_observed_cancellable = cancellable;
   g_object_add_weak_pointer(G_OBJECT(cancellable), &g_observed_cancellable);
   return cancellable;
 }
-
-#define g_cancellable_new NewObservedCancellable
-#include "../simple_query_linux_plugin.cc"
-#undef g_cancellable_new
 
 namespace {
 
@@ -181,11 +181,11 @@ gboolean complete_pending_send(gpointer user_data) {
       g_task_return_new_error(pending->task, G_IO_ERROR, G_IO_ERROR_FAILED,
                               "transport failed");
     } else {
-      g_autoptr(FlMessageCodec) codec =
-          FL_MESSAGE_CODEC(sqlq_message_codec_new());
+      g_autoptr(FlStandardMessageCodec) codec =
+          fl_standard_message_codec_new();
       g_autoptr(GError) error = nullptr;
       GBytes* bytes = fl_message_codec_encode_message(
-          codec, self->outgoing_response, &error);
+          FL_MESSAGE_CODEC(codec), self->outgoing_response, &error);
       g_assert_no_error(error);
       g_task_return_pointer(
           pending->task, bytes,
@@ -383,10 +383,12 @@ FlValue* InvokeHost(TestBinaryMessenger* self, const std::string& method,
   auto* handler = static_cast<Handler*>(
       g_hash_table_lookup(self->handlers, channel.c_str()));
   g_assert_nonnull(handler);
-  g_autoptr(FlMessageCodec) codec = FL_MESSAGE_CODEC(sqlq_message_codec_new());
+  g_autoptr(FlStandardMessageCodec) codec =
+      fl_standard_message_codec_new();
   g_autoptr(GError) error = nullptr;
   g_autoptr(GBytes) message =
-      fl_message_codec_encode_message(codec, arguments, &error);
+      fl_message_codec_encode_message(FL_MESSAGE_CODEC(codec), arguments,
+                                      &error);
   g_assert_no_error(error);
   g_autoptr(TestResponseHandle) handle = reinterpret_cast<TestResponseHandle*>(
       g_object_new(TEST_TYPE_RESPONSE_HANDLE, nullptr));
@@ -398,7 +400,8 @@ FlValue* InvokeHost(TestBinaryMessenger* self, const std::string& method,
     *encoded_response = g_bytes_ref(handle->response);
   }
   FlValue* response =
-      fl_message_codec_decode_message(codec, handle->response, &error);
+      fl_message_codec_decode_message(FL_MESSAGE_CODEC(codec),
+                                      handle->response, &error);
   g_assert_no_error(error);
   return response;
 }
@@ -952,6 +955,8 @@ int main(int argc, char** argv) {
                   TestDanglingSymlinkReturnsUnavailable);
   g_test_add_func("/simple_query/host/observer_startup_rollback",
                   TestObserverThreadStartupRollback);
+  g_test_add_func("/simple_query/host/unreadable_binary",
+                  TestUnreadableBinaryReturnsUnavailable);
   g_test_add_func("/simple_query/host/unreadable_root",
                   TestUnreadableRootReturnsUnavailable);
   g_test_add_func("/simple_query/host/mutation_filesystem_errors",

@@ -2,6 +2,11 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
+/// Purpose: Capture generated-output existence and bytes before regeneration.
+///
+/// @param files lists every checkout artifact guarded by the test.
+/// @returns A future snapshot keyed by absolute path.
+/// @throws [FileSystemException] when an existing artifact cannot be read.
 Future<Map<String, List<int>?>> _snapshotFiles(List<File> files) async {
   final snapshot = <String, List<int>?>{};
   for (final file in files) {
@@ -10,6 +15,11 @@ Future<Map<String, List<int>?>> _snapshotFiles(List<File> files) async {
   return snapshot;
 }
 
+/// Purpose: Prove generation never mutates guarded checkout artifacts.
+///
+/// @param snapshot contains the pre-generation existence and bytes.
+/// @returns A future that completes after every invariant is checked.
+/// @throws [FileSystemException] when an existing artifact cannot be read.
 Future<void> _expectFilesUnchanged(
   Map<String, List<int>?> snapshot,
 ) async {
@@ -31,6 +41,42 @@ Future<void> _expectFilesUnchanged(
   }
 }
 
+/// Purpose: Verify every native target compiles the real decomposed sources.
+///
+/// @param packageDirectory is the Linux package root.
+/// @returns A future that completes after CMake and test-runner assertions.
+/// @throws [FileSystemException] when source wiring cannot be read.
+Future<void> _expectNativeSourceWiring(Directory packageDirectory) async {
+  final cmake = await File('${packageDirectory.path}/linux/CMakeLists.txt')
+      .readAsString();
+  final nativeRunner = await File(
+    '${packageDirectory.path}/tool/run_native_tests.sh',
+  ).readAsString();
+  final nativeHarness = await File(
+    '${packageDirectory.path}/linux/test/simple_query_linux_plugin_test.cc',
+  ).readAsString();
+  for (final filename in <String>[
+    'simple_query_linux_plugin.cc',
+    'simple_query_linux_helpers.cc',
+    'simple_query_linux_query.cc',
+    'simple_query_linux_mutation.cc',
+    'simple_query_linux_observer.cc',
+    'native_query.g.cc',
+  ]) {
+    expect(cmake, contains('"$filename"'));
+    expect(nativeRunner, contains('/linux/$filename"'));
+  }
+  expect(nativeHarness, isNot(contains('#include "../native_query.g.cc"')));
+  expect(
+    nativeHarness,
+    isNot(contains('#include "../simple_query_linux_plugin.cc"')),
+  );
+}
+
+/// Purpose: Register deterministic Linux Pigeon generation verification.
+///
+/// @returns Nothing.
+/// @throws Nothing directly; the registered test reports failures.
 void main() {
   test('Pigeon generation emits Linux GObject bindings', () async {
     final packageDirectory = Directory.current.absolute;
@@ -89,6 +135,7 @@ void main() {
     expect(header, isNot(contains('const gchar* namespace,')));
     expect(linuxSources, isNot(contains('flutter::')));
     expect(linuxSources, isNot(contains('#include <flutter/')));
+    await _expectNativeSourceWiring(packageDirectory);
     expect(
       File('${outputDirectory.path}/linux/native_query.g.cc').existsSync(),
       isTrue,

@@ -30,7 +30,7 @@ jobs:
       - name: Install native test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang pkg-config libgtk-3-dev libebook1.2-dev libecal2.0-dev libedataserver1.2-dev
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev libebook1.2-dev libecal2.0-dev libedataserver1.2-dev
 
       - name: Download Flutter Linux artifacts
         run: flutter precache --linux
@@ -44,6 +44,9 @@ jobs:
 
       - name: Exercise native callbacks and resource cleanup
         run: bash packages/simple_query_linux/tool/run_native_tests.sh
+
+      - name: Build Flutter Linux consumer fixture
+        run: bash tool/build_linux_consumer.sh
 
   package-tests:
     name: Analyze + test (${{ matrix.package }})
@@ -98,4 +101,3 @@ jobs:
       # split lives in pubspec_overrides.yaml on develop; tool/regen_pigeon.sh
       # is develop-only). They land via the develop→main bridge merge in
       # Phase B and the steps come back automatically.
-
