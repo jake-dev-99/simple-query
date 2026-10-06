@@ -28,7 +28,13 @@ for pkg in "${PACKAGES[@]}"; do
   (
     cd "$pkg"
     flutter pub get >/dev/null
-    dart run pigeon --input pigeon.dart
+    if [[ "$pkg" == "packages/simple_query_linux" ]]; then
+      # The Linux generator repairs pinned upstream async ownership before
+      # emission; direct Pigeon generation would restore the lifetime bug.
+      dart run tool/generate_pigeon.dart
+    else
+      dart run pigeon --input pigeon.dart
+    fi
     # Pigeon emits unformatted Dart. Run dart format so the committed
     # output is stable across pigeon point releases and the CI drift
     # check stays meaningful.

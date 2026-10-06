@@ -23,6 +23,7 @@ dependencies:
   simple_query_shared: ^0.2.0
 
 dev_dependencies:
+  dart_style: 3.0.1
   flutter_test:
     sdk: flutter
   flutter_lints: ^5.0.0
