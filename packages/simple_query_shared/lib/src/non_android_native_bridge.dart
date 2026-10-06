@@ -1,11 +1,17 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:simple_query_platform_interface/simple_query_platform_interface.dart';
 
 typedef NativePayload = Map<String?, Object?>;
 typedef NativeNullablePayload = Map<String?, Object?>?;
 
+/// Purpose: Share native query transport and listener-owned observation cleanup.
+/// @param observeStart creates native observer identifiers asynchronously.
+/// @param observeStop releases those identifiers after cancellation or disposal.
+/// @returns A bridge that translates platform replies into portable query models.
+/// @throws Mapped query errors through operation futures or observation streams.
 class NonAndroidNativeBridge {
   NonAndroidNativeBridge({
     required this.isCurrentPlatform,
@@ -42,18 +48,12 @@ class NonAndroidNativeBridge {
   bool _nativeUnavailable = false;
   bool _flutterApiSetup = false;
 
-  // Observer lifecycle uses three maps because the native layer identifies
-  // observers by string IDs while the Dart side uses StreamControllers.
-  //
-  // _nativeObservers:       observerId (from native) → controller
-  // _nativeObserverIds:     controller → observerId  (reverse lookup for cleanup)
-  // _fallbackSubscriptions: controller → subscription (when native failed and
-  //                         we fell back to polling)
-  //
-  // On listen:  register native observer → store in both ID maps
-  //             OR if native fails → subscribe to fallback → store in _fallbackSubscriptions
-  // On cancel:  look up which path was taken → clean up the right map
-  // On dispose: cancel everything in all three maps
+  // A unique listener-lifetime token prevents delayed startup replies from
+  // registering after cancellation, disposal, or a newer listen cycle.
+  final Map<StreamController<ObserveEvent>, Object> _observerLifetimes =
+      <StreamController<ObserveEvent>, Object>{};
+  // Native IDs and Dart controllers need both lookup directions for delivery
+  // and cleanup. Fallback subscriptions are owned by the same listener lifetime.
   final Map<String, StreamController<ObserveEvent>> _nativeObservers =
       <String, StreamController<ObserveEvent>>{};
   final Map<StreamController<ObserveEvent>, String> _nativeObserverIds =
@@ -75,9 +75,8 @@ class NonAndroidNativeBridge {
   }
 
   void onObserveEvent(String observerId, NativePayload event) {
-    // `controller` is a borrowed reference from `_nativeObservers`; the
-    // owning broadcast StreamController is closed from
-    // `observeOrFallback`'s `onCancel` when the last listener drops.
+    // Removing the registration before asynchronous cleanup also rejects
+    // events already queued by a cancelled native observer.
     final controller = _nativeObservers[observerId]; // ignore: close_sinks
     if (controller == null) return;
     controller.add(NativePayloadCodec.decodeObserveEvent(event));
@@ -156,6 +155,11 @@ class NonAndroidNativeBridge {
     }
   }
 
+  /// Purpose: Bind native or fallback observation to each listener lifetime.
+  /// @param request selects the observed domain and native query.
+  /// @param fallbackObserve supplies polling when native observation is unsupported.
+  /// @returns A broadcast stream that releases each cancelled native observer.
+  /// @throws Mapped native startup failures through the returned stream.
   Stream<ObserveEvent> observeOrFallback(
     ObserveRequest request,
     Stream<ObserveEvent> Function() fallbackObserve,
@@ -166,56 +170,177 @@ class NonAndroidNativeBridge {
 
     late final StreamController<ObserveEvent> controller;
     controller = StreamController<ObserveEvent>.broadcast(
-      onListen: () async {
-        try {
-          ensureFlutterApiSetup();
-          final observerId = await observeStart(
-            NativePayloadCodec.encodeObserveRequest(request),
-          );
-          _nativeObservers[observerId] = controller;
-          _nativeObserverIds[controller] = observerId;
-        } on PlatformException catch (error) {
-          if (_shouldFallback(error)) {
-            // The subscription is stored in
-            // `_fallbackSubscriptions[controller]` and cancelled from
-            // the outer `onCancel` below. The lint can't follow the
-            // map-mediated escape.
-            // ignore: cancel_subscriptions
-            final subscription = fallbackObserve().listen(
-              controller.add,
-              onError: controller.addError,
-              onDone: () {
-                _fallbackSubscriptions.remove(controller);
-                controller.close();
-              },
-            );
-            _fallbackSubscriptions[controller] = subscription;
-            return;
-          }
-          controller.addError(
-            _mapPlatformException(
-              error,
-              domain: request.domain,
-              operation: QueryOperation.observe,
-            ),
-          );
-        }
+      onListen: () {
+        final lifetime = Object();
+        _observerLifetimes[controller] = lifetime;
+        unawaited(_startObserver(
+          controller: controller,
+          lifetime: lifetime,
+          request: request,
+          fallbackObserve: fallbackObserve,
+        ));
       },
-      onCancel: () async {
-        final fallbackSubscription = _fallbackSubscriptions.remove(controller);
-        if (fallbackSubscription != null) {
-          await fallbackSubscription.cancel();
-        }
-        if (controller.hasListener) return;
-        final observerId = _nativeObserverIds.remove(controller);
-        if (observerId == null) return;
-        _nativeObservers.remove(observerId);
-        try {
-          await observeStop(observerId);
-        } catch (_) {}
-      },
+      onCancel: () => unawaited(_cancelObserver(controller)),
     );
     return controller.stream;
+  }
+
+  /// Purpose: Reject replies belonging to an ended or superseded listen cycle.
+  /// @param controller identifies the broadcast stream.
+  /// @param lifetime identifies the startup that owns the reply.
+  /// @returns Whether that startup still has listeners and current ownership.
+  /// @throws Nothing.
+  bool _isCurrentObserverLifetime({
+    required StreamController<ObserveEvent> controller,
+    required Object lifetime,
+  }) =>
+      identical(_observerLifetimes[controller], lifetime) &&
+      controller.hasListener;
+
+  /// Purpose: Register a successful start only while its listeners still own it.
+  /// @param controller receives current observation events and mapped errors.
+  /// @param lifetime identifies this asynchronous startup.
+  /// @param request supplies the domain and query.
+  /// @param fallbackObserve supplies unsupported-domain polling.
+  /// @returns Completion after registration, fallback, or late-start cleanup.
+  /// @throws Non-transport failures from injected native operations.
+  Future<void> _startObserver({
+    required StreamController<ObserveEvent> controller,
+    required Object lifetime,
+    required ObserveRequest request,
+    required Stream<ObserveEvent> Function() fallbackObserve,
+  }) async {
+    try {
+      ensureFlutterApiSetup();
+      final observerId = await observeStart(
+        NativePayloadCodec.encodeObserveRequest(request),
+      );
+      if (!_isCurrentObserverLifetime(
+        controller: controller,
+        lifetime: lifetime,
+      )) {
+        await _stopNativeObserver(observerId);
+        return;
+      }
+      _nativeObservers[observerId] = controller;
+      _nativeObserverIds[controller] = observerId;
+    } on PlatformException catch (error) {
+      if (!_isCurrentObserverLifetime(
+        controller: controller,
+        lifetime: lifetime,
+      )) {
+        return;
+      }
+      if (_shouldFallback(error)) {
+        _startFallbackObserver(
+          controller: controller,
+          lifetime: lifetime,
+          fallbackObserve: fallbackObserve,
+        );
+        return;
+      }
+      controller.addError(_mapPlatformException(
+        error,
+        domain: request.domain,
+        operation: QueryOperation.observe,
+      ));
+    }
+  }
+
+  /// Purpose: Keep fallback completion from closing a newer listener lifetime.
+  /// @param controller receives fallback events.
+  /// @param lifetime identifies the current fallback ownership.
+  /// @param fallbackObserve creates the fallback observation stream.
+  /// @returns Nothing; cancellation ownership remains in the subscription map.
+  /// @throws Failures constructing or listening to the fallback stream.
+  void _startFallbackObserver({
+    required StreamController<ObserveEvent> controller,
+    required Object lifetime,
+    required Stream<ObserveEvent> Function() fallbackObserve,
+  }) {
+    // The map owns cancellation; a local subscription cannot outlive its token.
+    // ignore: cancel_subscriptions
+    final subscription = fallbackObserve().listen(
+      controller.add,
+      onError: controller.addError,
+      onDone: () {
+        if (!identical(_observerLifetimes[controller], lifetime)) return;
+        _observerLifetimes.remove(controller);
+        _fallbackSubscriptions.remove(controller);
+        unawaited(controller.close());
+      },
+    );
+    _fallbackSubscriptions[controller] = subscription;
+  }
+
+  /// Purpose: Invalidate ownership before asynchronous last-listener cleanup.
+  /// @param controller identifies the cancelled stream.
+  /// @returns Completion after releasing its captured native or fallback owner.
+  /// @throws Failures from a custom Flutter error handler.
+  Future<void> _cancelObserver(
+      StreamController<ObserveEvent> controller) async {
+    if (controller.hasListener) return;
+    _observerLifetimes.remove(controller);
+    final subscription = _fallbackSubscriptions.remove(controller);
+    final observerId = _nativeObserverIds.remove(controller);
+    if (observerId != null) _nativeObservers.remove(observerId);
+    if (subscription != null) await _cancelFallbackObserver(subscription);
+    if (observerId != null) await _stopNativeObserver(observerId);
+  }
+
+  /// Purpose: Release a native observer without hiding transport cleanup errors.
+  /// @param observerId identifies the native resource to stop.
+  /// @returns Completion after cleanup or a contextual failure report.
+  /// @throws Failures from a custom Flutter error handler.
+  Future<void> _stopNativeObserver(String observerId) async {
+    try {
+      await observeStop(observerId);
+    } catch (error, stackTrace) {
+      _reportObserverCleanupFailure(
+        error: error,
+        stackTrace: stackTrace,
+        action: 'stopping a native observer',
+      );
+    }
+  }
+
+  /// Purpose: Continue releasing other observers when fallback cancellation fails.
+  /// @param subscription owns the fallback polling resource.
+  /// @returns Completion after cancellation or a contextual failure report.
+  /// @throws Failures from a custom Flutter error handler.
+  Future<void> _cancelFallbackObserver(
+    StreamSubscription<ObserveEvent> subscription,
+  ) async {
+    try {
+      await subscription.cancel();
+    } catch (error, stackTrace) {
+      _reportObserverCleanupFailure(
+        error: error,
+        stackTrace: stackTrace,
+        action: 'cancelling fallback observation',
+      );
+    }
+  }
+
+  /// Purpose: Surface cleanup failures without leaking raw transport exceptions.
+  /// @param error is the failure to map and report.
+  /// @param stackTrace identifies the cleanup failure location.
+  /// @param action identifies the failed operation without resource contents.
+  /// @returns Nothing.
+  /// @throws Failures from a custom Flutter error handler.
+  void _reportObserverCleanupFailure({
+    required Object error,
+    required StackTrace stackTrace,
+    required String action,
+  }) {
+    FlutterError.reportError(FlutterErrorDetails(
+      exception: error is PlatformException
+          ? _mapPlatformException(error, operation: QueryOperation.observe)
+          : error,
+      stack: stackTrace,
+      library: 'simple_query',
+      context: ErrorDescription('while $action'),
+    ));
   }
 
   Future<BinaryContentHandle?> openBinaryOrNull(BinaryRequest request) async {
@@ -268,19 +393,23 @@ class NonAndroidNativeBridge {
     }
   }
 
+  /// Purpose: Invalidate pending startups before releasing captured resources.
+  /// @param None.
+  /// @returns Completion after cancelling existing fallback and native owners.
+  /// @throws Failures from a custom Flutter error handler.
   Future<void> dispose() async {
-    for (final subscription
-        in _fallbackSubscriptions.values.toList(growable: false)) {
-      await subscription.cancel();
-    }
+    final subscriptions = _fallbackSubscriptions.values.toList(growable: false);
+    final observerIds = _nativeObservers.keys.toList(growable: false);
+    _observerLifetimes.clear();
     _fallbackSubscriptions.clear();
-    for (final observerId in _nativeObservers.keys.toList(growable: false)) {
-      try {
-        await observeStop(observerId);
-      } catch (_) {}
-    }
     _nativeObservers.clear();
     _nativeObserverIds.clear();
+    for (final subscription in subscriptions) {
+      await _cancelFallbackObserver(subscription);
+    }
+    for (final observerId in observerIds) {
+      await _stopNativeObserver(observerId);
+    }
   }
 
   bool _shouldUseNativeBridge() =>

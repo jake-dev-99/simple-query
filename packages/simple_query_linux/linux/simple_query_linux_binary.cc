@@ -10,11 +10,15 @@ namespace simple_query_linux {
 
 namespace {
 
-/** Purpose: Close one Linux descriptor on every OpenBinary exit path. */
+/** Purpose: Close one Linux descriptor on every OpenBinary exit path.
+ * @param value owns one descriptor, or -1 when this owner is empty.
+ * @returns Unique scoped ownership of the descriptor.
+ * @throws Nothing. */
 struct FileDescriptor {
   int value = -1;
 
   /** Purpose: Create an empty descriptor owner.
+   * @param None.
    * @returns An owner that closes nothing.
    * @throws Nothing. */
   FileDescriptor() = default;
@@ -38,6 +42,7 @@ struct FileDescriptor {
   FileDescriptor& operator=(const FileDescriptor& other) = delete;
 
   /** Purpose: Close the owned descriptor.
+   * @param None.
    * @returns Nothing.
    * @throws Nothing. */
   ~FileDescriptor() {
