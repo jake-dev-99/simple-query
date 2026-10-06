@@ -15,6 +15,7 @@ endif()
 
 add_library(${PLUGIN_NAME} SHARED
   "simple_query_linux_plugin.cc"
+  "simple_query_linux_binary.cc"
   "simple_query_linux_helpers.cc"
   "simple_query_linux_query.cc"
   "simple_query_linux_mutation.cc"

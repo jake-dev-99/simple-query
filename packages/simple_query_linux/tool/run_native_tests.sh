@@ -42,6 +42,7 @@ read -r -a gtk_flags <<<"$(pkg-config --cflags --libs gtk+-3.0 gio-2.0 glib-2.0)
 native_sources=(
   "${package_root}/linux/test/simple_query_linux_plugin_test.cc"
   "${package_root}/linux/simple_query_linux_plugin.cc"
+  "${package_root}/linux/simple_query_linux_binary.cc"
   "${package_root}/linux/simple_query_linux_helpers.cc"
   "${package_root}/linux/simple_query_linux_query.cc"
   "${package_root}/linux/simple_query_linux_mutation.cc"
@@ -61,6 +62,7 @@ common_flags=(
   -L"${engine_root}"
   -Wl,-rpath,"${engine_root}"
   -Wl,--wrap=g_cancellable_new
+  -Wl,--wrap=g_dbus_connection_call_sync
   -lflutter_linux_gtk
   "${gtk_flags[@]}"
 )
@@ -81,7 +83,8 @@ SIMPLE_QUERY_CONTRACT_FIXTURE_DIR="${contract_root}" run_variant no_eds
 if pkg-config --exists libebook-1.2 libecal-2.0 libedataserver-1.2; then
   read -r -a eds_flags <<<"$(pkg-config --cflags --libs \
     libebook-1.2 libecal-2.0 libedataserver-1.2)"
-  run_variant with_eds -DHAS_LIBEBOOK=1 -DHAS_LIBECAL=1 "${eds_flags[@]}"
+  run_variant with_eds -DHAS_LIBEBOOK=1 -DHAS_LIBECAL=1 \
+    -Wl,--wrap=e_source_registry_new_sync "${eds_flags[@]}"
 else
   echo "EDS development packages not found; skipped EDS-enabled native variant."
 fi

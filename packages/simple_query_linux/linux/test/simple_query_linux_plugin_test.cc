@@ -2,6 +2,7 @@
 
 #include <flutter_linux/flutter_linux.h>
 #include <glib/gstdio.h>
+#include <sys/stat.h>
 #include <sys/resource.h>
 #include <unistd.h>
 
@@ -16,12 +17,14 @@
 
 #include "../native_query.g.h"
 #include "../simple_query_linux_plugin_private.h"
+#include "eds_service_test_support.h"
 
 gpointer g_observed_cancellable = nullptr;
 
+extern "C" GCancellable* __real_g_cancellable_new();
+
 /** Purpose: Expose cancellable lifetime through a GLib weak pointer.
  * @returns A newly owned cancellable. @throws Nothing. */
-extern "C" GCancellable* __real_g_cancellable_new();
 extern "C" GCancellable* __wrap_g_cancellable_new() {
   auto* cancellable = __real_g_cancellable_new();
   g_observed_cancellable = cancellable;
@@ -156,8 +159,13 @@ void test_set_message_handler(FlBinaryMessenger* messenger,
   g_hash_table_replace(self->handlers, g_strdup(channel), handler);
 }
 
-/** Purpose: Capture a real HostApi response. @param response_handle receives
- * bytes. @param response is copied. @returns True. @throws Nothing. */
+/** Purpose: Capture a real HostApi response.
+ * @param messenger is the fake transport.
+ * @param response_handle receives bytes.
+ * @param response is copied.
+ * @param error receives transport failure.
+ * @returns True.
+ * @throws Nothing. */
 gboolean test_send_response(FlBinaryMessenger* messenger,
                             FlBinaryMessengerResponseHandle* response_handle,
                             GBytes* response, GError** error) {
@@ -239,6 +247,7 @@ void test_send_on_channel(FlBinaryMessenger* messenger, const gchar* channel,
 }
 
 /** Purpose: Transfer the fake transport result to Flutter's channel wrapper.
+ * @param messenger is the fake transport.
  * @param result is the completed task. @param error receives failure.
  * @returns Owned bytes or null. @throws Nothing. */
 GBytes* test_send_on_channel_finish(FlBinaryMessenger* messenger,
@@ -249,8 +258,23 @@ GBytes* test_send_on_channel_finish(FlBinaryMessenger* messenger,
       g_task_propagate_pointer(G_TASK(result), error));
 }
 
-void test_resize_channel(FlBinaryMessenger*, const gchar*, int64_t) {}
-void test_set_warns_on_overflow(FlBinaryMessenger*, const gchar*, bool) {}
+/** Purpose: Accept channel resize requests in the fake transport.
+ * @param messenger is the fake transport.
+ * @param channel identifies the resized channel.
+ * @param size is the requested capacity.
+ * @returns Nothing.
+ * @throws Nothing. */
+void test_resize_channel(FlBinaryMessenger* messenger, const gchar* channel,
+                         int64_t size) {}
+
+/** Purpose: Accept overflow-warning configuration in the fake transport.
+ * @param messenger is the fake transport.
+ * @param channel identifies the configured channel.
+ * @param warns enables warnings.
+ * @returns Nothing.
+ * @throws Nothing. */
+void test_set_warns_on_overflow(FlBinaryMessenger* messenger,
+                                const gchar* channel, bool warns) {}
 
 /** Purpose: Model engine shutdown while plugin disposal clears handlers.
  * @param messenger owns the registry. @returns Nothing. @throws Nothing. */
@@ -493,7 +517,10 @@ std::string ResponseErrorMessage(FlValue* response) {
 }
 
 #include "generated_flutter_api_lifecycle_test.h"
+#include "filesystem_contract_test.h"
+#include "eds_projection_test.h"
 #include "host_failure_test.h"
+#include "observer_snapshot_test.h"
 
 /**
  * Purpose: Prove an unreadable query root is an error, never empty data.
@@ -627,6 +654,10 @@ void TestHostExceptionBoundaryReturnsUnavailable() {
   MapSetString(mutation.get(), "domain", "files");
   MapSetString(mutation.get(), "type", "delete");
   MapSet(mutation.get(), "filters", fl_value_new_list());
+  auto mutation_platform = Value(fl_value_new_map());
+  const std::string invalid_root(5000, 'x');
+  MapSetString(mutation_platform.get(), "rootPath", invalid_root);
+  MapSet(mutation.get(), "platformData", mutation_platform.release());
   g_autoptr(FlValue) mutation_args = RequestArguments(mutation.release());
   assert_unavailable("mutate", mutation_args);
 
@@ -636,6 +667,9 @@ void TestHostExceptionBoundaryReturnsUnavailable() {
   MapSetString(operation.get(), "domain", "files");
   MapSetString(operation.get(), "type", "delete");
   MapSet(operation.get(), "filters", fl_value_new_list());
+  auto operation_platform = Value(fl_value_new_map());
+  MapSetString(operation_platform.get(), "rootPath", invalid_root);
+  MapSet(operation.get(), "platformData", operation_platform.release());
   fl_value_append_take(operations.get(), operation.release());
   MapSet(batch.get(), "operations", operations.release());
   g_autoptr(FlValue) batch_args = RequestArguments(batch.release());
@@ -846,100 +880,7 @@ void TestObserverStopDropsQueuedDelivery() {
   std::filesystem::remove_all(root, cleanup_error);
 }
 
-/** Purpose: Verify Dart and transport delivery failures stay observable.
- * @returns Nothing. @throws Nothing. */
-void TestObserverReportsDeliveryFailures() {
-  g_autoptr(GMainContext) context = g_main_context_new();
-  g_main_context_push_thread_default(context);
-  g_autofree gchar* temporary = g_dir_make_tmp("simple-query-test-XXXXXX",
-                                               nullptr);
-  const std::filesystem::path root(temporary);
-  g_autoptr(TestBinaryMessenger) messenger = NewMessenger();
-  InstallHost(messenger);
-
-  auto run_failure = [&](SendMode mode, const char* expected_warning,
-                         int expected_finish_count) {
-    SetSendMode(messenger, mode);
-    auto request = Value(fl_value_new_map());
-    MapSetString(request.get(), "domain", "files");
-    MapSetInt(request.get(), "pollingIntervalMs", 250);
-    auto platform_data = Value(fl_value_new_map());
-    MapSetString(platform_data.get(), "rootPath", root.string());
-    MapSet(request.get(), "platformData", platform_data.release());
-    g_autoptr(FlValue) start_args = RequestArguments(request.release());
-    g_autoptr(FlValue) start_response =
-        InvokeHost(messenger, "observeStart", start_args);
-    const std::string observer_id =
-        fl_value_get_string(fl_value_get_list_value(start_response, 0));
-
-    const gint64 deadline = g_get_monotonic_time() + 5000000;
-    int mutation = 0;
-    while (!g_main_context_pending(context) &&
-           g_get_monotonic_time() < deadline) {
-      std::ofstream(root / "failure.txt", std::ios::trunc) << mutation++;
-      g_usleep(300000);
-    }
-    g_assert_true(g_main_context_pending(context));
-    g_test_expect_message(nullptr, G_LOG_LEVEL_WARNING, expected_warning);
-    g_assert_true(RunUntil(
-        context,
-        [&] { return messenger->finish_count == expected_finish_count; }));
-    g_test_assert_expected_messages();
-
-    auto stop_args = Value(fl_value_new_list());
-    fl_value_append_take(stop_args.get(),
-                         fl_value_new_string(observer_id.c_str()));
-    g_autoptr(FlValue) stop_response =
-        InvokeHost(messenger, "observeStop", stop_args.get());
-  };
-
-  run_failure(SendMode::kDartError, "*delivery rejected (dart-error)*", 1);
-  run_failure(SendMode::kTransportError,
-              "*delivery failed - transport failed*", 2);
-  ClearHost(messenger);
-  g_main_context_pop_thread_default(context);
-  std::error_code cleanup_error;
-  std::filesystem::remove_all(root, cleanup_error);
-}
-
-/** Purpose: Verify disposal cancels and safely finishes an in-flight send.
- * @returns Nothing. @throws Nothing. */
-void TestObserverDisposalCancelsInFlightDelivery() {
-  g_autoptr(GMainContext) context = g_main_context_new();
-  g_main_context_push_thread_default(context);
-  g_autofree gchar* temporary = g_dir_make_tmp("simple-query-test-XXXXXX",
-                                               nullptr);
-  const std::filesystem::path root(temporary);
-  g_autoptr(TestBinaryMessenger) messenger = NewMessenger();
-  SetSendMode(messenger, SendMode::kHoldUntilCancelled);
-  InstallHost(messenger);
-
-  auto request = Value(fl_value_new_map());
-  MapSetString(request.get(), "domain", "files");
-  MapSetInt(request.get(), "pollingIntervalMs", 250);
-  auto platform_data = Value(fl_value_new_map());
-  MapSetString(platform_data.get(), "rootPath", root.string());
-  MapSet(request.get(), "platformData", platform_data.release());
-  g_autoptr(FlValue) args = RequestArguments(request.release());
-  g_autoptr(FlValue) response = InvokeHost(messenger, "observeStart", args);
-
-  const gint64 deadline = g_get_monotonic_time() + 5000000;
-  int mutation = 0;
-  while (messenger->send_count == 0 && g_get_monotonic_time() < deadline) {
-    std::ofstream(root / "cancel.txt", std::ios::trunc) << mutation++;
-    RunUntil(context, [&] { return messenger->send_count == 1; }, 350);
-  }
-  g_assert_cmpint(messenger->send_count, ==, 1);
-  g_assert_cmpint(messenger->finish_count, ==, 0);
-  ClearHost(messenger);
-  g_assert_cmpint(messenger->cancellation_count, ==, 1);
-  g_assert_true(RunUntil(
-      context, [&] { return G_OBJECT(messenger)->ref_count == 1; }));
-
-  g_main_context_pop_thread_default(context);
-  std::error_code cleanup_error;
-  std::filesystem::remove_all(root, cleanup_error);
-}
+#include "native_test_registry.h"
 
 }  // namespace
 
@@ -947,31 +888,6 @@ void TestObserverDisposalCancelsInFlightDelivery() {
  * @param argv supplies arguments. @returns GLib exit status. @throws Nothing. */
 int main(int argc, char** argv) {
   g_test_init(&argc, &argv, nullptr);
-  g_test_add_func("/simple_query/generated/async_lifecycle",
-                  TestGeneratedAsyncLifecycle);
-  g_test_add_func("/simple_query/generated/null_callback_cleanup",
-                  TestGeneratedNullCallbackCleanup);
-  g_test_add_func("/simple_query/host/dangling_symlink",
-                  TestDanglingSymlinkReturnsUnavailable);
-  g_test_add_func("/simple_query/host/observer_startup_rollback",
-                  TestObserverThreadStartupRollback);
-  g_test_add_func("/simple_query/host/unreadable_binary",
-                  TestUnreadableBinaryReturnsUnavailable);
-  g_test_add_func("/simple_query/host/unreadable_root",
-                  TestUnreadableRootReturnsUnavailable);
-  g_test_add_func("/simple_query/host/mutation_filesystem_errors",
-                  TestMutationFilesystemErrorsReturnUnavailable);
-  g_test_add_func("/simple_query/host/exception_boundary",
-                  TestHostExceptionBoundaryReturnsUnavailable);
-  g_test_add_func("/simple_query/host/filesystem_and_extension",
-                  TestFilesystemAndExtensionBoundaries);
-  g_test_add_func("/simple_query/observer/platform_context",
-                  TestObserverDispatchesOnPlatformContext);
-  g_test_add_func("/simple_query/observer/stop_drops_queued",
-                  TestObserverStopDropsQueuedDelivery);
-  g_test_add_func("/simple_query/observer/reports_delivery_failures",
-                  TestObserverReportsDeliveryFailures);
-  g_test_add_func("/simple_query/observer/disposal_cancels_in_flight",
-                  TestObserverDisposalCancelsInFlightDelivery);
+  RegisterNativeTests();
   return g_test_run();
 }

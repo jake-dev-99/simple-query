@@ -10,6 +10,7 @@ struct _SqlqMessageCodec {
 
 G_DEFINE_TYPE(SqlqMessageCodec, sqlq_message_codec, fl_standard_message_codec_get_type())
 
+/** Purpose: Encode one generated channel value. @param codec is the active codec. @param buffer receives bytes. @param value is encoded. @param error receives failure. @returns TRUE on success. @throws Nothing. */
 static gboolean sqlq_message_codec_write_value(FlStandardMessageCodec* codec, GByteArray* buffer, FlValue* value, GError** error) {
   if (fl_value_get_type(value) == FL_VALUE_TYPE_CUSTOM) {
     switch (fl_value_get_custom_type(value)) {
@@ -19,6 +20,7 @@ static gboolean sqlq_message_codec_write_value(FlStandardMessageCodec* codec, GB
   return FL_STANDARD_MESSAGE_CODEC_CLASS(sqlq_message_codec_parent_class)->write_value(codec, buffer, value, error);
 }
 
+/** Purpose: Decode one generated channel value. @param codec is the active codec. @param buffer supplies bytes. @param offset advances after decoding. @param type selects the value codec. @param error receives failure. @returns A newly owned value or null. @throws Nothing. */
 static FlValue* sqlq_message_codec_read_value_of_type(FlStandardMessageCodec* codec, GBytes* buffer, size_t* offset, int type, GError** error) {
   switch (type) {
     default:
@@ -26,14 +28,17 @@ static FlValue* sqlq_message_codec_read_value_of_type(FlStandardMessageCodec* co
   }
 }
 
+/** Purpose: Initialize generated MessageCodec state. @param self is the new instance. @returns Nothing. @throws Nothing. */
 static void sqlq_message_codec_init(SqlqMessageCodec* self) {
 }
 
+/** Purpose: Bind generated MessageCodec lifecycle methods. @param klass is the generated class. @returns Nothing. @throws Nothing. */
 static void sqlq_message_codec_class_init(SqlqMessageCodecClass* klass) {
   FL_STANDARD_MESSAGE_CODEC_CLASS(klass)->write_value = sqlq_message_codec_write_value;
   FL_STANDARD_MESSAGE_CODEC_CLASS(klass)->read_value_of_type = sqlq_message_codec_read_value_of_type;
 }
 
+/** Purpose: Create the generated channel codec. @returns A newly owned codec. @throws Nothing. */
 static SqlqMessageCodec* sqlq_message_codec_new() {
   SqlqMessageCodec* self = SQLQ_MESSAGE_CODEC(g_object_new(sqlq_message_codec_get_type(), nullptr));
   return self;
@@ -47,15 +52,18 @@ struct _SqlqNativeQueryHostApiGetCapabilitiesResponse {
 
 G_DEFINE_TYPE(SqlqNativeQueryHostApiGetCapabilitiesResponse, sqlq_native_query_host_api_get_capabilities_response, G_TYPE_OBJECT)
 
+/** Purpose: Release generated NativeQueryHostApiGetCapabilitiesResponse resources. @param object owns the instance. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_get_capabilities_response_dispose(GObject* object) {
   SqlqNativeQueryHostApiGetCapabilitiesResponse* self = SQLQ_NATIVE_QUERY_HOST_API_GET_CAPABILITIES_RESPONSE(object);
   g_clear_pointer(&self->value, fl_value_unref);
   G_OBJECT_CLASS(sqlq_native_query_host_api_get_capabilities_response_parent_class)->dispose(object);
 }
 
+/** Purpose: Initialize generated NativeQueryHostApiGetCapabilitiesResponse state. @param self is the new instance. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_get_capabilities_response_init(SqlqNativeQueryHostApiGetCapabilitiesResponse* self) {
 }
 
+/** Purpose: Bind generated NativeQueryHostApiGetCapabilitiesResponse lifecycle methods. @param klass is the generated class. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_get_capabilities_response_class_init(SqlqNativeQueryHostApiGetCapabilitiesResponseClass* klass) {
   G_OBJECT_CLASS(klass)->dispose = sqlq_native_query_host_api_get_capabilities_response_dispose;
 }
@@ -84,15 +92,18 @@ struct _SqlqNativeQueryHostApiQueryResponse {
 
 G_DEFINE_TYPE(SqlqNativeQueryHostApiQueryResponse, sqlq_native_query_host_api_query_response, G_TYPE_OBJECT)
 
+/** Purpose: Release generated NativeQueryHostApiQueryResponse resources. @param object owns the instance. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_query_response_dispose(GObject* object) {
   SqlqNativeQueryHostApiQueryResponse* self = SQLQ_NATIVE_QUERY_HOST_API_QUERY_RESPONSE(object);
   g_clear_pointer(&self->value, fl_value_unref);
   G_OBJECT_CLASS(sqlq_native_query_host_api_query_response_parent_class)->dispose(object);
 }
 
+/** Purpose: Initialize generated NativeQueryHostApiQueryResponse state. @param self is the new instance. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_query_response_init(SqlqNativeQueryHostApiQueryResponse* self) {
 }
 
+/** Purpose: Bind generated NativeQueryHostApiQueryResponse lifecycle methods. @param klass is the generated class. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_query_response_class_init(SqlqNativeQueryHostApiQueryResponseClass* klass) {
   G_OBJECT_CLASS(klass)->dispose = sqlq_native_query_host_api_query_response_dispose;
 }
@@ -121,15 +132,18 @@ struct _SqlqNativeQueryHostApiMutateResponse {
 
 G_DEFINE_TYPE(SqlqNativeQueryHostApiMutateResponse, sqlq_native_query_host_api_mutate_response, G_TYPE_OBJECT)
 
+/** Purpose: Release generated NativeQueryHostApiMutateResponse resources. @param object owns the instance. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_mutate_response_dispose(GObject* object) {
   SqlqNativeQueryHostApiMutateResponse* self = SQLQ_NATIVE_QUERY_HOST_API_MUTATE_RESPONSE(object);
   g_clear_pointer(&self->value, fl_value_unref);
   G_OBJECT_CLASS(sqlq_native_query_host_api_mutate_response_parent_class)->dispose(object);
 }
 
+/** Purpose: Initialize generated NativeQueryHostApiMutateResponse state. @param self is the new instance. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_mutate_response_init(SqlqNativeQueryHostApiMutateResponse* self) {
 }
 
+/** Purpose: Bind generated NativeQueryHostApiMutateResponse lifecycle methods. @param klass is the generated class. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_mutate_response_class_init(SqlqNativeQueryHostApiMutateResponseClass* klass) {
   G_OBJECT_CLASS(klass)->dispose = sqlq_native_query_host_api_mutate_response_dispose;
 }
@@ -158,15 +172,18 @@ struct _SqlqNativeQueryHostApiBatchResponse {
 
 G_DEFINE_TYPE(SqlqNativeQueryHostApiBatchResponse, sqlq_native_query_host_api_batch_response, G_TYPE_OBJECT)
 
+/** Purpose: Release generated NativeQueryHostApiBatchResponse resources. @param object owns the instance. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_batch_response_dispose(GObject* object) {
   SqlqNativeQueryHostApiBatchResponse* self = SQLQ_NATIVE_QUERY_HOST_API_BATCH_RESPONSE(object);
   g_clear_pointer(&self->value, fl_value_unref);
   G_OBJECT_CLASS(sqlq_native_query_host_api_batch_response_parent_class)->dispose(object);
 }
 
+/** Purpose: Initialize generated NativeQueryHostApiBatchResponse state. @param self is the new instance. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_batch_response_init(SqlqNativeQueryHostApiBatchResponse* self) {
 }
 
+/** Purpose: Bind generated NativeQueryHostApiBatchResponse lifecycle methods. @param klass is the generated class. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_batch_response_class_init(SqlqNativeQueryHostApiBatchResponseClass* klass) {
   G_OBJECT_CLASS(klass)->dispose = sqlq_native_query_host_api_batch_response_dispose;
 }
@@ -195,15 +212,18 @@ struct _SqlqNativeQueryHostApiObserveStartResponse {
 
 G_DEFINE_TYPE(SqlqNativeQueryHostApiObserveStartResponse, sqlq_native_query_host_api_observe_start_response, G_TYPE_OBJECT)
 
+/** Purpose: Release generated NativeQueryHostApiObserveStartResponse resources. @param object owns the instance. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_observe_start_response_dispose(GObject* object) {
   SqlqNativeQueryHostApiObserveStartResponse* self = SQLQ_NATIVE_QUERY_HOST_API_OBSERVE_START_RESPONSE(object);
   g_clear_pointer(&self->value, fl_value_unref);
   G_OBJECT_CLASS(sqlq_native_query_host_api_observe_start_response_parent_class)->dispose(object);
 }
 
+/** Purpose: Initialize generated NativeQueryHostApiObserveStartResponse state. @param self is the new instance. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_observe_start_response_init(SqlqNativeQueryHostApiObserveStartResponse* self) {
 }
 
+/** Purpose: Bind generated NativeQueryHostApiObserveStartResponse lifecycle methods. @param klass is the generated class. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_observe_start_response_class_init(SqlqNativeQueryHostApiObserveStartResponseClass* klass) {
   G_OBJECT_CLASS(klass)->dispose = sqlq_native_query_host_api_observe_start_response_dispose;
 }
@@ -232,15 +252,18 @@ struct _SqlqNativeQueryHostApiObserveStopResponse {
 
 G_DEFINE_TYPE(SqlqNativeQueryHostApiObserveStopResponse, sqlq_native_query_host_api_observe_stop_response, G_TYPE_OBJECT)
 
+/** Purpose: Release generated NativeQueryHostApiObserveStopResponse resources. @param object owns the instance. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_observe_stop_response_dispose(GObject* object) {
   SqlqNativeQueryHostApiObserveStopResponse* self = SQLQ_NATIVE_QUERY_HOST_API_OBSERVE_STOP_RESPONSE(object);
   g_clear_pointer(&self->value, fl_value_unref);
   G_OBJECT_CLASS(sqlq_native_query_host_api_observe_stop_response_parent_class)->dispose(object);
 }
 
+/** Purpose: Initialize generated NativeQueryHostApiObserveStopResponse state. @param self is the new instance. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_observe_stop_response_init(SqlqNativeQueryHostApiObserveStopResponse* self) {
 }
 
+/** Purpose: Bind generated NativeQueryHostApiObserveStopResponse lifecycle methods. @param klass is the generated class. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_observe_stop_response_class_init(SqlqNativeQueryHostApiObserveStopResponseClass* klass) {
   G_OBJECT_CLASS(klass)->dispose = sqlq_native_query_host_api_observe_stop_response_dispose;
 }
@@ -269,15 +292,18 @@ struct _SqlqNativeQueryHostApiOpenBinaryResponse {
 
 G_DEFINE_TYPE(SqlqNativeQueryHostApiOpenBinaryResponse, sqlq_native_query_host_api_open_binary_response, G_TYPE_OBJECT)
 
+/** Purpose: Release generated NativeQueryHostApiOpenBinaryResponse resources. @param object owns the instance. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_open_binary_response_dispose(GObject* object) {
   SqlqNativeQueryHostApiOpenBinaryResponse* self = SQLQ_NATIVE_QUERY_HOST_API_OPEN_BINARY_RESPONSE(object);
   g_clear_pointer(&self->value, fl_value_unref);
   G_OBJECT_CLASS(sqlq_native_query_host_api_open_binary_response_parent_class)->dispose(object);
 }
 
+/** Purpose: Initialize generated NativeQueryHostApiOpenBinaryResponse state. @param self is the new instance. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_open_binary_response_init(SqlqNativeQueryHostApiOpenBinaryResponse* self) {
 }
 
+/** Purpose: Bind generated NativeQueryHostApiOpenBinaryResponse lifecycle methods. @param klass is the generated class. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_open_binary_response_class_init(SqlqNativeQueryHostApiOpenBinaryResponseClass* klass) {
   G_OBJECT_CLASS(klass)->dispose = sqlq_native_query_host_api_open_binary_response_dispose;
 }
@@ -306,15 +332,18 @@ struct _SqlqNativeQueryHostApiCloseBinaryResponse {
 
 G_DEFINE_TYPE(SqlqNativeQueryHostApiCloseBinaryResponse, sqlq_native_query_host_api_close_binary_response, G_TYPE_OBJECT)
 
+/** Purpose: Release generated NativeQueryHostApiCloseBinaryResponse resources. @param object owns the instance. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_close_binary_response_dispose(GObject* object) {
   SqlqNativeQueryHostApiCloseBinaryResponse* self = SQLQ_NATIVE_QUERY_HOST_API_CLOSE_BINARY_RESPONSE(object);
   g_clear_pointer(&self->value, fl_value_unref);
   G_OBJECT_CLASS(sqlq_native_query_host_api_close_binary_response_parent_class)->dispose(object);
 }
 
+/** Purpose: Initialize generated NativeQueryHostApiCloseBinaryResponse state. @param self is the new instance. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_close_binary_response_init(SqlqNativeQueryHostApiCloseBinaryResponse* self) {
 }
 
+/** Purpose: Bind generated NativeQueryHostApiCloseBinaryResponse lifecycle methods. @param klass is the generated class. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_close_binary_response_class_init(SqlqNativeQueryHostApiCloseBinaryResponseClass* klass) {
   G_OBJECT_CLASS(klass)->dispose = sqlq_native_query_host_api_close_binary_response_dispose;
 }
@@ -343,15 +372,18 @@ struct _SqlqNativeQueryHostApiCallExtensionResponse {
 
 G_DEFINE_TYPE(SqlqNativeQueryHostApiCallExtensionResponse, sqlq_native_query_host_api_call_extension_response, G_TYPE_OBJECT)
 
+/** Purpose: Release generated NativeQueryHostApiCallExtensionResponse resources. @param object owns the instance. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_call_extension_response_dispose(GObject* object) {
   SqlqNativeQueryHostApiCallExtensionResponse* self = SQLQ_NATIVE_QUERY_HOST_API_CALL_EXTENSION_RESPONSE(object);
   g_clear_pointer(&self->value, fl_value_unref);
   G_OBJECT_CLASS(sqlq_native_query_host_api_call_extension_response_parent_class)->dispose(object);
 }
 
+/** Purpose: Initialize generated NativeQueryHostApiCallExtensionResponse state. @param self is the new instance. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_call_extension_response_init(SqlqNativeQueryHostApiCallExtensionResponse* self) {
 }
 
+/** Purpose: Bind generated NativeQueryHostApiCallExtensionResponse lifecycle methods. @param klass is the generated class. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_call_extension_response_class_init(SqlqNativeQueryHostApiCallExtensionResponseClass* klass) {
   G_OBJECT_CLASS(klass)->dispose = sqlq_native_query_host_api_call_extension_response_dispose;
 }
@@ -382,6 +414,7 @@ struct _SqlqNativeQueryHostApi {
 
 G_DEFINE_TYPE(SqlqNativeQueryHostApi, sqlq_native_query_host_api, G_TYPE_OBJECT)
 
+/** Purpose: Release generated NativeQueryHostApi resources. @param object owns the instance. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_dispose(GObject* object) {
   SqlqNativeQueryHostApi* self = SQLQ_NATIVE_QUERY_HOST_API(object);
   if (self->user_data != nullptr) {
@@ -391,9 +424,11 @@ static void sqlq_native_query_host_api_dispose(GObject* object) {
   G_OBJECT_CLASS(sqlq_native_query_host_api_parent_class)->dispose(object);
 }
 
+/** Purpose: Initialize generated NativeQueryHostApi state. @param self is the new instance. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_init(SqlqNativeQueryHostApi* self) {
 }
 
+/** Purpose: Bind generated NativeQueryHostApi lifecycle methods. @param klass is the generated class. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_class_init(SqlqNativeQueryHostApiClass* klass) {
   G_OBJECT_CLASS(klass)->dispose = sqlq_native_query_host_api_dispose;
 }
@@ -406,6 +441,7 @@ static SqlqNativeQueryHostApi* sqlq_native_query_host_api_new(const SqlqNativeQu
   return self;
 }
 
+/** Purpose: Decode and dispatch one generated host call. @param channel carries the call. @param message_ contains arguments. @param response_handle receives the reply. @param user_data owns API state. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_get_capabilities_cb(FlBasicMessageChannel* channel, FlValue* message_, FlBasicMessageChannelResponseHandle* response_handle, gpointer user_data) {
   SqlqNativeQueryHostApi* self = SQLQ_NATIVE_QUERY_HOST_API(user_data);
 
@@ -425,6 +461,7 @@ static void sqlq_native_query_host_api_get_capabilities_cb(FlBasicMessageChannel
   }
 }
 
+/** Purpose: Decode and dispatch one generated host call. @param channel carries the call. @param message_ contains arguments. @param response_handle receives the reply. @param user_data owns API state. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_query_cb(FlBasicMessageChannel* channel, FlValue* message_, FlBasicMessageChannelResponseHandle* response_handle, gpointer user_data) {
   SqlqNativeQueryHostApi* self = SQLQ_NATIVE_QUERY_HOST_API(user_data);
 
@@ -446,6 +483,7 @@ static void sqlq_native_query_host_api_query_cb(FlBasicMessageChannel* channel, 
   }
 }
 
+/** Purpose: Decode and dispatch one generated host call. @param channel carries the call. @param message_ contains arguments. @param response_handle receives the reply. @param user_data owns API state. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_mutate_cb(FlBasicMessageChannel* channel, FlValue* message_, FlBasicMessageChannelResponseHandle* response_handle, gpointer user_data) {
   SqlqNativeQueryHostApi* self = SQLQ_NATIVE_QUERY_HOST_API(user_data);
 
@@ -467,6 +505,7 @@ static void sqlq_native_query_host_api_mutate_cb(FlBasicMessageChannel* channel,
   }
 }
 
+/** Purpose: Decode and dispatch one generated host call. @param channel carries the call. @param message_ contains arguments. @param response_handle receives the reply. @param user_data owns API state. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_batch_cb(FlBasicMessageChannel* channel, FlValue* message_, FlBasicMessageChannelResponseHandle* response_handle, gpointer user_data) {
   SqlqNativeQueryHostApi* self = SQLQ_NATIVE_QUERY_HOST_API(user_data);
 
@@ -488,6 +527,7 @@ static void sqlq_native_query_host_api_batch_cb(FlBasicMessageChannel* channel, 
   }
 }
 
+/** Purpose: Decode and dispatch one generated host call. @param channel carries the call. @param message_ contains arguments. @param response_handle receives the reply. @param user_data owns API state. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_observe_start_cb(FlBasicMessageChannel* channel, FlValue* message_, FlBasicMessageChannelResponseHandle* response_handle, gpointer user_data) {
   SqlqNativeQueryHostApi* self = SQLQ_NATIVE_QUERY_HOST_API(user_data);
 
@@ -509,6 +549,7 @@ static void sqlq_native_query_host_api_observe_start_cb(FlBasicMessageChannel* c
   }
 }
 
+/** Purpose: Decode and dispatch one generated host call. @param channel carries the call. @param message_ contains arguments. @param response_handle receives the reply. @param user_data owns API state. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_observe_stop_cb(FlBasicMessageChannel* channel, FlValue* message_, FlBasicMessageChannelResponseHandle* response_handle, gpointer user_data) {
   SqlqNativeQueryHostApi* self = SQLQ_NATIVE_QUERY_HOST_API(user_data);
 
@@ -530,6 +571,7 @@ static void sqlq_native_query_host_api_observe_stop_cb(FlBasicMessageChannel* ch
   }
 }
 
+/** Purpose: Decode and dispatch one generated host call. @param channel carries the call. @param message_ contains arguments. @param response_handle receives the reply. @param user_data owns API state. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_open_binary_cb(FlBasicMessageChannel* channel, FlValue* message_, FlBasicMessageChannelResponseHandle* response_handle, gpointer user_data) {
   SqlqNativeQueryHostApi* self = SQLQ_NATIVE_QUERY_HOST_API(user_data);
 
@@ -551,6 +593,7 @@ static void sqlq_native_query_host_api_open_binary_cb(FlBasicMessageChannel* cha
   }
 }
 
+/** Purpose: Decode and dispatch one generated host call. @param channel carries the call. @param message_ contains arguments. @param response_handle receives the reply. @param user_data owns API state. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_close_binary_cb(FlBasicMessageChannel* channel, FlValue* message_, FlBasicMessageChannelResponseHandle* response_handle, gpointer user_data) {
   SqlqNativeQueryHostApi* self = SQLQ_NATIVE_QUERY_HOST_API(user_data);
 
@@ -572,6 +615,7 @@ static void sqlq_native_query_host_api_close_binary_cb(FlBasicMessageChannel* ch
   }
 }
 
+/** Purpose: Decode and dispatch one generated host call. @param channel carries the call. @param message_ contains arguments. @param response_handle receives the reply. @param user_data owns API state. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_host_api_call_extension_cb(FlBasicMessageChannel* channel, FlValue* message_, FlBasicMessageChannelResponseHandle* response_handle, gpointer user_data) {
   SqlqNativeQueryHostApi* self = SQLQ_NATIVE_QUERY_HOST_API(user_data);
 
@@ -673,6 +717,7 @@ struct _SqlqNativeQueryFlutterApi {
 
 G_DEFINE_TYPE(SqlqNativeQueryFlutterApi, sqlq_native_query_flutter_api, G_TYPE_OBJECT)
 
+/** Purpose: Release generated NativeQueryFlutterApi resources. @param object owns the instance. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_flutter_api_dispose(GObject* object) {
   SqlqNativeQueryFlutterApi* self = SQLQ_NATIVE_QUERY_FLUTTER_API(object);
   g_clear_object(&self->messenger);
@@ -680,9 +725,11 @@ static void sqlq_native_query_flutter_api_dispose(GObject* object) {
   G_OBJECT_CLASS(sqlq_native_query_flutter_api_parent_class)->dispose(object);
 }
 
+/** Purpose: Initialize generated NativeQueryFlutterApi state. @param self is the new instance. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_flutter_api_init(SqlqNativeQueryFlutterApi* self) {
 }
 
+/** Purpose: Bind generated NativeQueryFlutterApi lifecycle methods. @param klass is the generated class. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_flutter_api_class_init(SqlqNativeQueryFlutterApiClass* klass) {
   G_OBJECT_CLASS(klass)->dispose = sqlq_native_query_flutter_api_dispose;
 }
@@ -702,15 +749,18 @@ struct _SqlqNativeQueryFlutterApiOnObserveEventResponse {
 
 G_DEFINE_TYPE(SqlqNativeQueryFlutterApiOnObserveEventResponse, sqlq_native_query_flutter_api_on_observe_event_response, G_TYPE_OBJECT)
 
+/** Purpose: Release generated NativeQueryFlutterApiOnObserveEventResponse resources. @param object owns the instance. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_flutter_api_on_observe_event_response_dispose(GObject* object) {
   SqlqNativeQueryFlutterApiOnObserveEventResponse* self = SQLQ_NATIVE_QUERY_FLUTTER_API_ON_OBSERVE_EVENT_RESPONSE(object);
   g_clear_pointer(&self->error, fl_value_unref);
   G_OBJECT_CLASS(sqlq_native_query_flutter_api_on_observe_event_response_parent_class)->dispose(object);
 }
 
+/** Purpose: Initialize generated NativeQueryFlutterApiOnObserveEventResponse state. @param self is the new instance. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_flutter_api_on_observe_event_response_init(SqlqNativeQueryFlutterApiOnObserveEventResponse* self) {
 }
 
+/** Purpose: Bind generated NativeQueryFlutterApiOnObserveEventResponse lifecycle methods. @param klass is the generated class. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_flutter_api_on_observe_event_response_class_init(SqlqNativeQueryFlutterApiOnObserveEventResponseClass* klass) {
   G_OBJECT_CLASS(klass)->dispose = sqlq_native_query_flutter_api_on_observe_event_response_dispose;
 }
@@ -746,9 +796,33 @@ FlValue* sqlq_native_query_flutter_api_on_observe_event_response_get_error_detai
   return fl_value_get_list_value(self->error, 2);
 }
 
+/** Purpose: Finish one generated FlutterApi transport send. @param object is the messenger. @param result is its asynchronous response. @param user_data owns the forwarding task. @returns Nothing. @throws Nothing. */
 static void sqlq_native_query_flutter_api_on_observe_event_cb(GObject* object, GAsyncResult* result, gpointer user_data) {
   g_autoptr(GTask) task = G_TASK(user_data);
-  g_task_return_pointer(task, g_object_ref(result), g_object_unref);
+  if (G_IS_TASK(result)) {
+    // Transport finish owns cleanup and preserves explicit cancellation errors.
+    // Disable only implicit GTask cancellation so finish always runs.
+    g_task_set_check_cancellable(G_TASK(result), FALSE);
+  }
+  g_autoptr(GError) error = nullptr;
+  g_autoptr(GBytes) response_bytes = fl_binary_messenger_send_on_channel_finish(FL_BINARY_MESSENGER(object), result, &error);
+  if (response_bytes == nullptr) {
+    if (error == nullptr) {
+      error = g_error_new(G_IO_ERROR, G_IO_ERROR_FAILED, "Flutter message transport returned no response");
+    }
+    g_task_return_error(task, g_steal_pointer(&error));
+    return;
+  }
+  g_autoptr(SqlqMessageCodec) codec = sqlq_message_codec_new();
+  FlValue* response = fl_message_codec_decode_message(FL_MESSAGE_CODEC(codec), response_bytes, &error);
+  if (response == nullptr) {
+    if (error == nullptr) {
+      error = g_error_new(G_IO_ERROR, G_IO_ERROR_INVALID_DATA, "Flutter message transport returned an invalid response");
+    }
+    g_task_return_error(task, g_steal_pointer(&error));
+    return;
+  }
+  g_task_return_pointer(task, response, reinterpret_cast<GDestroyNotify>(fl_value_unref));
 }
 
 void sqlq_native_query_flutter_api_on_observe_event(SqlqNativeQueryFlutterApi* self, const gchar* observer_id, FlValue* event, GCancellable* cancellable, GAsyncReadyCallback callback, gpointer user_data) {
@@ -757,20 +831,24 @@ void sqlq_native_query_flutter_api_on_observe_event(SqlqNativeQueryFlutterApi* s
   fl_value_append_take(args, fl_value_ref(event));
   g_autofree gchar* channel_name = g_strdup_printf("dev.flutter.pigeon.simple_query_linux.NativeQueryFlutterApi.onObserveEvent%s", self->suffix);
   g_autoptr(SqlqMessageCodec) codec = sqlq_message_codec_new();
-  FlBasicMessageChannel* channel = fl_basic_message_channel_new(self->messenger, channel_name, FL_MESSAGE_CODEC(codec));
-  GTask* task = g_task_new(self, cancellable, callback, user_data);
-  g_task_set_task_data(task, channel, g_object_unref);
-  fl_basic_message_channel_send(channel, args, cancellable, sqlq_native_query_flutter_api_on_observe_event_cb, task);
+  g_autoptr(GError) error = nullptr;
+  g_autoptr(GBytes) message = fl_message_codec_encode_message(FL_MESSAGE_CODEC(codec), args, &error);
+  g_autoptr(GTask) task = g_task_new(self, cancellable, callback, user_data);
+  // Forward explicit transport outcomes instead of bypassing transport finish.
+  g_task_set_check_cancellable(task, FALSE);
+  if (message == nullptr) {
+    if (error == nullptr) {
+      error = g_error_new(G_IO_ERROR, G_IO_ERROR_INVALID_DATA, "Failed to encode Flutter message");
+    }
+    g_task_return_error(task, g_steal_pointer(&error));
+    return;
+  }
+  fl_binary_messenger_send_on_channel(self->messenger, channel_name, message, cancellable, sqlq_native_query_flutter_api_on_observe_event_cb, g_steal_pointer(&task));
 }
 
 SqlqNativeQueryFlutterApiOnObserveEventResponse* sqlq_native_query_flutter_api_on_observe_event_finish(SqlqNativeQueryFlutterApi* self, GAsyncResult* result, GError** error) {
   GTask* task = G_TASK(result);
-  g_autoptr(GAsyncResult) r = G_ASYNC_RESULT(g_task_propagate_pointer(task, error));
-  if (r == nullptr) {
-    return nullptr;
-  }
-  FlBasicMessageChannel* channel = FL_BASIC_MESSAGE_CHANNEL(g_task_get_task_data(task));
-  g_autoptr(FlValue) response = fl_basic_message_channel_send_finish(channel, r, error);
+  g_autoptr(FlValue) response = static_cast<FlValue*>(g_task_propagate_pointer(task, error));
   if (response == nullptr) {
     return nullptr;
   }

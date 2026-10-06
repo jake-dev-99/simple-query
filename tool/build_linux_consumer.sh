@@ -37,9 +37,9 @@ shared_package_path="$(quote_yaml_path "${repository_root}/packages/simple_query
 (
   cd "${fixture_root}"
   "${flutter_executable}" pub add \
-    "simple_query_linux@{path: ${linux_package_path}}" \
-    "override:simple_query_platform_interface@{path: ${interface_package_path}}" \
-    "override:simple_query_shared@{path: ${shared_package_path}}"
+    "simple_query_linux:{path: ${linux_package_path}}" \
+    "override:simple_query_platform_interface:{path: ${interface_package_path}}" \
+    "override:simple_query_shared:{path: ${shared_package_path}}"
   "${flutter_executable}" build linux --debug
   if ! grep -Fq 'simple_query_linux_plugin_register_with_registrar' \
       linux/flutter/generated_plugin_registrant.cc; then

@@ -3,8 +3,8 @@
 #include <condition_variable>
 #include <exception>
 #include <set>
-#include <thread>
 #include <utility>
+#include <vector>
 
 #include "simple_query_linux_plugin_private.h"
 
@@ -98,19 +98,112 @@ struct SourceDeleter {
 
 using SourcePtr = std::unique_ptr<GSource, SourceDeleter>;
 
-/** Purpose: Own one observer's worker, cancellation, and queued deliveries.
- * Ownership: The registry and asynchronous deliveries share this state; its
- * cancellable is released automatically if startup never reaches the registry.
- */
+/** Purpose: Own platform-affine observer resources independently of the host. */
 struct ObserverState {
+  /**
+   * Purpose: Retain transport resources on the platform thread.
+   * @param api is the generated Flutter API retained for asynchronous sends.
+   * @param context is the platform context that owns final resource teardown.
+   * @returns A state whose references are released on the platform thread.
+   * @throws Nothing.
+   */
+  ObserverState(SqlqNativeQueryFlutterApi* api, GMainContext* context)
+      : cancellable(g_cancellable_new()),
+        flutter_api(SQLQ_NATIVE_QUERY_FLUTTER_API(g_object_ref(api))),
+        platform_context(g_main_context_ref(context)),
+        platform_thread(g_thread_self()) {}
+
+  /**
+   * Purpose: Release platform-affine references after all worker work ends.
+   * @returns Nothing.
+   * @throws Nothing.
+   */
+  ~ObserverState() {
+    g_assert_true(g_thread_self() == platform_thread);
+    g_clear_object(&flutter_api);
+    cancellable.reset();
+    g_clear_pointer(&platform_context, g_main_context_unref);
+  }
+
+  /** Purpose: Prevent duplicate ownership of platform-affine references.
+   * @param other is intentionally not copied.
+   * @returns Nothing because construction is disabled.
+   * @throws Nothing. */
+  ObserverState(const ObserverState& other) = delete;
+  /** Purpose: Prevent duplicate assignment of platform-affine references.
+   * @param other is intentionally not assigned.
+   * @returns Nothing because assignment is disabled.
+   * @throws Nothing. */
+  ObserverState& operator=(const ObserverState& other) = delete;
+
   std::atomic<bool> active{true};
   std::atomic<bool> delivery_pending{false};
-  std::thread worker;
   std::condition_variable wakeup;
   std::mutex wakeup_mutex;
   std::mutex sources_mutex;
   std::set<GSource*> pending_sources;
   CancellablePtr cancellable;
+  SqlqNativeQueryFlutterApi* flutter_api;
+  GMainContext* platform_context;
+  GThread* platform_thread;
+};
+
+/**
+ * Purpose: Delete observer state only when its captured platform context runs.
+ * @param user_data is the state whose last shared owner exited on a worker.
+ * @returns G_SOURCE_REMOVE after releasing the state.
+ * @throws Nothing.
+ */
+gboolean DeleteObserverStateOnPlatform(gpointer user_data) {
+  delete static_cast<ObserverState*>(user_data);
+  return G_SOURCE_REMOVE;
+}
+
+/** Purpose: Marshal final state deletion back to the platform context. */
+struct ObserverStateDeleter {
+  /**
+   * Purpose: Prevent final Flutter or GLib object teardown on a worker thread.
+   * @param state is the exclusively owned state leaving shared ownership.
+   * @returns Nothing.
+   * @throws Nothing.
+   */
+  void operator()(ObserverState* state) const noexcept {
+    if (state == nullptr) {
+      return;
+    }
+    if (g_thread_self() == state->platform_thread) {
+      delete state;
+      return;
+    }
+    GSource* source = g_idle_source_new();
+    g_source_set_callback(source, DeleteObserverStateOnPlatform, state,
+                          nullptr);
+    g_source_attach(source, state->platform_context);
+    g_source_unref(source);
+  }
+};
+
+/**
+ * Purpose: Create observer state with a platform-affine shared deleter.
+ * @param api is the generated API used to send observation events.
+ * @param context is the captured platform event-loop context.
+ * @returns Shared observer state safe to release from a worker.
+ * @throws std::bad_alloc when state allocation fails.
+ */
+std::shared_ptr<ObserverState> MakeObserverState(
+    SqlqNativeQueryFlutterApi* api, GMainContext* context) {
+  return std::shared_ptr<ObserverState>(new ObserverState(api, context),
+                                        ObserverStateDeleter());
+}
+
+/** Purpose: Own immutable polling work after successful GThread creation. */
+struct NativeQueryHostApiImpl::ObserverWork {
+  std::string observer_id;
+  std::string domain;
+  ValuePtr request;
+  int64_t interval_ms;
+  Snapshot previous;
+  std::shared_ptr<ObserverState> state;
 };
 
 /**
@@ -152,36 +245,47 @@ StringResult NativeQueryHostApiImpl::ObserveStart(FlValue* request) {
   int64_t interval_ms =
       AsInt(FindValue(request, "pollingIntervalMs")).value_or(1000);
   interval_ms = std::max<int64_t>(250, interval_ms);
-  const std::string observer_id =
-      std::string("linux_observer_") + std::to_string(++observer_counter_);
   std::string copy_error;
   auto request_copy = CopyValueForWorker(request, &copy_error);
   if (request_copy == nullptr) {
     return StringResult{"", NativeError{"unavailable", copy_error}};
   }
-  StringResult response{observer_id, std::nullopt};
-  auto state = std::make_shared<ObserverState>();
-  state->cancellable.reset(g_cancellable_new());
+  auto state = MakeObserverState(flutter_api_, platform_context_);
+  auto initial =
+      BuildSnapshotForDomain(request_copy.get(), domain, state->cancellable.get());
+  if (initial.error.has_value()) {
+    return StringResult{"", NativeError{"unavailable", *initial.error}};
+  }
+  const int64_t next_observer = observer_counter_ + 1;
+  const std::string observer_id =
+      std::string("linux_observer_") + std::to_string(next_observer);
+  auto work = std::make_unique<ObserverWork>(ObserverWork{
+      observer_id, domain, std::move(request_copy), interval_ms,
+      std::move(initial.snapshot), state});
   {
     std::lock_guard<std::mutex> lock(observers_mutex_);
     observers_.emplace(observer_id, state);
   }
-
-  try {
-    state->worker = std::thread([this, observer_id, domain,
-                                 request = std::move(request_copy), interval_ms,
-                                 state]() mutable {
-      RunObserver(observer_id, domain, std::move(request), interval_ms, state);
-    });
-  } catch (...) {
+  ObserverWork* raw_work = work.release();
+  g_autoptr(GError) thread_error = nullptr;
+  GThread* worker = g_thread_try_new("simple-query-observer",
+                                     RunObserverThread, raw_work, &thread_error);
+  if (worker == nullptr) {
+    delete raw_work;
     {
       std::lock_guard<std::mutex> lock(observers_mutex_);
       observers_.erase(observer_id);
     }
     StopObserver(state);
-    throw;
+    return StringResult{
+        "", NativeError{"unavailable",
+                        std::string("simple_query: could not start observer - ") +
+                            (thread_error != nullptr ? thread_error->message
+                                                     : "thread creation failed")}};
   }
-  return response;
+  g_thread_unref(worker);
+  observer_counter_ = next_observer;
+  return StringResult{observer_id, std::nullopt};
 }
 
 /** Purpose: Stop and remove one observer without failing repeated cleanup.
@@ -212,7 +316,6 @@ struct NativeQueryHostApiImpl::ObserveCompletion {
 /** Purpose: Own one platform-context source, event, and preallocated callback.
  */
 struct NativeQueryHostApiImpl::ObserveDelivery {
-  NativeQueryHostApiImpl* host;
   std::shared_ptr<ObserverState> state;
   std::string observer_id;
   ValuePtr event;
@@ -296,7 +399,7 @@ gboolean NativeQueryHostApiImpl::DeliverObserveEvent(gpointer user_data) {
   delivery->started = true;
   auto* completion = delivery->completion.release();
   sqlq_native_query_flutter_api_on_observe_event(
-      delivery->host->flutter_api_, delivery->observer_id.c_str(),
+      delivery->state->flutter_api, delivery->observer_id.c_str(),
       delivery->event.get(), delivery->state->cancellable.get(),
       FinishObserveDelivery, completion);
   return G_SOURCE_REMOVE;
@@ -323,9 +426,9 @@ bool NativeQueryHostApiImpl::QueueObserveEvent(
     SourcePtr source(g_idle_source_new());
     auto completion = std::make_unique<ObserveCompletion>(
         ObserveCompletion{state, observer_id});
-    auto delivery = std::make_unique<ObserveDelivery>(
-        ObserveDelivery{this, state, observer_id, std::move(event),
-                        source.get(), std::move(completion)});
+    auto delivery = std::make_unique<ObserveDelivery>(ObserveDelivery{
+        state, observer_id, std::move(event), source.get(),
+        std::move(completion)});
     g_source_set_callback(source.get(), DeliverObserveEvent, delivery.release(),
                           DestroyObserveDelivery);
     {
@@ -334,7 +437,7 @@ bool NativeQueryHostApiImpl::QueueObserveEvent(
         return false;
       }
       state->pending_sources.insert(source.get());
-      g_source_attach(source.get(), platform_context_);
+      g_source_attach(source.get(), state->platform_context);
     }
     source.release();
     return true;
@@ -351,21 +454,17 @@ bool NativeQueryHostApiImpl::QueueObserveEvent(
  * @param domain selects the native source.
  * @param request is exclusively owned by this worker.
  * @param interval_ms is the polling cadence.
+ * @param previous is the validated initial snapshot.
  * @param state owns cancellation and lifecycle coordination.
  * @returns Nothing.
  * @throws Nothing.
  */
 void NativeQueryHostApiImpl::RunObserver(
     const std::string& observer_id, const std::string& domain, ValuePtr request,
-    int64_t interval_ms, const std::shared_ptr<ObserverState>& state) noexcept {
+    int64_t interval_ms, Snapshot previous,
+    const std::shared_ptr<ObserverState>& state) noexcept {
   try {
-    auto previous = BuildSnapshotForDomain(request.get(), domain);
-    if (previous.error.has_value()) {
-      g_warning("simple_query: observer %s stopped - %s", observer_id.c_str(),
-                previous.error->c_str());
-      state->active.store(false);
-      return;
-    }
+    bool snapshot_failure_logged = false;
     while (state->active.load()) {
       std::unique_lock<std::mutex> lock(state->wakeup_mutex);
       if (state->wakeup.wait_for(lock, std::chrono::milliseconds(interval_ms),
@@ -373,14 +472,21 @@ void NativeQueryHostApiImpl::RunObserver(
         break;
       }
       lock.unlock();
-      auto current = BuildSnapshotForDomain(request.get(), domain);
+      auto current = BuildSnapshotForDomain(request.get(), domain,
+                                            state->cancellable.get());
       if (current.error.has_value()) {
-        g_warning("simple_query: observer %s stopped - %s", observer_id.c_str(),
-                  current.error->c_str());
-        state->active.store(false);
-        return;
+        if (!state->active.load()) {
+          return;
+        }
+        if (!snapshot_failure_logged) {
+          g_warning("simple_query: observer %s snapshot unavailable - %s",
+                    observer_id.c_str(), current.error->c_str());
+          snapshot_failure_logged = true;
+        }
+        continue;
       }
-      if (current.snapshot == previous.snapshot) {
+      snapshot_failure_logged = false;
+      if (current.snapshot == previous) {
         continue;
       }
       auto event = Value(fl_value_new_map());
@@ -388,21 +494,38 @@ void NativeQueryHostApiImpl::RunObserver(
       MapSetString(event.get(), "changeType", "unknown");
       MapSetString(event.get(), "timestamp", IsoUtcTimestamp());
       MapSet(event.get(), "ids",
-             ChangedIds(previous.snapshot, current.snapshot).release());
+             ChangedIds(previous, current.snapshot).release());
       MapSetString(event.get(), "source", "linux-host");
       if (QueueObserveEvent(observer_id, state, std::move(event))) {
-        previous = std::move(current);
+        previous = std::move(current.snapshot);
       }
     }
   } catch (const std::exception& error) {
-    g_warning("simple_query: observer %s stopped - %s", observer_id.c_str(),
-              error.what());
+    if (state->active.load()) {
+      g_warning("simple_query: observer %s stopped - %s", observer_id.c_str(),
+                error.what());
+    }
     state->active.store(false);
   } catch (...) {
-    g_warning("simple_query: observer %s stopped - unknown native failure",
-              observer_id.c_str());
+    if (state->active.load()) {
+      g_warning("simple_query: observer %s stopped - unknown native failure",
+                observer_id.c_str());
+    }
     state->active.store(false);
   }
+}
+
+/**
+ * Purpose: Transfer observer work into its detached GLib worker lifetime.
+ * @param user_data is the ObserverWork transferred by g_thread_try_new.
+ * @returns Null when polling ends.
+ * @throws Nothing.
+ */
+gpointer NativeQueryHostApiImpl::RunObserverThread(gpointer user_data) {
+  std::unique_ptr<ObserverWork> work(static_cast<ObserverWork*>(user_data));
+  RunObserver(work->observer_id, work->domain, std::move(work->request),
+              work->interval_ms, std::move(work->previous), work->state);
+  return nullptr;
 }
 
 /**
@@ -416,20 +539,17 @@ void NativeQueryHostApiImpl::StopObserver(
     const std::shared_ptr<ObserverState>& state) {
   state->active.store(false);
   state->wakeup.notify_all();
-  if (state->worker.joinable()) {
-    state->worker.join();
-  }
-  {
-    std::lock_guard<std::mutex> lock(state->sources_mutex);
-    for (GSource* source : state->pending_sources) {
-      g_source_destroy(source);
-      g_source_unref(source);
-    }
-    state->pending_sources.clear();
-  }
   if (state->cancellable != nullptr) {
     g_cancellable_cancel(state->cancellable.get());
-    state->cancellable.reset();
+  }
+  std::set<GSource*> sources;
+  {
+    std::lock_guard<std::mutex> lock(state->sources_mutex);
+    sources.swap(state->pending_sources);
+  }
+  for (GSource* source : sources) {
+    g_source_destroy(source);
+    g_source_unref(source);
   }
 }
 

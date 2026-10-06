@@ -105,7 +105,7 @@ void TestUnreadableBinaryReturnsUnavailable() {
   const std::string error_message = ResponseErrorMessage(response);
   g_assert_cmpstr(error_code.c_str(), ==, "unavailable");
   g_assert_nonnull(
-      g_strstr_len(error_message.c_str(), -1, "binary existence check"));
+      g_strstr_len(error_message.c_str(), -1, "binary read-only open"));
   g_assert_nonnull(
       g_strstr_len(error_message.c_str(), -1, binary_path.c_str()));
 
@@ -120,6 +120,45 @@ void TestUnreadableBinaryReturnsUnavailable() {
                   "linux_handle_1");
 
   ClearHost(messenger);
+  std::error_code cleanup_error;
+  std::filesystem::remove_all(root, cleanup_error);
+}
+
+/** Purpose: Reject an observer whose initial snapshot cannot be read.
+ * @returns Nothing.
+ * @throws Nothing. */
+void TestObserverInitialSnapshotFailureReturnsError() {
+  if (geteuid() == 0) {
+    g_test_skip("Permission isolation requires a non-root test process.");
+    return;
+  }
+  g_assert_null(g_observed_cancellable);
+  g_autofree gchar* temporary =
+      g_dir_make_tmp("simple-query-observer-start-XXXXXX", nullptr);
+  g_assert_nonnull(temporary);
+  const std::filesystem::path root(temporary);
+  g_assert_cmpint(g_chmod(root.c_str(), 0), ==, 0);
+  g_autoptr(TestBinaryMessenger) messenger = NewMessenger();
+  InstallHost(messenger);
+  auto request = Value(fl_value_new_map());
+  MapSetString(request.get(), "domain", "files");
+  auto platform_data = Value(fl_value_new_map());
+  MapSetString(platform_data.get(), "rootPath", root.string());
+  MapSet(request.get(), "platformData", platform_data.release());
+  g_autoptr(FlValue) arguments = RequestArguments(request.release());
+
+  const GLogLevelFlags previous_fatal =
+      g_log_set_always_fatal(static_cast<GLogLevelFlags>(G_LOG_FATAL_MASK));
+  g_autoptr(FlValue) response =
+      InvokeHost(messenger, "observeStart", arguments);
+  g_usleep(100000);
+  g_log_set_always_fatal(previous_fatal);
+  const std::string error_code = ResponseErrorCode(response);
+  g_assert_cmpstr(error_code.c_str(), ==, "unavailable");
+  g_assert_null(g_observed_cancellable);
+
+  ClearHost(messenger);
+  g_assert_cmpint(g_chmod(root.c_str(), 0700), ==, 0);
   std::error_code cleanup_error;
   std::filesystem::remove_all(root, cleanup_error);
 }

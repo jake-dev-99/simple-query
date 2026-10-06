@@ -71,7 +71,7 @@ void TestGeneratedAsyncLifecycle() {
   g_assert_null(cancelled.response);
   g_assert_error(cancelled.error, G_IO_ERROR, G_IO_ERROR_CANCELLED);
   g_clear_error(&cancelled.error);
-  g_assert_cmpint(messenger->finish_count, ==, 3);
+  g_assert_cmpint(messenger->finish_count, ==, 4);
 }
 
 /** Purpose: Prove null-callback async sends release task and source API.
@@ -87,5 +87,6 @@ void TestGeneratedNullCallbackCleanup() {
       api, "observer", event, nullptr, nullptr, nullptr);
   g_object_unref(api);
   g_assert_true(RunUntil(nullptr, [&] { return weak_api == nullptr; }));
-  g_assert_cmpint(messenger->finish_count, ==, 0);
+  g_assert_cmpint(messenger->finish_count, ==, 1);
+  g_assert_cmpint(G_OBJECT(messenger)->ref_count, ==, 1);
 }

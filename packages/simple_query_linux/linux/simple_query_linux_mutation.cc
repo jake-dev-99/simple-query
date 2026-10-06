@@ -142,12 +142,42 @@ ValuePtr MutationQuery(const std::string& domain, FlValue* request) {
   return query;
 }
 
+/** Purpose: Require an explicit scope before a query-backed deletion.
+ * @param request supplies platformData.rootPath.
+ * @returns No error for a nonempty root, otherwise invalid-query.
+ * @throws Nothing. */
+std::optional<NativeError> ValidateDeleteRoot(FlValue* request) {
+  FlValue* platform_data = AsMap(FindValue(request, "platformData"));
+  const auto root_path = platform_data == nullptr
+                             ? std::optional<std::string>()
+                             : AsString(FindValue(platform_data, "rootPath"));
+  if (root_path.has_value() && !root_path->empty()) return std::nullopt;
+  return NativeError{
+      "invalid-query",
+      "simple_query: delete requires nonempty platformData.rootPath"};
+}
+
+/** Purpose: Resolve the filesystem path common to file and media records.
+ * @param record is a borrowed queried record.
+ * @returns Its canonical path, or null when the record is malformed.
+ * @throws Nothing. */
+std::optional<std::string> RecordPath(FlValue* record) {
+  for (const char* key : {"id", "path", "uriOrPath"}) {
+    const auto candidate = AsString(FindValue(record, key));
+    if (candidate.has_value() && !candidate->empty()) return candidate;
+  }
+  return std::nullopt;
+}
+
 /** Purpose: Delete every record selected through the native query path.
  * @param host executes target resolution. @param domain is files or media.
  * @param request supplies filters. @returns Mutation data or an I/O error.
  * @throws Nothing. */
 ValueResult DeleteMutation(NativeQueryHostApiImpl* host,
                            const std::string& domain, FlValue* request) {
+  if (auto error = ValidateDeleteRoot(request); error.has_value()) {
+    return ValueResult{ValuePtr(), std::move(error)};
+  }
   auto query = MutationQuery(domain, request);
   auto queried = host->Query(query.get());
   if (queried.error.has_value()) return queried;
@@ -156,7 +186,7 @@ ValueResult DeleteMutation(NativeQueryHostApiImpl* host,
   if (records != nullptr) {
     for (size_t index = 0; index < fl_value_get_length(records); index++) {
       FlValue* record = AsMap(fl_value_get_list_value(records, index));
-      const auto path = AsString(FindValue(record, "path"));
+      const auto path = RecordPath(record);
       if (!path.has_value() || path->empty()) continue;
       std::error_code error;
       const auto removed = std::filesystem::remove_all(*path, error);
@@ -202,7 +232,7 @@ MutationPaths ResolveMutationPaths(NativeQueryHostApiImpl* host,
   if (records == nullptr) return result;
   for (size_t index = 0; index < fl_value_get_length(records); index++) {
     FlValue* record = AsMap(fl_value_get_list_value(records, index));
-    const auto record_path = AsString(FindValue(record, "path"));
+    const auto record_path = RecordPath(record);
     if (record_path.has_value() && !record_path->empty()) {
       result.values.insert(*record_path);
     }

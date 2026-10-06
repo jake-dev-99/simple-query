@@ -1,5 +1,7 @@
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <limits>
 #include <utility>
 
 #include "simple_query_linux_plugin_private.h"
@@ -285,6 +287,68 @@ Rows ApplyFilters(Rows rows, FlValue* filters) {
   return filtered;
 }
 
+/** Purpose: Compare one exact integer with a binary floating-point value.
+ * @param integer is represented without precision loss.
+ * @param floating is finite or nonfinite.
+ * @returns Negative, zero, or positive when integer sorts before, with, or
+ * after floating; NaN sorts after every other numeric value.
+ * @throws Nothing. */
+int CompareIntAndFloat(int64_t integer, double floating) {
+  if (std::isnan(floating)) return -1;
+  if (floating == std::numeric_limits<double>::infinity()) return -1;
+  if (floating == -std::numeric_limits<double>::infinity()) return 1;
+  constexpr double kTwoTo63 = 9223372036854775808.0;
+  if (floating >= kTwoTo63) return -1;
+  if (floating < -kTwoTo63) return 1;
+  const auto integral_part = static_cast<int64_t>(floating);
+  if (integer < integral_part) return -1;
+  if (integer > integral_part) return 1;
+  const double integral_as_float = static_cast<double>(integral_part);
+  if (floating > integral_as_float) return -1;
+  if (floating < integral_as_float) return 1;
+  return 0;
+}
+
+/** Purpose: Compare two numeric Flutter values without losing integer precision.
+ * @param left is the first nullable field value.
+ * @param right is the second nullable field value.
+ * @returns Negative, zero, or positive in stable ascending order, or null when
+ * either value is not numeric.
+ * @throws Nothing. */
+std::optional<int> CompareNumericValues(FlValue* left, FlValue* right) {
+  const FlValueType left_type =
+      left == nullptr ? FL_VALUE_TYPE_NULL : fl_value_get_type(left);
+  const FlValueType right_type =
+      right == nullptr ? FL_VALUE_TYPE_NULL : fl_value_get_type(right);
+  const bool left_int = left_type == FL_VALUE_TYPE_INT;
+  const bool right_int = right_type == FL_VALUE_TYPE_INT;
+  const bool left_float = left_type == FL_VALUE_TYPE_FLOAT;
+  const bool right_float = right_type == FL_VALUE_TYPE_FLOAT;
+  if (left_int && right_int) {
+    const int64_t left_value = fl_value_get_int(left);
+    const int64_t right_value = fl_value_get_int(right);
+    return (left_value > right_value) - (left_value < right_value);
+  }
+  if (left_int && right_float) {
+    return CompareIntAndFloat(fl_value_get_int(left), fl_value_get_float(right));
+  }
+  if (left_float && right_int) {
+    return -CompareIntAndFloat(fl_value_get_int(right),
+                               fl_value_get_float(left));
+  }
+  if (left_float && right_float) {
+    const double left_value = fl_value_get_float(left);
+    const double right_value = fl_value_get_float(right);
+    const bool left_nan = std::isnan(left_value);
+    const bool right_nan = std::isnan(right_value);
+    if (left_nan || right_nan) {
+      return left_nan == right_nan ? 0 : (left_nan ? 1 : -1);
+    }
+    return (left_value > right_value) - (left_value < right_value);
+  }
+  return std::nullopt;
+}
+
 /** Purpose: Apply the first requested portable sort to native records.
  * @param rows owns records reordered in place. @param sort is the borrowed sort
  * list. @returns Nothing. @throws std::bad_alloc during text comparison. */
@@ -305,10 +369,28 @@ void ApplySort(Rows* rows, FlValue* sort) {
       "descending";
   std::sort(rows->begin(), rows->end(),
             [&](const ValuePtr& left, const ValuePtr& right) {
-              const auto left_value = ValueAsString(left.get(), *field);
-              const auto right_value = ValueAsString(right.get(), *field);
-              return ascending ? left_value < right_value
-                               : left_value > right_value;
+              FlValue* left_value = FindValue(left.get(), *field);
+              FlValue* right_value = FindValue(right.get(), *field);
+              const auto numeric_comparison =
+                  CompareNumericValues(left_value, right_value);
+              const bool left_numeric =
+                  left_value != nullptr &&
+                  (fl_value_get_type(left_value) == FL_VALUE_TYPE_INT ||
+                   fl_value_get_type(left_value) == FL_VALUE_TYPE_FLOAT);
+              const bool right_numeric =
+                  right_value != nullptr &&
+                  (fl_value_get_type(right_value) == FL_VALUE_TYPE_INT ||
+                   fl_value_get_type(right_value) == FL_VALUE_TYPE_FLOAT);
+              int comparison;
+              if (numeric_comparison.has_value()) {
+                comparison = *numeric_comparison;
+              } else if (left_numeric != right_numeric) {
+                comparison = left_numeric ? -1 : 1;
+              } else {
+                comparison = ValueAsString(left.get(), *field)
+                                 .compare(ValueAsString(right.get(), *field));
+              }
+              return ascending ? comparison < 0 : comparison > 0;
             });
 }
 

@@ -1,5 +1,4 @@
 #include <gtk/gtk.h>
-
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
@@ -14,11 +13,10 @@
 
 namespace simple_query_linux {
 
-namespace {
-
 /** Purpose: Infer the stable MIME value exposed for a filesystem record.
- * @param path supplies the filename extension. @returns A known MIME type or
- * application/octet-stream. @throws std::bad_alloc on string allocation. */
+ * @param path supplies the filename extension.
+ * @returns A known MIME type or application/octet-stream.
+ * @throws std::bad_alloc on string allocation. */
 std::string MimeFromPath(const std::filesystem::path& path) {
   const std::string ext = Lower(path.extension().string());
   if (ext == ".jpg" || ext == ".jpeg") return "image/jpeg";
@@ -35,6 +33,8 @@ std::string MimeFromPath(const std::filesystem::path& path) {
   if (ext == ".json") return "application/json";
   return "application/octet-stream";
 }
+
+namespace {
 
 /** Purpose: Decide whether a MIME value belongs to the media query domain.
  * @param mime is the normalized MIME value. @returns True for image, video, or
@@ -76,14 +76,15 @@ struct DomainRowsResult {
 };
 
 /** Purpose: Discover EDS sources through the session-bus object manager.
+ * @param cancellable optionally interrupts a stalled service call.
  * @returns Source descriptors or a stable unavailable diagnostic.
  * @throws std::bad_alloc when result allocation fails. */
-EdsSourcesResult QueryEdsSources() {
+EdsSourcesResult QueryEdsSources(GCancellable* cancellable) {
   EdsSourcesResult result;
   GError* error = nullptr;
 
   GDBusConnection* connection =
-      g_bus_get_sync(G_BUS_TYPE_SESSION, nullptr, &error);
+      g_bus_get_sync(G_BUS_TYPE_SESSION, cancellable, &error);
   if (connection == nullptr) {
     result.error =
         std::string("simple_query: EDS service unavailable - ") +
@@ -98,8 +99,8 @@ EdsSourcesResult QueryEdsSources() {
       connection, "org.gnome.evolution.dataserver.Sources5",
       "/org/gnome/evolution/dataserver/SourceManager",
       "org.freedesktop.DBus.ObjectManager", "GetManagedObjects", nullptr,
-      G_VARIANT_TYPE("(a{oa{sa{sv}}})"), G_DBUS_CALL_FLAGS_NONE, -1, nullptr,
-      &error);
+      G_VARIANT_TYPE("(a{oa{sa{sv}}})"), G_DBUS_CALL_FLAGS_NONE, -1,
+      cancellable, &error);
 
   if (reply == nullptr) {
     result.error =
@@ -190,10 +191,12 @@ ValuePtr ContactValues(EContact* contact, EContactField field) {
   return values;
 }
 
+}  // namespace
+
 /** Purpose: Convert one EDS contact to the portable record schema.
  * @param contact is the borrowed native contact. @returns A newly owned row.
  * @throws Nothing. */
-ValuePtr ContactRow(EContact* contact) {
+ValuePtr ProjectContactRecord(EContact* contact) {
   auto row = Value(fl_value_new_map());
   const gchar* uid = reinterpret_cast<const gchar*>(
       e_contact_get_const(contact, E_CONTACT_UID));
@@ -201,6 +204,8 @@ ValuePtr ContactRow(EContact* contact) {
       e_contact_get_const(contact, E_CONTACT_FULL_NAME));
   const gchar* organization = reinterpret_cast<const gchar*>(
       e_contact_get_const(contact, E_CONTACT_ORG));
+  const gchar* revision = reinterpret_cast<const gchar*>(
+      e_contact_get_const(contact, E_CONTACT_REV));
   MapSetString(row.get(), "id", uid != nullptr ? uid : "");
   MapSetString(row.get(), "displayName", full_name != nullptr ? full_name : "");
   MapSet(row.get(), "phones", ContactValues(contact, E_CONTACT_TEL).release());
@@ -209,17 +214,23 @@ ValuePtr ContactRow(EContact* contact) {
   MapSet(row.get(), "organization",
          organization != nullptr ? fl_value_new_string(organization)
                                  : fl_value_new_null());
-  MapSet(row.get(), "updatedAt", fl_value_new_null());
+  MapSet(row.get(), "updatedAt",
+         revision != nullptr ? fl_value_new_string(revision)
+                             : fl_value_new_null());
   return row;
 }
 
+namespace {
+
 /** Purpose: Read contact rows through the linked libebook client.
+ * @param cancellable optionally interrupts registry and record operations.
  * @returns Contact rows or a stable registry failure.
  * @throws std::bad_alloc when result allocation fails. */
-DomainRowsResult ListLibebookContactRecords() {
+DomainRowsResult ListLibebookContactRecords(GCancellable* cancellable) {
   DomainRowsResult result;
   GError* error = nullptr;
-  ESourceRegistry* registry = e_source_registry_new_sync(nullptr, &error);
+  ESourceRegistry* registry =
+      e_source_registry_new_sync(cancellable, &error);
   if (registry == nullptr) {
     result.error = std::string("simple_query: EDS registry unavailable - ") +
                    (error ? error->message : "unknown");
@@ -232,18 +243,18 @@ DomainRowsResult ListLibebookContactRecords() {
   for (GList* link = sources; link != nullptr; link = link->next) {
     ESource* source = E_SOURCE(link->data);
     EBookClient* client = reinterpret_cast<EBookClient*>(
-        e_book_client_connect_sync(source, 30, nullptr, &error));
+        e_book_client_connect_sync(source, 30, cancellable, &error));
     if (client == nullptr) {
       if (error) g_error_free(error);
       error = nullptr;
       continue;
     }
     GSList* contacts = nullptr;
-    if (e_book_client_get_contacts_sync(client, "", &contacts, nullptr,
+    if (e_book_client_get_contacts_sync(client, "", &contacts, cancellable,
                                         &error)) {
       for (GSList* item = contacts; item != nullptr; item = item->next) {
         EContact* contact = E_CONTACT(item->data);
-        result.rows.push_back(ContactRow(contact));
+        result.rows.push_back(ProjectContactRecord(contact));
         g_object_unref(contact);
       }
       g_slist_free(contacts);
@@ -261,11 +272,12 @@ DomainRowsResult ListLibebookContactRecords() {
 
 #ifndef HAS_LIBEBOOK
 /** Purpose: Project EDS discovery into contact rows without libebook.
+ * @param cancellable optionally interrupts source discovery.
  * @returns Contact rows or the discovery failure.
  * @throws std::bad_alloc when result allocation fails. */
-DomainRowsResult ListDiscoveredContactRecords() {
+DomainRowsResult ListDiscoveredContactRecords(GCancellable* cancellable) {
   DomainRowsResult result;
-  const auto sources = QueryEdsSources();
+  const auto sources = QueryEdsSources(cancellable);
   if (sources.error.has_value()) {
     result.error = *sources.error;
     return result;
@@ -286,21 +298,40 @@ DomainRowsResult ListDiscoveredContactRecords() {
 #endif
 
 /** Purpose: Read portable contact rows from libebook or EDS discovery.
+ * @param cancellable optionally interrupts provider work.
  * @returns Contact rows or a stable source error. @throws std::bad_alloc when
  * result allocation fails. */
-DomainRowsResult ListContactRecords() {
+DomainRowsResult ListContactRecords(GCancellable* cancellable) {
 #ifdef HAS_LIBEBOOK
-  return ListLibebookContactRecords();
+  return ListLibebookContactRecords(cancellable);
 #else
-  return ListDiscoveredContactRecords();
+  return ListDiscoveredContactRecords(cancellable);
 #endif
 }
 
 #ifdef HAS_LIBECAL
+}  // namespace
+
+/** Purpose: Read an event's modification time without confusing recurrence ID.
+ * @param component is the borrowed native event.
+ * @returns A newly referenced LAST-MODIFIED value, then DTSTAMP, or null.
+ * @throws Nothing. */
+ICalTime* CalendarModificationTime(ICalComponent* component) {
+  ICalProperty* property = i_cal_component_get_first_property(
+      component, I_CAL_LASTMODIFIED_PROPERTY);
+  if (property != nullptr) {
+    ICalTime* modified = i_cal_property_get_lastmodified(property);
+    g_object_unref(property);
+    if (modified != nullptr) return modified;
+  }
+  return i_cal_component_get_dtstamp(component);
+}
+
 /** Purpose: Convert one VEVENT component to the portable calendar schema.
  * @param component is the borrowed native event. @param calendar_uid identifies
  * its source calendar. @returns A newly owned row. @throws Nothing. */
-ValuePtr CalendarRow(ICalComponent* component, const gchar* calendar_uid) {
+ValuePtr ProjectCalendarRecord(ICalComponent* component,
+                               const gchar* calendar_uid) {
   auto row = Value(fl_value_new_map());
   const gchar* uid = i_cal_component_get_uid(component);
   const gchar* summary = i_cal_component_get_summary(component);
@@ -328,7 +359,7 @@ ValuePtr CalendarRow(ICalComponent* component, const gchar* calendar_uid) {
   }
   MapSetString(row.get(), "calendarId",
                calendar_uid != nullptr ? calendar_uid : "");
-  ICalTime* modified = i_cal_component_get_recurrenceid(component);
+  ICalTime* modified = CalendarModificationTime(component);
   if (modified != nullptr) {
     gchar* value = i_cal_time_as_ical_string(modified);
     MapSet(row.get(), "updatedAt",
@@ -341,26 +372,30 @@ ValuePtr CalendarRow(ICalComponent* component, const gchar* calendar_uid) {
   return row;
 }
 
+namespace {
+
 /** Purpose: Append one EDS calendar source's VEVENT records.
  * @param source is the borrowed calendar source. @param expression bounds time.
- * @param result receives portable rows. @returns Nothing. @throws Nothing. */
+ * @param result receives portable rows. @param cancellable interrupts reads.
+ * @returns Nothing. @throws Nothing. */
 void AppendCalendarSource(ESource* source, const gchar* expression,
-                          DomainRowsResult* result) {
+                          DomainRowsResult* result,
+                          GCancellable* cancellable) {
   GError* error = nullptr;
   ECalClient* client = reinterpret_cast<ECalClient*>(e_cal_client_connect_sync(
-      source, E_CAL_CLIENT_SOURCE_TYPE_EVENTS, 30, nullptr, &error));
+      source, E_CAL_CLIENT_SOURCE_TYPE_EVENTS, 30, cancellable, &error));
   if (client == nullptr) {
     if (error) g_error_free(error);
     return;
   }
   GSList* components = nullptr;
   if (e_cal_client_get_object_list_sync(client, expression, &components,
-                                        nullptr, &error)) {
+                                        cancellable, &error)) {
     const gchar* calendar_uid = e_source_get_uid(source);
     for (GSList* item = components; item != nullptr; item = item->next) {
       ICalComponent* component = I_CAL_COMPONENT(item->data);
       if (i_cal_component_isa(component) == I_CAL_VEVENT_COMPONENT) {
-        result->rows.push_back(CalendarRow(component, calendar_uid));
+        result->rows.push_back(ProjectCalendarRecord(component, calendar_uid));
       }
       g_object_unref(component);
     }
@@ -372,12 +407,14 @@ void AppendCalendarSource(ESource* source, const gchar* expression,
 }
 
 /** Purpose: Read calendar rows through the linked libecal client.
+ * @param cancellable optionally interrupts registry and record operations.
  * @returns Calendar rows or a stable registry failure.
  * @throws std::bad_alloc when result allocation fails. */
-DomainRowsResult ListLibecalCalendarRecords() {
+DomainRowsResult ListLibecalCalendarRecords(GCancellable* cancellable) {
   DomainRowsResult result;
   GError* error = nullptr;
-  ESourceRegistry* registry = e_source_registry_new_sync(nullptr, &error);
+  ESourceRegistry* registry =
+      e_source_registry_new_sync(cancellable, &error);
   if (registry == nullptr) {
     result.error = std::string("simple_query: EDS registry unavailable - ") +
                    (error ? error->message : "unknown");
@@ -397,7 +434,8 @@ DomainRowsResult ListLibecalCalendarRecords() {
       "(occur-in-time-range? (make-time \"%s\") (make-time \"%s\"))",
       start_text, end_text);
   for (GList* link = sources; link != nullptr; link = link->next) {
-    AppendCalendarSource(E_SOURCE(link->data), expression, &result);
+    AppendCalendarSource(E_SOURCE(link->data), expression, &result,
+                         cancellable);
   }
   g_free(expression);
   g_free(start_text);
@@ -412,11 +450,12 @@ DomainRowsResult ListLibecalCalendarRecords() {
 
 #ifndef HAS_LIBECAL
 /** Purpose: Project EDS discovery into calendar rows without libecal.
+ * @param cancellable optionally interrupts source discovery.
  * @returns Calendar rows or the discovery failure.
  * @throws std::bad_alloc when result allocation fails. */
-DomainRowsResult ListDiscoveredCalendarRecords() {
+DomainRowsResult ListDiscoveredCalendarRecords(GCancellable* cancellable) {
   DomainRowsResult result;
-  const auto sources = QueryEdsSources();
+  const auto sources = QueryEdsSources(cancellable);
   if (sources.error.has_value()) {
     result.error = *sources.error;
     return result;
@@ -438,13 +477,14 @@ DomainRowsResult ListDiscoveredCalendarRecords() {
 #endif
 
 /** Purpose: Read portable event rows from libecal or EDS discovery.
+ * @param cancellable optionally interrupts provider work.
  * @returns Calendar rows or a stable source error. @throws std::bad_alloc when
  * result allocation fails. */
-DomainRowsResult ListCalendarRecords() {
+DomainRowsResult ListCalendarRecords(GCancellable* cancellable) {
 #ifdef HAS_LIBECAL
-  return ListLibecalCalendarRecords();
+  return ListLibecalCalendarRecords(cancellable);
 #else
-  return ListDiscoveredCalendarRecords();
+  return ListDiscoveredCalendarRecords(cancellable);
 #endif
 }
 
@@ -454,7 +494,7 @@ DomainRowsResult ListCalendarRecords() {
  * when result allocation fails. */
 EdsSourcesResult ListEdsDomainSources(bool address_books) {
   EdsSourcesResult result;
-  const auto sources = QueryEdsSources();
+  const auto sources = QueryEdsSources(nullptr);
   if (sources.error.has_value()) {
     result.error = sources.error;
     return result;
@@ -545,12 +585,17 @@ bool AppendFilesystemRecord(const std::filesystem::directory_entry& entry,
 /** Purpose: Enumerate files without converting access failures into empty data.
  * @param root is the filesystem root selected by the caller.
  * @param media_only filters results to supported media MIME types.
+ * @param cancellable optionally interrupts recursive enumeration.
  * @returns Rows on success or a stable simple_query error on inspection
  * failure.
  * @throws Nothing. */
 DomainRowsResult ListRecords(const std::filesystem::path& root,
-                             bool media_only) {
+                             bool media_only, GCancellable* cancellable) {
   DomainRowsResult result;
+  if (cancellable != nullptr && g_cancellable_is_cancelled(cancellable)) {
+    result.error = "simple_query: filesystem query was cancelled";
+    return result;
+  }
   std::error_code error;
   const bool root_exists = std::filesystem::exists(root, error);
   if (error) {
@@ -566,6 +611,10 @@ DomainRowsResult ListRecords(const std::filesystem::path& root,
     return result;
   }
   while (iterator != end) {
+    if (cancellable != nullptr && g_cancellable_is_cancelled(cancellable)) {
+      result.error = "simple_query: filesystem query was cancelled";
+      return result;
+    }
     if (!AppendFilesystemRecord(*iterator, media_only, &result)) {
       return result;
     }
@@ -580,24 +629,50 @@ DomainRowsResult ListRecords(const std::filesystem::path& root,
 
 }  // namespace
 
+/** Purpose: Encode every projected field into a collision-free change key.
+ * @param row is the borrowed record being snapshotted.
+ * @returns Exact StandardMessageCodec bytes or a stable encoding error.
+ * @throws std::bad_alloc when copying the encoded bytes fails. */
+StringResult SnapshotSignature(FlValue* row) {
+  g_autoptr(FlStandardMessageCodec) codec = fl_standard_message_codec_new();
+  g_autoptr(GError) error = nullptr;
+  g_autoptr(GBytes) encoded =
+      fl_message_codec_encode_message(FL_MESSAGE_CODEC(codec), row, &error);
+  if (encoded == nullptr) {
+    return StringResult{
+        "", NativeError{"unavailable",
+                        std::string("simple_query: could not encode observer "
+                                    "snapshot - ") +
+                            (error != nullptr ? error->message
+                                              : "encoding failed")}};
+  }
+  gsize length = 0;
+  const auto* bytes =
+      static_cast<const char*>(g_bytes_get_data(encoded, &length));
+  return StringResult{std::string(bytes, length), std::nullopt};
+}
+
 /**
  * Purpose: Build an observer snapshot while preserving data-source failures.
  * @param request is the observer's independent request value.
  * @param domain selects the native record source.
+ * @param cancellable optionally interrupts native record acquisition.
  * @returns A snapshot or a stable simple_query error; errors are never treated
  * as an empty snapshot.
  * @throws Nothing.
  */
 SnapshotResult BuildSnapshotForDomain(FlValue* request,
-                                      const std::string& domain) {
+                                      const std::string& domain,
+                                      GCancellable* cancellable) {
   SnapshotResult result;
   DomainRowsResult records;
   if (domain == "files" || domain == "media") {
-    records = ListRecords(ResolveRootPath(request), domain == "media");
+    records =
+        ListRecords(ResolveRootPath(request), domain == "media", cancellable);
   } else if (domain == "contacts") {
-    records = ListContactRecords();
+    records = ListContactRecords(cancellable);
   } else if (domain == "calendar") {
-    records = ListCalendarRecords();
+    records = ListCalendarRecords(cancellable);
   }
   if (records.error.has_value()) {
     result.error = records.error;
@@ -609,13 +684,12 @@ SnapshotResult BuildSnapshotForDomain(FlValue* request,
     if (!id.has_value()) {
       continue;
     }
-    const int64_t modified =
-        AsInt(FindValue(row.get(), "modifiedEpochMs"))
-            .value_or(
-                AsInt(FindValue(row.get(), "updatedAt"))
-                    .value_or(
-                        AsInt(FindValue(row.get(), "startAt")).value_or(0)));
-    result.snapshot[*id] = modified;
+    auto signature = SnapshotSignature(row.get());
+    if (signature.error.has_value()) {
+      result.error = signature.error->message;
+      return result;
+    }
+    result.snapshot[*id] = std::move(signature.value);
   }
   return result;
 }
@@ -624,14 +698,13 @@ SnapshotResult BuildSnapshotForDomain(FlValue* request,
  * @returns A portable capability snapshot. @throws std::bad_alloc when the
  * snapshot cannot be allocated. */
 ValueResult NativeQueryHostApiImpl::GetCapabilities() {
-  const auto contacts_probe = ListContactRecords();
-  const auto calendar_probe = ListCalendarRecords();
+  const auto eds_probe = QueryEdsSources(nullptr);
 
   auto capabilities = Value(fl_value_new_list());
   fl_value_append_take(
       capabilities.get(),
-      Capability("contacts", !contacts_probe.error.has_value(), false,
-                 !contacts_probe.error.has_value(), false, contacts_probe.error)
+      Capability("contacts", !eds_probe.error.has_value(), false,
+                 !eds_probe.error.has_value(), false, eds_probe.error)
           .release());
   fl_value_append_take(capabilities.get(),
                        Capability("media", true, true, true, true).release());
@@ -639,8 +712,8 @@ ValueResult NativeQueryHostApiImpl::GetCapabilities() {
                        Capability("files", true, true, true, true).release());
   fl_value_append_take(
       capabilities.get(),
-      Capability("calendar", !calendar_probe.error.has_value(), false,
-                 !calendar_probe.error.has_value(), false, calendar_probe.error)
+      Capability("calendar", !eds_probe.error.has_value(), false,
+                 !eds_probe.error.has_value(), false, eds_probe.error)
           .release());
   fl_value_append_take(
       capabilities.get(),
@@ -682,19 +755,20 @@ ValueResult NativeQueryHostApiImpl::Query(FlValue* request) {
 
   Rows rows;
   if (domain == "files" || domain == "media") {
-    auto file_rows = ListRecords(ResolveRootPath(request), domain == "media");
+    auto file_rows =
+        ListRecords(ResolveRootPath(request), domain == "media", nullptr);
     if (file_rows.error.has_value()) {
       return Failure("unavailable", *file_rows.error);
     }
     rows = std::move(file_rows.rows);
   } else if (domain == "contacts") {
-    auto contact_rows = ListContactRecords();
+    auto contact_rows = ListContactRecords(nullptr);
     if (contact_rows.error.has_value()) {
       return Failure("unavailable", *contact_rows.error);
     }
     rows = std::move(contact_rows.rows);
   } else {
-    auto calendar_rows = ListCalendarRecords();
+    auto calendar_rows = ListCalendarRecords(nullptr);
     if (calendar_rows.error.has_value()) {
       return Failure("unavailable", *calendar_rows.error);
     }
@@ -732,83 +806,6 @@ ValueResult NativeQueryHostApiImpl::Query(FlValue* request) {
     MapSetInt(result.get(), "nextOffset", static_cast<int64_t>(end));
   }
   return Success(std::move(result));
-}
-
-/** Purpose: Validate and expose one filesystem resource as a binary handle.
- * @param request identifies the native resource. @returns Handle metadata or
- * a structured error. @throws Native allocation exceptions for the outer
- * callback boundary to translate. */
-ValueResult NativeQueryHostApiImpl::OpenBinary(FlValue* request) {
-  const std::string domain = StringOr(request, "domain", "platformSpecific");
-  if (domain != "files" && domain != "media") {
-    return Failure("not-supported",
-                   "simple_query: openBinary is not supported for domain " +
-                       domain + " on Linux host");
-  }
-
-  std::optional<std::string> path;
-  FlValue* platform_data = AsMap(FindValue(request, "platformData"));
-  if (platform_data != nullptr) {
-    path = AsString(FindValue(platform_data, "path"));
-  }
-  if (!path.has_value()) {
-    path = AsString(FindValue(request, "recordId"));
-  }
-  if (!path.has_value() || path->empty()) {
-    return Failure(
-        "invalid-query",
-        "simple_query: openBinary requires recordId or platformData.path");
-  }
-
-  std::error_code error;
-  const std::filesystem::path binary_path(*path);
-  const bool exists = std::filesystem::exists(binary_path, error);
-  if (error) {
-    return Failure("unavailable", FileSystemFailure("binary existence check",
-                                                    binary_path, error));
-  }
-  if (!exists) {
-    return Failure("unavailable",
-                   "simple_query: binary resource was not found");
-  }
-
-  const bool is_regular = std::filesystem::is_regular_file(binary_path, error);
-  if (error) {
-    return Failure("unavailable", FileSystemFailure("binary metadata check",
-                                                    binary_path, error));
-  }
-  std::optional<int64_t> binary_size;
-  if (is_regular) {
-    const auto size = std::filesystem::file_size(binary_path, error);
-    if (error) {
-      return Failure("unavailable", FileSystemFailure("binary size lookup",
-                                                      binary_path, error));
-    }
-    binary_size = static_cast<int64_t>(size);
-  }
-
-  auto result = Value(fl_value_new_map());
-  const auto handle =
-      std::string("linux_handle_") + std::to_string(++handle_counter_);
-  open_handles_[handle] = *path;
-  MapSetString(result.get(), "handleId", handle);
-  MapSetString(result.get(), "localPath", *path);
-  MapSetString(result.get(), "mimeType", MimeFromPath(*path));
-  if (binary_size.has_value()) {
-    MapSetInt(result.get(), "size", *binary_size);
-  }
-  auto metadata = Value(fl_value_new_map());
-  MapSetString(metadata.get(), "source", "linux-host");
-  MapSet(result.get(), "metadata", metadata.release());
-  return Success(std::move(result));
-}
-
-/** Purpose: Release one binary handle idempotently. @param handle_id selects
- * the handle. @returns No error after cleanup. @throws Nothing. */
-std::optional<NativeError> NativeQueryHostApiImpl::CloseBinary(
-    const std::string& handle_id) {
-  open_handles_.erase(handle_id);
-  return std::nullopt;
 }
 
 namespace {

@@ -13,6 +13,12 @@
 #include <vector>
 
 #include "native_query.g.h"
+#ifdef HAS_LIBEBOOK
+#include <libebook/libebook.h>
+#endif
+#ifdef HAS_LIBECAL
+#include <libecal/libecal.h>
+#endif
 
 namespace simple_query_linux {
 
@@ -25,7 +31,7 @@ struct FlValueDeleter {
 
 using ValuePtr = std::unique_ptr<FlValue, FlValueDeleter>;
 using Rows = std::vector<ValuePtr>;
-using Snapshot = std::map<std::string, int64_t>;
+using Snapshot = std::map<std::string, std::string>;
 
 /** Purpose: Carry a filesystem snapshot or the source failure that blocked it.
  */
@@ -69,6 +75,7 @@ FlValue* AsMap(FlValue* value);
 FlValue* AsList(FlValue* value);
 ValuePtr CloneMap(FlValue* map);
 std::string Lower(std::string value);
+std::string MimeFromPath(const std::filesystem::path& path);
 std::string FileSystemFailure(const char* operation,
                               const std::filesystem::path& path,
                               const std::error_code& error);
@@ -82,8 +89,38 @@ void ApplySort(Rows* rows, FlValue* sort);
 ValuePtr ApplyProjection(const Rows& rows, FlValue* projection);
 ValueResult Success(ValuePtr value);
 ValueResult Failure(const std::string& code, const std::string& message);
+
+/** Purpose: Build one complete observer snapshot without masking failures.
+ * @param request is the independently owned native request.
+ * @param domain selects files, media, contacts, or calendar.
+ * @param cancellable optionally interrupts native acquisition.
+ * @returns A record signature map or stable failure.
+ * @throws Nothing. */
 SnapshotResult BuildSnapshotForDomain(FlValue* request,
-                                      const std::string& domain);
+                                      const std::string& domain,
+                                      GCancellable* cancellable);
+
+/** Purpose: Encode all projected row fields into one exact change signature.
+ * @param row is the borrowed portable record.
+ * @returns Codec bytes or a stable encoding failure.
+ * @throws std::bad_alloc when copying encoded bytes fails. */
+StringResult SnapshotSignature(FlValue* row);
+#ifdef HAS_LIBEBOOK
+/** Purpose: Project a real EDS contact to the portable Linux row schema.
+ * @param contact is the borrowed native contact.
+ * @returns A newly owned portable row.
+ * @throws Nothing. */
+ValuePtr ProjectContactRecord(EContact* contact);
+#endif
+#ifdef HAS_LIBECAL
+/** Purpose: Project a real EDS event to the portable Linux row schema.
+ * @param component is the borrowed native event.
+ * @param calendar_uid identifies its source calendar.
+ * @returns A newly owned portable row.
+ * @throws Nothing. */
+ValuePtr ProjectCalendarRecord(ICalComponent* component,
+                               const gchar* calendar_uid);
+#endif
 
 /** Purpose: Coordinate Linux query, mutation, binary, and observer domains.
  * Ownership: The plugin uniquely owns this host; observer state is shared only
@@ -114,18 +151,61 @@ class NativeQueryHostApiImpl {
  private:
   struct ObserveDelivery;
   struct ObserveCompletion;
+  struct ObserverWork;
 
+  /** Purpose: Release a queued observer delivery.
+   * @param user_data owns the queued delivery.
+   * @returns Nothing.
+   * @throws Nothing. */
   static void DestroyObserveDelivery(gpointer user_data);
+  /** Purpose: Finish a generated FlutterApi delivery.
+   * @param object is the generated API source.
+   * @param result is the asynchronous transport result.
+   * @param user_data owns completion state.
+   * @returns Nothing.
+   * @throws Nothing. */
   static void FinishObserveDelivery(GObject* object, GAsyncResult* result,
                                     gpointer user_data);
+  /** Purpose: Begin one queued delivery on the platform context.
+   * @param user_data owns the queued event.
+   * @returns G_SOURCE_REMOVE after dispatch or cancellation.
+   * @throws Nothing. */
   static gboolean DeliverObserveEvent(gpointer user_data);
-  bool QueueObserveEvent(const std::string& observer_id,
-                         const std::shared_ptr<ObserverState>& state,
-                         ValuePtr event);
-  void RunObserver(const std::string& observer_id, const std::string& domain,
-                   ValuePtr request, int64_t interval_ms,
-                   const std::shared_ptr<ObserverState>& state) noexcept;
+  /** Purpose: Queue one bounded platform-context delivery.
+   * @param observer_id identifies the Dart stream.
+   * @param state owns transport and cancellation state.
+   * @param event is transferred into the queue.
+   * @returns True when queued.
+   * @throws std::bad_alloc when queue allocation fails. */
+  static bool QueueObserveEvent(
+      const std::string& observer_id,
+      const std::shared_ptr<ObserverState>& state, ValuePtr event);
+  /** Purpose: Poll a domain on one detached GLib worker.
+   * @param observer_id identifies the Dart stream.
+   * @param domain selects native acquisition.
+   * @param request is exclusively worker-owned.
+   * @param interval_ms is the minimum polling cadence.
+   * @param previous is the validated initial snapshot.
+   * @param state owns cancellation and transport lifetime.
+   * @returns Nothing.
+   * @throws Nothing. */
+  static void RunObserver(
+      const std::string& observer_id, const std::string& domain,
+      ValuePtr request, int64_t interval_ms, Snapshot previous,
+      const std::shared_ptr<ObserverState>& state) noexcept;
+  /** Purpose: Transfer owned polling work into GThread execution.
+   * @param user_data owns an ObserverWork instance.
+   * @returns Null after polling ends.
+   * @throws Nothing. */
+  static gpointer RunObserverThread(gpointer user_data);
+  /** Purpose: Cancel worker and queued delivery activity without joining.
+   * @param state is removed from the public registry.
+   * @returns Nothing.
+   * @throws Nothing. */
   void StopObserver(const std::shared_ptr<ObserverState>& state);
+  /** Purpose: Stop every registered observer during plugin disposal.
+   * @returns Nothing.
+   * @throws Nothing. */
   void ShutdownObservers();
 
   SqlqNativeQueryFlutterApi* flutter_api_;
