@@ -13,6 +13,12 @@
   (G_TYPE_CHECK_INSTANCE_CAST((obj), simple_query_linux_plugin_get_type(), \
                               SimpleQueryLinuxPlugin))
 
+/** Purpose: Tie host lifetime to registrar and generated callback ownership.
+ * @param parent_instance supplies the GLib object base.
+ * @param registrar retains the registrar until plugin disposal.
+ * @param host_api owns the native host released during disposal.
+ * @returns A plugin instance with platform-thread-owned transport resources.
+ * @throws Nothing; construction uses GLib object allocation. */
 struct _SimpleQueryLinuxPlugin {
   GObject parent_instance;
   FlPluginRegistrar* registrar;

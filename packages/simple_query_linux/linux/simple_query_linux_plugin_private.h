@@ -22,6 +22,10 @@
 
 namespace simple_query_linux {
 
+/** Purpose: Make unique Flutter values release their native reference safely.
+ * @param value is supplied to the deleter when an owned value leaves scope.
+ * @returns A stateless deletion policy for ValuePtr.
+ * @throws Nothing. */
 struct FlValueDeleter {
   /** Purpose: Release a uniquely owned Flutter value through its C API.
    * @param value is the nullable Flutter value leaving scope.
@@ -33,26 +37,41 @@ using ValuePtr = std::unique_ptr<FlValue, FlValueDeleter>;
 using Rows = std::vector<ValuePtr>;
 using Snapshot = std::map<std::string, std::string>;
 
-/** Purpose: Carry a filesystem snapshot or the source failure that blocked it.
- */
+/** Purpose: Keep snapshot failures distinct from a successfully empty source.
+ * @param snapshot maps record IDs to complete change signatures.
+ * @param error preserves the diagnostic when snapshot acquisition fails.
+ * @returns An owned snapshot result for startup validation and polling.
+ * @throws std::bad_alloc when owned snapshot or error fields are populated. */
 struct SnapshotResult {
   Snapshot snapshot;
   std::optional<std::string> error;
 };
 
-/** Purpose: Preserve one stable native error code and diagnostic message. */
+/** Purpose: Preserve a stable error category separately from its diagnostic.
+ * @param code is the portable native error identifier.
+ * @param message describes the failure with the simple_query prefix.
+ * @returns An owned error for generated response envelopes.
+ * @throws std::bad_alloc when error strings are allocated. */
 struct NativeError {
   std::string code;
   std::string message;
 };
 
-/** Purpose: Return either an owned Flutter payload or one native error. */
+/** Purpose: Transfer payload ownership without hiding native operation errors.
+ * @param value owns the successful Flutter payload, if available.
+ * @param error carries the failure instead of a successful payload.
+ * @returns A move-only operation result for callback translation.
+ * @throws std::bad_alloc when an error diagnostic is allocated. */
 struct ValueResult {
   ValuePtr value;
   std::optional<NativeError> error;
 };
 
-/** Purpose: Return either an owned string payload or one native error. */
+/** Purpose: Keep native identifiers separate from failed operation results.
+ * @param value owns the successful identifier, if available.
+ * @param error carries the failure instead of an identifier.
+ * @returns An owned string result for callback translation.
+ * @throws std::bad_alloc when identifier or error strings are allocated. */
 struct StringResult {
   std::string value;
   std::optional<NativeError> error;
@@ -123,6 +142,9 @@ ValuePtr ProjectCalendarRecord(ICalComponent* component,
 #endif
 
 /** Purpose: Coordinate Linux query, mutation, binary, and observer domains.
+ * @param messenger initializes transport on the registrar's platform context.
+ * @returns A uniquely owned host with shared, independently cancellable workers.
+ * @throws Native allocation errors for callback boundaries to translate.
  * Ownership: The plugin uniquely owns this host; observer state is shared only
  * while workers or queued deliveries require it.
  */
@@ -130,10 +152,13 @@ class NativeQueryHostApiImpl {
  public:
   /** Purpose: Bind Linux behavior to the registrar-owned Flutter messenger.
    * @param messenger is the borrowed platform binary messenger.
+   * @returns A host retaining its Flutter API and platform context.
    * @throws Nothing. */
   explicit NativeQueryHostApiImpl(FlBinaryMessenger* messenger);
 
   /** Purpose: Stop observers and release platform resources.
+   * @param None.
+   * @returns Nothing.
    * @throws Nothing. */
   ~NativeQueryHostApiImpl();
 
@@ -204,6 +229,7 @@ class NativeQueryHostApiImpl {
    * @throws Nothing. */
   void StopObserver(const std::shared_ptr<ObserverState>& state);
   /** Purpose: Stop every registered observer during plugin disposal.
+   * @param None.
    * @returns Nothing.
    * @throws Nothing. */
   void ShutdownObservers();

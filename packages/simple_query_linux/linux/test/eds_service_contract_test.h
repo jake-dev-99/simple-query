@@ -2,7 +2,7 @@
 
 /**
  * Purpose: Exercise one capability probe against a real private session bus.
- * @returns Nothing.
+ * @param None. @returns Nothing.
  * @throws Nothing.
  */
 void RunCapabilityProbeContract() {
@@ -32,7 +32,7 @@ void RunCapabilityProbeContract() {
 
 /**
  * Purpose: Prove capabilities probe availability without loading EDS records.
- * @returns Nothing.
+ * @param None. @returns Nothing.
  * @throws Nothing.
  */
 void TestCapabilitiesUseOneLightweightEdsProbe() {
@@ -47,7 +47,7 @@ void TestCapabilitiesUseOneLightweightEdsProbe() {
 #if !defined(HAS_LIBEBOOK) && !defined(HAS_LIBECAL)
 /**
  * Purpose: Exercise cancellation of a stalled observer discovery call.
- * @returns Nothing.
+ * @param None. @returns Nothing.
  * @throws Nothing.
  */
 void RunObserverCancellationContract() {
@@ -102,7 +102,7 @@ void RunObserverCancellationContract() {
 
 /**
  * Purpose: Prove observeStop cancels blocked discovery without joining worker.
- * @returns Nothing.
+ * @param None. @returns Nothing.
  * @throws Nothing.
  */
 void TestObserverStopDoesNotBlockOnDiscovery() {

@@ -1,7 +1,7 @@
 #pragma once
 
 /** Purpose: Verify Dart and transport delivery failures stay observable.
- * @returns Nothing. @throws Nothing. */
+ * @param None. @returns Nothing. @throws Nothing. */
 void TestObserverReportsDeliveryFailures() {
   g_autoptr(GMainContext) context = g_main_context_new();
   g_main_context_push_thread_default(context);
@@ -58,7 +58,7 @@ void TestObserverReportsDeliveryFailures() {
 }
 
 /** Purpose: Verify disposal cancels and safely finishes an in-flight send.
- * @returns Nothing. @throws Nothing. */
+ * @param None. @returns Nothing. @throws Nothing. */
 void TestObserverDisposalCancelsInFlightDelivery() {
   g_autoptr(GMainContext) context = g_main_context_new();
   g_main_context_push_thread_default(context);

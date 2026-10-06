@@ -13,7 +13,7 @@ std::string ProjectedString(FlValue* row, const char* key) {
 
 #ifdef HAS_LIBEBOOK
 /** Purpose: Prove real EDS contacts expose their native revision.
- * @returns Nothing.
+ * @param None. @returns Nothing.
  * @throws Nothing. */
 void TestContactProjectionUsesRevision() {
   constexpr char kVCard[] =
@@ -46,7 +46,7 @@ void TestContactProjectionUsesRevision() {
 
 #ifdef HAS_LIBECAL
 /** Purpose: Prove real EDS events use LAST-MODIFIED, not recurrence identity.
- * @returns Nothing.
+ * @param None. @returns Nothing.
  * @throws Nothing. */
 void TestCalendarProjectionUsesModificationTime() {
   constexpr char kEvent[] =

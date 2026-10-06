@@ -4,7 +4,7 @@
 #include "observer_delivery_test.h"
 
 /** Purpose: Register every native production-boundary regression.
- * @returns Nothing.
+ * @param None. @returns Nothing.
  * @throws Nothing. */
 void RegisterNativeTests() {
   g_test_add_func("/simple_query/generated/async_lifecycle",

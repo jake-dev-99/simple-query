@@ -1,5 +1,11 @@
 #pragma once
 
+/** Purpose: Verify generated finish results without hiding asynchronous errors.
+ * @param completed records whether the real finish callback ran.
+ * @param response owns the generated reply until the test releases it.
+ * @param error owns a transport failure until the test releases it.
+ * @returns Capture state for success, rejection, and cancellation assertions.
+ * @throws Nothing. */
 struct AsyncCapture {
   gboolean completed = FALSE;
   SqlqNativeQueryFlutterApiOnObserveEventResponse* response = nullptr;
@@ -18,7 +24,7 @@ void CaptureFlutterApiResult(GObject* object, GAsyncResult* result,
 }
 
 /** Purpose: Exercise generated async success, errors, and cancellation.
- * @returns Nothing. @throws Nothing. */
+ * @param None. @returns Nothing. @throws Nothing. */
 void TestGeneratedAsyncLifecycle() {
   g_autoptr(TestBinaryMessenger) messenger = NewMessenger();
   g_autoptr(SqlqNativeQueryFlutterApi) api =
@@ -75,7 +81,7 @@ void TestGeneratedAsyncLifecycle() {
 }
 
 /** Purpose: Prove null-callback async sends release task and source API.
- * @returns Nothing. @throws Nothing. */
+ * @param None. @returns Nothing. @throws Nothing. */
 void TestGeneratedNullCallbackCleanup() {
   g_autoptr(TestBinaryMessenger) messenger = NewMessenger();
   auto* api = sqlq_native_query_flutter_api_new(FL_BINARY_MESSENGER(messenger),

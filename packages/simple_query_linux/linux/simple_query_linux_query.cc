@@ -54,7 +54,11 @@ std::string MediaType(const std::string& mime) {
   return "other";
 }
 
-/** Purpose: Describe one address-book or calendar source discovered via EDS. */
+/** Purpose: Avoid constructing EDS clients merely to identify available sources.
+ * @param uid and display_name preserve stable identity and the service label.
+ * @param is_address_book and is_calendar identify supported source extensions.
+ * @returns An owned source descriptor from lightweight service discovery.
+ * @throws std::bad_alloc when source strings are allocated. */
 struct EdsSource {
   std::string uid;
   std::string display_name;
@@ -62,14 +66,21 @@ struct EdsSource {
   bool is_calendar = false;
 };
 
-/** Purpose: Carry discovered EDS sources or their stable source failure. */
+/** Purpose: Keep unavailable discovery distinct from an empty source list.
+ * @param sources owns discovered address-book and calendar descriptors.
+ * @param error retains the diagnostic when discovery fails.
+ * @returns Discovery results usable without EDS client construction.
+ * @throws std::bad_alloc when owned result fields are populated. */
 struct EdsSourcesResult {
   std::vector<EdsSource> sources;
   std::optional<std::string> error;
 };
 
 /** Purpose: Carry portable domain rows or the source failure that blocked them.
- */
+ * @param rows owns successful portable records.
+ * @param error preserves acquisition failure instead of returning empty success.
+ * @returns Move-only query rows or their stable source diagnostic.
+ * @throws std::bad_alloc when result rows or diagnostics are allocated. */
 struct DomainRowsResult {
   Rows rows;
   std::optional<std::string> error;
@@ -695,7 +706,7 @@ SnapshotResult BuildSnapshotForDomain(FlValue* request,
 }
 
 /** Purpose: Describe currently reachable Linux domains and extensions.
- * @returns A portable capability snapshot. @throws std::bad_alloc when the
+ * @param None. @returns A portable capability snapshot. @throws std::bad_alloc when the
  * snapshot cannot be allocated. */
 ValueResult NativeQueryHostApiImpl::GetCapabilities() {
   const auto eds_probe = QueryEdsSources(nullptr);
@@ -878,7 +889,7 @@ ValueResult TrackerScopes(FlValue* args) {
 }
 
 /** Purpose: Encode the stable Tracker graph list.
- * @returns Graph data. @throws Nothing. */
+ * @param None. @returns Graph data. @throws Nothing. */
 ValueResult TrackerGraphs() {
   auto graphs = Value(fl_value_new_list());
   for (const char* graph : {"tracker:Documents", "tracker:Pictures",

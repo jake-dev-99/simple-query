@@ -16,7 +16,7 @@ FlValue* OpenBinaryPath(TestBinaryMessenger* messenger,
 
 /** Purpose: Reject directories and stat-able unreadable files before a handle
  * is published.
- * @returns Nothing.
+ * @param None. @returns Nothing.
  * @throws Nothing. */
 void TestOpenBinaryRequiresReadableRegularFile() {
   if (geteuid() == 0) {
@@ -90,7 +90,7 @@ ValuePtr SizeSortedQuery(const std::filesystem::path& root,
 }
 
 /** Purpose: Assert the real query channel sorts integer sizes numerically.
- * @returns Nothing.
+ * @param None. @returns Nothing.
  * @throws Nothing. */
 void TestNumericSortUsesNumericOrder() {
   g_autofree gchar* temporary =
@@ -168,7 +168,7 @@ FlValue* DeleteWithoutRoot(TestBinaryMessenger* messenger,
 }
 
 /** Purpose: Prevent unrooted deletes from targeting process working data.
- * @returns Nothing.
+ * @param None. @returns Nothing.
  * @throws Nothing. */
 void TestDeleteRequiresRootForFilesAndMedia() {
   g_autofree gchar* original_directory = g_get_current_dir();
@@ -229,7 +229,7 @@ ValuePtr MediaMutation(const char* type, const std::filesystem::path& path,
 }
 
 /** Purpose: Make filtered media update and delete affect their real files.
- * @returns Nothing.
+ * @param None. @returns Nothing.
  * @throws Nothing. */
 void TestMediaMutationUsesPortableRecordPath() {
   g_autofree gchar* temporary =

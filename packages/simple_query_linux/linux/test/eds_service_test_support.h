@@ -15,7 +15,7 @@ std::atomic<bool> g_eds_manager_call_blocked{false};
 
 /**
  * Purpose: Build an empty ObjectManager result for transport-bound tests.
- * @returns A newly owned GetManagedObjects reply.
+ * @param None. @returns A newly owned GetManagedObjects reply.
  * @throws Nothing.
  */
 GVariant* EmptyManagedObjectsReply() {

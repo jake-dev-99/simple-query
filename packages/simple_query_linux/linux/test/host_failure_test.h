@@ -1,7 +1,7 @@
 #pragma once
 
 /** Purpose: Verify dangling-link failures become stable HostApi errors.
- * @returns Nothing. @throws Nothing. */
+ * @param None. @returns Nothing. @throws Nothing. */
 void TestDanglingSymlinkReturnsUnavailable() {
   g_autofree gchar* temporary = g_dir_make_tmp("simple-query-test-XXXXXX",
                                                nullptr);
@@ -40,7 +40,7 @@ void TestDanglingSymlinkReturnsUnavailable() {
 
 /**
  * Purpose: Prove failed native thread startup rolls back observer ownership.
- * @returns Nothing.
+ * @param None. @returns Nothing.
  * @throws Nothing.
  */
 void TestObserverThreadStartupRollback() {
@@ -74,7 +74,7 @@ void TestObserverThreadStartupRollback() {
 
 /**
  * Purpose: Reject an unreadable binary without publishing a native handle.
- * @returns Nothing.
+ * @param None. @returns Nothing.
  * @throws Nothing.
  */
 void TestUnreadableBinaryReturnsUnavailable() {
@@ -125,7 +125,7 @@ void TestUnreadableBinaryReturnsUnavailable() {
 }
 
 /** Purpose: Reject an observer whose initial snapshot cannot be read.
- * @returns Nothing.
+ * @param None. @returns Nothing.
  * @throws Nothing. */
 void TestObserverInitialSnapshotFailureReturnsError() {
   if (geteuid() == 0) {

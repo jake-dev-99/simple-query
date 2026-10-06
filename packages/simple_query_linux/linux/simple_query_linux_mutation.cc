@@ -200,7 +200,11 @@ ValueResult DeleteMutation(NativeQueryHostApiImpl* host,
   return AffectedMutation(deleted);
 }
 
-/** Purpose: Carry resolved update targets or their query failure. */
+/** Purpose: Preserve path-selection failures before destructive writes begin.
+ * @param values owns the ordered, deduplicated canonical target paths.
+ * @param error retains a failed target-selection query.
+ * @returns Resolved mutation targets or their native error.
+ * @throws std::bad_alloc when paths or diagnostics are allocated. */
 struct MutationPaths {
   std::set<std::string> values;
   std::optional<NativeError> error;
@@ -240,7 +244,12 @@ MutationPaths ResolveMutationPaths(NativeQueryHostApiImpl* host,
   return result;
 }
 
-/** Purpose: Carry one validated update path and any rename outcome. */
+/** Purpose: Track validation and rename outcomes before content replacement.
+ * @param value holds the effective target path after any rename.
+ * @param exists and changed distinguish missing targets from completed renames.
+ * @param error retains filesystem validation or rename failure.
+ * @returns An owned prepared target for subsequent content mutation.
+ * @throws std::bad_alloc when paths or diagnostics are allocated. */
 struct PreparedPath {
   std::filesystem::path value;
   bool exists = true;
@@ -295,7 +304,10 @@ PreparedPath PrepareUpdatePath(const std::string& original_path,
 }
 
 /** Purpose: Carry one content-write outcome without throwing filesystem errors.
- */
+ * @param changed distinguishes a completed write from an untouched target.
+ * @param error preserves invalid content or filesystem failure.
+ * @returns An explicit write outcome for affected-record accounting.
+ * @throws std::bad_alloc when an error diagnostic is allocated. */
 struct ContentUpdate {
   bool changed = false;
   std::optional<NativeError> error;

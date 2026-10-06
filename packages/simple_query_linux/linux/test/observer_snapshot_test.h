@@ -18,7 +18,7 @@ void CaptureObserverSnapshotWarning(const gchar* domain, GLogLevelFlags level,
 }
 
 /** Purpose: Prove an in-place media rewrite changes the observer snapshot.
- * @returns Nothing.
+ * @param None. @returns Nothing.
  * @throws Nothing. */
 void TestMediaObserverDetectsInPlaceUpdate() {
   g_autoptr(GMainContext) context = g_main_context_new();
@@ -67,7 +67,7 @@ void TestMediaObserverDetectsInPlaceUpdate() {
 }
 
 /** Purpose: Recover observation after a transient filesystem access failure.
- * @returns Nothing.
+ * @param None. @returns Nothing.
  * @throws Nothing. */
 void TestObserverRecoversAfterSnapshotFailure() {
   if (geteuid() == 0) {

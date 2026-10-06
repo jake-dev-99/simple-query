@@ -42,7 +42,7 @@ ValuePtr CopyValueForWorker(FlValue* value, std::string* error_message) {
 
 /**
  * Purpose: Encode observation time in the ISO-8601 UTC format Dart requires.
- * @returns A timestamp with fixed millisecond precision and a literal Z suffix.
+ * @param None. @returns A timestamp with fixed millisecond precision and a literal Z suffix.
  * @throws std::bad_alloc if the returned string cannot be allocated.
  */
 std::string IsoUtcTimestamp() {
@@ -72,6 +72,10 @@ ValuePtr ChangedIds(const Snapshot& previous, const Snapshot& current) {
   return ids;
 }
 
+/** Purpose: Release worker cancellation tokens through their GLib ownership API.
+ * @param cancellable is supplied when an owned token leaves scope.
+ * @returns A stateless deletion policy for CancellablePtr.
+ * @throws Nothing. */
 struct CancellableDeleter {
   /** Purpose: Release an exclusively owned GLib cancellation token.
    * @param cancellable is the nullable token leaving scope.
@@ -85,6 +89,10 @@ struct CancellableDeleter {
 
 using CancellablePtr = std::unique_ptr<GCancellable, CancellableDeleter>;
 
+/** Purpose: Balance a queued source reference even when delivery is cancelled.
+ * @param source is supplied when an owned source leaves scope.
+ * @returns A stateless deletion policy for SourcePtr.
+ * @throws Nothing. */
 struct SourceDeleter {
   /** Purpose: Release an exclusively owned GLib source reference.
    * @param source is the nullable source leaving scope.
@@ -98,7 +106,11 @@ struct SourceDeleter {
 
 using SourcePtr = std::unique_ptr<GSource, SourceDeleter>;
 
-/** Purpose: Own platform-affine observer resources independently of the host. */
+/** Purpose: Keep worker resources alive without retaining the plugin host.
+ * @param api supplies retained Flutter transport for asynchronous delivery.
+ * @param context supplies the platform context required for final teardown.
+ * @returns Shared cancellation, delivery, and platform-affine ownership state.
+ * @throws Nothing during construction; shared allocation occurs in the factory. */
 struct ObserverState {
   /**
    * Purpose: Retain transport resources on the platform thread.
@@ -113,9 +125,9 @@ struct ObserverState {
         platform_context(g_main_context_ref(context)),
         platform_thread(g_thread_self()) {}
 
-  /**
+/**
    * Purpose: Release platform-affine references after all worker work ends.
-   * @returns Nothing.
+   * @param None. @returns Nothing.
    * @throws Nothing.
    */
   ~ObserverState() {
@@ -159,7 +171,10 @@ gboolean DeleteObserverStateOnPlatform(gpointer user_data) {
   return G_SOURCE_REMOVE;
 }
 
-/** Purpose: Marshal final state deletion back to the platform context. */
+/** Purpose: Prevent the last worker owner from destroying platform resources.
+ * @param state is supplied when the last shared observer owner leaves scope.
+ * @returns A deletion policy that marshals teardown to the captured context.
+ * @throws Nothing. */
 struct ObserverStateDeleter {
   /**
    * Purpose: Prevent final Flutter or GLib object teardown on a worker thread.
@@ -196,7 +211,13 @@ std::shared_ptr<ObserverState> MakeObserverState(
                                         ObserverStateDeleter());
 }
 
-/** Purpose: Own immutable polling work after successful GThread creation. */
+/** Purpose: Transfer polling inputs into a worker without borrowing host state.
+ * @param observer_id and domain identify the observer and acquisition source.
+ * @param request owns its worker-exclusive decoded query payload.
+ * @param interval_ms and previous supply cadence and the validated baseline.
+ * @param state retains independently cancellable transport ownership.
+ * @returns Move-only inputs owned by the detached worker after startup.
+ * @throws std::bad_alloc when owned identifiers or snapshots are allocated. */
 struct NativeQueryHostApiImpl::ObserverWork {
   std::string observer_id;
   std::string domain;
@@ -219,7 +240,7 @@ NativeQueryHostApiImpl::NativeQueryHostApiImpl(FlBinaryMessenger* messenger)
 
 /**
  * Purpose: Stop workers, cancel deliveries, and release platform resources.
- * @returns Nothing.
+ * @param None. @returns Nothing.
  * @throws Nothing.
  */
 NativeQueryHostApiImpl::~NativeQueryHostApiImpl() {
@@ -307,14 +328,24 @@ std::optional<NativeError> NativeQueryHostApiImpl::ObserveStop(
   return std::nullopt;
 }
 
-/** Purpose: Own the state needed to finish one asynchronous FlutterApi send. */
+/** Purpose: Keep transport completion independent of plugin-host lifetime.
+ * @param state retains cancellation and platform-affine resources until finish.
+ * @param observer_id identifies delivery failures in diagnostics.
+ * @returns Completion context transferred to exactly one asynchronous send.
+ * @throws std::bad_alloc when the diagnostic identifier is allocated. */
 struct NativeQueryHostApiImpl::ObserveCompletion {
   std::shared_ptr<ObserverState> state;
   std::string observer_id;
 };
 
 /** Purpose: Own one platform-context source, event, and preallocated callback.
- */
+ * @param state and observer_id retain ownership and identify event delivery.
+ * @param event owns the worker-produced payload until platform dispatch.
+ * @param source identifies the queued source cancelled during observer stop.
+ * @param completion owns the preallocated asynchronous finish context.
+ * @param started distinguishes dispatch from destruction before dispatch.
+ * @returns Move-only delivery context owned by one queued GLib source.
+ * @throws std::bad_alloc when the diagnostic identifier is allocated. */
 struct NativeQueryHostApiImpl::ObserveDelivery {
   std::shared_ptr<ObserverState> state;
   std::string observer_id;
@@ -555,7 +586,7 @@ void NativeQueryHostApiImpl::StopObserver(
 
 /**
  * Purpose: Apply StopObserver to every observer during plugin disposal.
- * @returns Nothing.
+ * @param None. @returns Nothing.
  * @throws Nothing.
  */
 void NativeQueryHostApiImpl::ShutdownObservers() {

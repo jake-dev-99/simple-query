@@ -24,7 +24,7 @@ gpointer g_observed_cancellable = nullptr;
 extern "C" GCancellable* __real_g_cancellable_new();
 
 /** Purpose: Expose cancellable lifetime through a GLib weak pointer.
- * @returns A newly owned cancellable. @throws Nothing. */
+ * @param None. @returns A newly owned cancellable. @throws Nothing. */
 extern "C" GCancellable* __wrap_g_cancellable_new() {
   auto* cancellable = __real_g_cancellable_new();
   g_observed_cancellable = cancellable;
@@ -47,17 +47,31 @@ enum class SendMode {
   kHoldUntilCancelled,
 };
 
+/** Purpose: Exercise real channel registration and destruction ownership.
+ * @param callback handles incoming messages with the production signature.
+ * @param user_data and destroy_notify preserve callback context ownership.
+ * @returns A registration owned by the fake messenger's handler table.
+ * @throws Nothing; allocation uses GLib. */
 struct Handler {
   FlBinaryMessengerMessageHandler callback;
   gpointer user_data;
   GDestroyNotify destroy_notify;
 };
 
+/** Purpose: Capture encoded host replies without bypassing the real codec.
+ * @param parent_instance supplies the Flutter response-handle base.
+ * @param response owns captured bytes until response-handle disposal.
+ * @returns A native response handle usable by production callbacks.
+ * @throws Nothing; allocation uses GLib. */
 struct _TestResponseHandle {
   FlBinaryMessengerResponseHandle parent_instance;
   GBytes* response;
 };
 
+/** Purpose: Install response cleanup through ordinary GLib class lifecycle.
+ * @param parent_class supplies the Flutter response-handle class base.
+ * @returns Class metadata for the test response-handle type.
+ * @throws Nothing. */
 struct _TestResponseHandleClass {
   FlBinaryMessengerResponseHandleClass parent_class;
 };
@@ -91,6 +105,13 @@ void test_response_handle_init(TestResponseHandle* self) {
   self->response = nullptr;
 }
 
+/** Purpose: Prove real registrar, transport, and completion ownership behavior.
+ * @param parent_instance and handlers provide GLib lifetime and registrations.
+ * @param outgoing_response and last_outgoing_message retain codec fixtures.
+ * @param send_mode and send_thread control replies and record dispatch affinity.
+ * @param send_count, finish_count, and cancellation_count audit lifecycle balance.
+ * @returns A messenger and registrar fixture implementing public Flutter APIs.
+ * @throws Nothing; allocation uses GLib. */
 struct _TestBinaryMessenger {
   GObject parent_instance;
   GHashTable* handlers;
@@ -103,6 +124,10 @@ struct _TestBinaryMessenger {
   gint cancellation_count;
 };
 
+/** Purpose: Release transport fixtures through the normal GLib disposal path.
+ * @param parent_class supplies the GLib object-class base.
+ * @returns Class metadata for the fake messenger and registrar type.
+ * @throws Nothing. */
 struct _TestBinaryMessengerClass {
   GObjectClass parent_class;
 };
@@ -175,6 +200,10 @@ gboolean test_send_response(FlBinaryMessenger* messenger,
   return TRUE;
 }
 
+/** Purpose: Keep asynchronous reply ownership alive until completion.
+ * @param task owns the pending reply and its source-object reference.
+ * @returns A context transferred to one idle or cancellation callback.
+ * @throws Nothing; allocation uses GLib. */
 struct PendingSend {
   GTask* task;
 };
@@ -359,7 +388,7 @@ void test_binary_messenger_init(TestBinaryMessenger* self) {
 }
 
 /** Purpose: Create transport that exercises Flutter's real channels.
- * @returns A newly owned fake messenger. @throws Nothing. */
+ * @param None. @returns A newly owned fake messenger. @throws Nothing. */
 TestBinaryMessenger* NewMessenger() {
   return TEST_BINARY_MESSENGER(
       g_object_new(TEST_TYPE_BINARY_MESSENGER, nullptr));
@@ -524,7 +553,7 @@ std::string ResponseErrorMessage(FlValue* response) {
 
 /**
  * Purpose: Prove an unreadable query root is an error, never empty data.
- * @returns Nothing.
+ * @param None. @returns Nothing.
  * @throws Nothing.
  */
 void TestUnreadableRootReturnsUnavailable() {
@@ -558,7 +587,7 @@ void TestUnreadableRootReturnsUnavailable() {
 
 /**
  * Purpose: Prove update and delete permission failures are never false success.
- * @returns Nothing.
+ * @param None. @returns Nothing.
  * @throws Nothing.
  */
 void TestMutationFilesystemErrorsReturnUnavailable() {
@@ -617,7 +646,7 @@ void TestMutationFilesystemErrorsReturnUnavailable() {
 }
 
 /** Purpose: Prove unexpected filesystem exceptions become HostApi errors.
- * @returns Nothing. @throws Nothing. */
+ * @param None. @returns Nothing. @throws Nothing. */
 void TestHostExceptionBoundaryReturnsUnavailable() {
   g_autofree gchar* original_directory = g_get_current_dir();
   g_autofree gchar* temporary = g_dir_make_tmp("simple-query-cwd-XXXXXX",
@@ -699,7 +728,7 @@ void TestHostExceptionBoundaryReturnsUnavailable() {
 }
 
 /** Purpose: Exercise query, mutate, batch, and extension channels and codecs.
- * @returns Nothing. @throws Nothing. */
+ * @param None. @returns Nothing. @throws Nothing. */
 void TestFilesystemAndExtensionBoundaries() {
   g_autofree gchar* temporary = g_dir_make_tmp("simple-query-test-XXXXXX",
                                                nullptr);
@@ -781,7 +810,7 @@ void TestFilesystemAndExtensionBoundaries() {
 }
 
 /** Purpose: Prove observer sends use the platform context and always finish.
- * @returns Nothing. @throws Nothing. */
+ * @param None. @returns Nothing. @throws Nothing. */
 void TestObserverDispatchesOnPlatformContext() {
   g_autoptr(GMainContext) context = g_main_context_new();
   g_main_context_push_thread_default(context);
@@ -834,7 +863,7 @@ void TestObserverDispatchesOnPlatformContext() {
 }
 
 /** Purpose: Verify stopping an observer destroys queued platform sources.
- * @returns Nothing. @throws Nothing. */
+ * @param None. @returns Nothing. @throws Nothing. */
 void TestObserverStopDropsQueuedDelivery() {
   g_autoptr(GMainContext) context = g_main_context_new();
   g_main_context_push_thread_default(context);
