@@ -189,6 +189,22 @@ String _patchFlutterApiTransport(String source) {
   return _patchFlutterApiFinish(patched);
 }
 
+/// Purpose: Document every generated GObject structure at its shared template.
+///
+/// @param source is the pinned GObject generator source.
+/// @returns Source whose generated structures carry lifecycle documentation.
+/// @throws StateError when the pinned generator source has drifted.
+String _patchStructureDocumentation(String source) {
+  return _replaceExactlyOnce(
+    source,
+    r'''  indent.writeScoped('struct _$className {', '};', () {''',
+    r'''  indent.writeln(
+      '/** Purpose: Store generated $name state across its GObject lifecycle. @param parent_instance anchors the state in $parentClassName. @returns Instances retain generated channel data until disposal. @throws Nothing. */');
+  indent.writeScoped('struct _$className {', '};', () {''',
+    'generated GObject structure documentation',
+  );
+}
+
 /// Purpose: Document generated GObject lifecycle definitions.
 ///
 /// @param source is the pinned GObject generator source.
@@ -258,10 +274,52 @@ String _patchCodecDocumentation(String source) {
     r'''    indent.writeScoped(
         'static $codecClassName* ${codecMethodPrefix}_new() {', '}', () {''',
     r'''    indent.writeln(
-        '/** Purpose: Create the generated channel codec. @returns A newly owned codec. @throws Nothing. */');
+        '/** Purpose: Create the generated channel codec. @param None. @returns A newly owned codec. @throws Nothing. */');
     indent.writeScoped(
         'static $codecClassName* ${codecMethodPrefix}_new() {', '}', () {''',
     'generated codec constructor documentation',
+  );
+}
+
+/// Purpose: Document generated HostApi success and error response constructors.
+///
+/// @param source is the pinned GObject generator source.
+/// @returns Source whose host response constructors state ownership contracts.
+/// @throws StateError when the pinned generator source has drifted.
+String _patchHostResponseDocumentation(String source) {
+  final patched = _replaceExactlyOnce(
+    source,
+    r'''      indent.writeScoped(
+          "${method.isAsynchronous ? 'static ' : ''}$responseClassName* ${responseMethodPrefix}_new(${constructorArgs.join(', ')}) {",''',
+    r'''      indent.writeln('/**');
+      indent.writeln(
+          ' * Purpose: Build a successful generated $responseName host response.');
+      if (constructorArgs.isEmpty) {
+        indent.writeln(' * @param None.');
+      } else {
+        indent.writeln(
+            ' * @param return_value is encoded into the successful response.');
+        if (_isNumericListType(method.returnType)) {
+          indent.writeln(
+              ' * @param return_value_length bounds the numeric list.');
+        }
+      }
+      indent.writeln(' * @returns A newly owned $responseClassName.');
+      indent.writeln(' * @throws Nothing.');
+      indent.writeln(' */');
+      indent.writeScoped(
+          "${method.isAsynchronous ? 'static ' : ''}$responseClassName* ${responseMethodPrefix}_new(${constructorArgs.join(', ')}) {",''',
+    'generated HostApi success constructor documentation',
+  );
+  return _replaceExactlyOnce(
+    patched,
+    r'''      indent.writeScoped(
+          '${method.isAsynchronous ? 'static ' : ''}$responseClassName* ${responseMethodPrefix}_new_error(const gchar* code, const gchar* message, FlValue* details) {',''',
+    r'''      indent.writeln(
+          '/** Purpose: Build a generated $responseName host error. @param code identifies the stable error. @param message explains the failure. @param details carries optional structured context. @returns A newly owned $responseClassName. @throws Nothing. */');
+      indent.writeScoped(
+          '${method.isAsynchronous ? 'static ' : ''}$responseClassName* ${responseMethodPrefix}_new_error(const gchar* code, const gchar* message, FlValue* details) {',''',
+    'generated HostApi error constructor documentation',
   );
 }
 
@@ -283,6 +341,200 @@ String _patchHostCallbackDocumentation(String source) {
   );
 }
 
+/// Purpose: Document generated HostApi state and channel registration helpers.
+///
+/// @param source is the pinned GObject generator source.
+/// @returns Source whose HostApi setup functions declare ownership and errors.
+/// @throws StateError when the pinned generator source has drifted.
+String _patchHostSetupDocumentation(String source) {
+  var patched = _replaceExactlyOnce(
+    source,
+    r'''    indent.writeScoped(
+        'static $className* ${methodPrefix}_new(const $vtableName* vtable, gpointer user_data, GDestroyNotify user_data_free_func) {',''',
+    r'''    indent.writeln(
+        '/** Purpose: Bind generated HostApi callbacks to their owned context. @param vtable dispatches host methods. @param user_data is passed to callbacks. @param user_data_free_func releases callback context. @returns A newly owned $className. @throws Nothing. */');
+    indent.writeScoped(
+        'static $className* ${methodPrefix}_new(const $vtableName* vtable, gpointer user_data, GDestroyNotify user_data_free_func) {',''',
+    'generated HostApi state constructor documentation',
+  );
+  patched = _replaceExactlyOnce(
+    patched,
+    r'''    indent.writeScoped(
+        'void ${methodPrefix}_set_method_handlers(FlBinaryMessenger* messenger, const gchar* suffix, const $vtableName* vtable, gpointer user_data, GDestroyNotify user_data_free_func) {',''',
+    r'''    indent.writeln(
+        '/** Purpose: Register every generated HostApi channel handler. @param messenger owns channel registrations. @param suffix scopes channel names. @param vtable dispatches host methods. @param user_data is passed to callbacks. @param user_data_free_func releases callback context. @returns Nothing. @throws Nothing. */');
+    indent.writeScoped(
+        'void ${methodPrefix}_set_method_handlers(FlBinaryMessenger* messenger, const gchar* suffix, const $vtableName* vtable, gpointer user_data, GDestroyNotify user_data_free_func) {',''',
+    'generated HostApi handler registration documentation',
+  );
+  return _replaceExactlyOnce(
+    patched,
+    r'''    indent.writeScoped(
+        'void ${methodPrefix}_clear_method_handlers(FlBinaryMessenger* messenger, const gchar* suffix) {',''',
+    r'''    indent.writeln(
+        '/** Purpose: Remove every generated HostApi channel handler. @param messenger owns channel registrations. @param suffix scopes channel names. @returns Nothing. @throws Nothing. */');
+    indent.writeScoped(
+        'void ${methodPrefix}_clear_method_handlers(FlBinaryMessenger* messenger, const gchar* suffix) {',''',
+    'generated HostApi handler cleanup documentation',
+  );
+}
+
+/// Purpose: Document generated FlutterApi and response object constructors.
+///
+/// @param source is the pinned GObject generator source.
+/// @returns Source whose FlutterApi constructors state ownership contracts.
+/// @throws StateError when the pinned generator source has drifted.
+String _patchFlutterObjectDocumentation(String source) {
+  final patched = _replaceExactlyOnce(
+    source,
+    r'''    indent.writeScoped(
+        '$className* ${methodPrefix}_new(FlBinaryMessenger* messenger, const gchar* suffix) {',''',
+    r'''    indent.writeln(
+        '/** Purpose: Create a generated FlutterApi transport client. @param messenger carries generated calls. @param suffix scopes channel names. @returns A newly owned $className. @throws Nothing. */');
+    indent.writeScoped(
+        '$className* ${methodPrefix}_new(FlBinaryMessenger* messenger, const gchar* suffix) {',''',
+    'generated FlutterApi constructor documentation',
+  );
+  return _replaceExactlyOnce(
+    patched,
+    r'''      indent.writeScoped(
+          'static $responseClassName* ${responseMethodPrefix}_new(FlValue* response) {',''',
+    r'''      indent.writeln(
+          '/** Purpose: Decode one generated FlutterApi response envelope. @param response contains the returned value or error. @returns A newly owned $responseClassName. @throws Nothing. */');
+      indent.writeScoped(
+          'static $responseClassName* ${responseMethodPrefix}_new(FlValue* response) {',''',
+    'generated FlutterApi response constructor documentation',
+  );
+}
+
+/// Purpose: Document generated FlutterApi response inspection functions.
+///
+/// @param source is the pinned GObject generator source.
+/// @returns Source whose response accessors declare values and preconditions.
+/// @throws StateError when the pinned generator source has drifted.
+String _patchFlutterAccessorDocumentation(String source) {
+  var patched = _replaceExactlyOnce(
+    source,
+    r'''      indent.writeScoped(
+          'gboolean ${responseMethodPrefix}_is_error($responseClassName* self) {',''',
+    r'''      indent.writeln(
+          '/** Purpose: Report whether a generated FlutterApi response is an error. @param self is the decoded response. @returns TRUE for an error envelope. @throws Nothing. */');
+      indent.writeScoped(
+          'gboolean ${responseMethodPrefix}_is_error($responseClassName* self) {',''',
+    'generated FlutterApi error predicate documentation',
+  );
+  patched = _replaceExactlyOnce(
+    patched,
+    r'''      indent.writeScoped(
+          'const gchar* ${responseMethodPrefix}_get_error_code($responseClassName* self) {',''',
+    r'''      indent.writeln(
+          '/** Purpose: Read the stable code from a generated FlutterApi error. @param self is an error response. @returns A borrowed error code. @throws Nothing; self must contain an error. */');
+      indent.writeScoped(
+          'const gchar* ${responseMethodPrefix}_get_error_code($responseClassName* self) {',''',
+    'generated FlutterApi error code documentation',
+  );
+  patched = _replaceExactlyOnce(
+    patched,
+    r'''      indent.writeScoped(
+          'const gchar* ${responseMethodPrefix}_get_error_message($responseClassName* self) {',''',
+    r'''      indent.writeln(
+          '/** Purpose: Read the message from a generated FlutterApi error. @param self is an error response. @returns A borrowed error message. @throws Nothing; self must contain an error. */');
+      indent.writeScoped(
+          'const gchar* ${responseMethodPrefix}_get_error_message($responseClassName* self) {',''',
+    'generated FlutterApi error message documentation',
+  );
+  return _replaceExactlyOnce(
+    patched,
+    r'''      indent.writeScoped(
+          'FlValue* ${responseMethodPrefix}_get_error_details($responseClassName* self) {',''',
+    r'''      indent.writeln(
+          '/** Purpose: Read structured details from a generated FlutterApi error. @param self is an error response. @returns Borrowed error details. @throws Nothing; self must contain an error. */');
+      indent.writeScoped(
+          'FlValue* ${responseMethodPrefix}_get_error_details($responseClassName* self) {',''',
+    'generated FlutterApi error details documentation',
+  );
+}
+
+/// Purpose: Document optional generated FlutterApi success-value accessors.
+///
+/// @param source is the pinned GObject generator source.
+/// @returns Source whose return-value accessors document every output argument.
+/// @throws StateError when the pinned generator source has drifted.
+String _patchFlutterReturnDocumentation(String source) {
+  return _replaceExactlyOnce(
+    source,
+    r'''        indent.writeScoped(
+            '$returnType ${responseMethodPrefix}_get_return_value($responseClassName* self${_isNumericListType(method.returnType) ? ', size_t* return_value_length' : ''}) {',''',
+    r'''        indent.writeln('/**');
+        indent.writeln(
+            ' * Purpose: Read the successful value from a generated FlutterApi response.');
+        indent.writeln(' * @param self is a successful response.');
+        if (_isNumericListType(method.returnType)) {
+          indent.writeln(
+              ' * @param return_value_length receives the numeric list length.');
+        }
+        indent.writeln(' * @returns The borrowed or primitive return value.');
+        indent.writeln(
+            ' * @throws Nothing; self must contain a successful response.');
+        indent.writeln(' */');
+        indent.writeScoped(
+            '$returnType ${responseMethodPrefix}_get_return_value($responseClassName* self${_isNumericListType(method.returnType) ? ', size_t* return_value_length' : ''}) {',''',
+    'generated FlutterApi return value documentation',
+  );
+}
+
+/// Purpose: Document generated FlutterApi asynchronous send and finish entrypoints.
+///
+/// @param source is the pinned GObject generator source.
+/// @returns Source whose asynchronous methods document all callback contracts.
+/// @throws StateError when the pinned generator source has drifted.
+String _patchFlutterMethodDocumentation(String source) {
+  final patched = _replaceExactlyOnce(
+    source,
+    r'''      indent.newln();
+      indent.writeScoped(
+          "void ${methodPrefix}_$methodName(${asyncArgs.join(', ')}) {", '}',
+          () {''',
+    r'''      indent.newln();
+      indent.writeln('/**');
+      indent.writeln(
+          ' * Purpose: Send one generated ${api.name}.${method.name} call to Flutter.');
+      indent.writeln(' * @param self owns the FlutterApi transport.');
+      for (final Parameter param in method.parameters) {
+        final String name = _snakeCaseFromCamelCase(param.name);
+        indent.writeln(' * @param $name carries ${param.name}.');
+        if (_isNumericListType(param.type)) {
+          indent.writeln(' * @param ${name}_length bounds $name.');
+        }
+      }
+      indent.writeln(' * @param cancellable controls the transport operation.');
+      indent.writeln(' * @param callback receives the asynchronous result.');
+      indent.writeln(' * @param user_data is passed to callback.');
+      indent.writeln(' * @returns Nothing.');
+      indent.writeln(
+          ' * @throws Nothing; transport errors complete callback.');
+      indent.writeln(' */');
+      indent.writeScoped(
+          "void ${methodPrefix}_$methodName(${asyncArgs.join(', ')}) {", '}',
+          () {''',
+    'generated FlutterApi send documentation',
+  );
+  return _replaceExactlyOnce(
+    patched,
+    r'''      indent.newln();
+      indent.writeScoped(
+          "$responseClassName* ${methodPrefix}_${methodName}_finish(${finishArgs.join(', ')}) {",
+          '}', () {''',
+    r'''      indent.newln();
+      indent.writeln(
+          '/** Purpose: Finish one generated ${api.name}.${method.name} call. @param self owns the FlutterApi transport. @param result is the completed forwarding task. @param error receives transport or codec failure. @returns A newly owned response or null. @throws Nothing. */');
+      indent.writeScoped(
+          "$responseClassName* ${methodPrefix}_${methodName}_finish(${finishArgs.join(', ')}) {",
+          '}', () {''',
+    'generated FlutterApi finish documentation',
+  );
+}
+
 /// Purpose: Correct the isolated pinned generator before binding emission.
 ///
 /// @param generatorFile is the copied gobject_generator.dart source.
@@ -291,9 +543,16 @@ String _patchHostCallbackDocumentation(String source) {
 Future<void> _patchGenerator(File generatorFile) async {
   var source = await generatorFile.readAsString();
   source = _patchFlutterApiTransport(source);
+  source = _patchStructureDocumentation(source);
   source = _patchLifecycleDocumentation(source);
   source = _patchCodecDocumentation(source);
+  source = _patchHostResponseDocumentation(source);
   source = _patchHostCallbackDocumentation(source);
+  source = _patchHostSetupDocumentation(source);
+  source = _patchFlutterObjectDocumentation(source);
+  source = _patchFlutterAccessorDocumentation(source);
+  source = _patchFlutterReturnDocumentation(source);
+  source = _patchFlutterMethodDocumentation(source);
   await generatorFile.writeAsString(source);
 }
 

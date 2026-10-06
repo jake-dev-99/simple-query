@@ -2,6 +2,8 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
+import 'generated_documentation_contract.dart';
+
 /// Purpose: Capture generated-output existence and bytes before regeneration.
 ///
 /// @param files lists every checkout artifact guarded by the test.
@@ -76,6 +78,7 @@ Future<void> _expectNativeSourceWiring(Directory packageDirectory) async {
 
 /// Purpose: Register deterministic Linux Pigeon generation verification.
 ///
+/// @param None.
 /// @returns Nothing.
 /// @throws Nothing directly; the registered test reports failures.
 void main() {
@@ -127,6 +130,11 @@ void main() {
       '${outputDirectory.path}/linux/native_query.g.cc',
     ).readAsString();
     final linuxSources = '$header\n$source';
+    expect(
+      expectGeneratedDocumentation(source),
+      (functions: 80, structures: 13),
+      reason: 'Generated definition inventory changed; audit every new entry.',
+    );
 
     expect(header, contains('#include <flutter_linux/flutter_linux.h>'));
     expect(
