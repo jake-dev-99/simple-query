@@ -1054,6 +1054,23 @@ ValuePtr ChangedIds(const Snapshot& previous, const Snapshot& current) {
   return ids;
 }
 
+struct CancellableDeleter {
+  /** Purpose: Release an exclusively owned GLib cancellation token.
+   * @param cancellable is the nullable token leaving scope.
+   * @returns Nothing. @throws Nothing. */
+  void operator()(GCancellable* cancellable) const {
+    if (cancellable != nullptr) {
+      g_object_unref(cancellable);
+    }
+  }
+};
+
+using CancellablePtr = std::unique_ptr<GCancellable, CancellableDeleter>;
+
+/** Purpose: Own one observer's worker, cancellation, and queued deliveries.
+ * Ownership: The registry and asynchronous deliveries share this state; its
+ * cancellable is released automatically if startup never reaches the registry.
+ */
 struct ObserverState {
   std::atomic<bool> active{true};
   std::atomic<bool> delivery_pending{false};
@@ -1062,7 +1079,7 @@ struct ObserverState {
   std::mutex wakeup_mutex;
   std::mutex sources_mutex;
   std::set<GSource*> pending_sources;
-  GCancellable* cancellable = nullptr;
+  CancellablePtr cancellable;
 };
 
 struct NativeError {
@@ -1631,20 +1648,30 @@ class NativeQueryHostApiImpl {
     if (request_copy == nullptr) {
       return StringResult{"", NativeError{"unavailable", copy_error}};
     }
+    StringResult response{observer_id, std::nullopt};
     auto state = std::make_shared<ObserverState>();
-    state->cancellable = g_cancellable_new();
+    state->cancellable.reset(g_cancellable_new());
     {
       std::lock_guard<std::mutex> lock(observers_mutex_);
-      observers_[observer_id] = state;
+      observers_.emplace(observer_id, state);
     }
 
-    state->worker = std::thread(
-        [this, observer_id, domain, request = std::move(request_copy),
-         interval_ms, state]() mutable {
-          RunObserver(observer_id, domain, std::move(request), interval_ms,
-                      state);
-        });
-    return StringResult{observer_id, std::nullopt};
+    try {
+      state->worker = std::thread(
+          [this, observer_id, domain, request = std::move(request_copy),
+           interval_ms, state]() mutable {
+            RunObserver(observer_id, domain, std::move(request), interval_ms,
+                        state);
+          });
+    } catch (...) {
+      {
+        std::lock_guard<std::mutex> lock(observers_mutex_);
+        observers_.erase(observer_id);
+      }
+      StopObserver(state);
+      throw;
+    }
+    return response;
   }
 
   /** Purpose: Stop and remove one observer without failing repeated cleanup.
@@ -1952,7 +1979,7 @@ class NativeQueryHostApiImpl {
                                               delivery->observer_id};
     sqlq_native_query_flutter_api_on_observe_event(
         delivery->host->flutter_api_, delivery->observer_id.c_str(),
-        delivery->event.get(), delivery->state->cancellable,
+        delivery->event.get(), delivery->state->cancellable.get(),
         FinishObserveDelivery, completion);
     return G_SOURCE_REMOVE;
   }
@@ -2075,8 +2102,8 @@ class NativeQueryHostApiImpl {
       state->pending_sources.clear();
     }
     if (state->cancellable != nullptr) {
-      g_cancellable_cancel(state->cancellable);
-      g_clear_object(&state->cancellable);
+      g_cancellable_cancel(state->cancellable.get());
+      state->cancellable.reset();
     }
   }
 

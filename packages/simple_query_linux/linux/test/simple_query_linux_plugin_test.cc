@@ -8,11 +8,26 @@
 #include <fstream>
 #include <functional>
 #include <string>
+#include <sys/resource.h>
 #include <thread>
 #include <unistd.h>
 
 #include "../native_query.g.cc"
+
+gpointer g_observed_cancellable = nullptr;
+
+/** Purpose: Expose cancellable lifetime through a GLib weak pointer.
+ * @returns A newly owned cancellable. @throws Nothing. */
+GCancellable* NewObservedCancellable() {
+  auto* cancellable = g_cancellable_new();
+  g_observed_cancellable = cancellable;
+  g_object_add_weak_pointer(G_OBJECT(cancellable), &g_observed_cancellable);
+  return cancellable;
+}
+
+#define g_cancellable_new NewObservedCancellable
 #include "../simple_query_linux_plugin.cc"
+#undef g_cancellable_new
 
 namespace {
 
@@ -475,44 +490,7 @@ std::string ResponseErrorMessage(FlValue* response) {
 }
 
 #include "generated_flutter_api_lifecycle_test.h"
-
-/** Purpose: Verify dangling-link failures become stable HostApi errors.
- * @returns Nothing. @throws Nothing. */
-void TestDanglingSymlinkReturnsUnavailable() {
-  g_autofree gchar* temporary = g_dir_make_tmp("simple-query-test-XXXXXX",
-                                               nullptr);
-  g_assert_nonnull(temporary);
-  const std::filesystem::path root(temporary);
-  std::filesystem::create_symlink(root / "missing", root / "dangling");
-
-  g_autoptr(TestBinaryMessenger) messenger = NewMessenger();
-  InstallHost(messenger);
-  g_autoptr(FlValue) request = fl_value_new_map();
-  MapSetString(request, "domain", "files");
-  auto platform_data = Value(fl_value_new_map());
-  MapSetString(platform_data.get(), "rootPath", root.string());
-  MapSet(request, "platformData", platform_data.release());
-  g_autoptr(FlValue) arguments = RequestArguments(fl_value_ref(request));
-
-  bool threw = false;
-  FlValue* raw_response = nullptr;
-  try {
-    raw_response = InvokeHost(messenger, "query", arguments);
-  } catch (...) {
-    threw = true;
-  }
-  g_assert_false(threw);
-  g_autoptr(FlValue) response = raw_response;
-  g_assert_nonnull(response);
-  const std::string error_code = ResponseErrorCode(response);
-  const std::string error_message = ResponseErrorMessage(response);
-  g_assert_cmpstr(error_code.c_str(), ==, "unavailable");
-  g_assert_true(error_message.rfind("simple_query:", 0) == 0);
-
-  ClearHost(messenger);
-  std::error_code cleanup_error;
-  std::filesystem::remove_all(root, cleanup_error);
-}
+#include "host_failure_test.h"
 
 /**
  * Purpose: Prove an unreadable query root is an error, never empty data.
@@ -972,6 +950,8 @@ int main(int argc, char** argv) {
                   TestGeneratedNullCallbackCleanup);
   g_test_add_func("/simple_query/host/dangling_symlink",
                   TestDanglingSymlinkReturnsUnavailable);
+  g_test_add_func("/simple_query/host/observer_startup_rollback",
+                  TestObserverThreadStartupRollback);
   g_test_add_func("/simple_query/host/unreadable_root",
                   TestUnreadableRootReturnsUnavailable);
   g_test_add_func("/simple_query/host/mutation_filesystem_errors",
