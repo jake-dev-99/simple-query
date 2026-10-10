@@ -1,3 +1,29 @@
+## 0.2.3
+
+- fix(UNFY-123): validate the MMS query dependency release
+- fix(UNFY-270): validate observer identity and dependency contract
+- chore(release): reset versions to align with pub.dev (smallest iteration)
+- Update binary_content.dart
+- fix: address review feedback on PR #31 (staging→main)
+- chore: bring .gitignore to Flutter-template parity + untrack pubspec.lock files
+- chore(release): unblock pub publish — split path overrides into pubspec_overrides.yaml
+- test: propagate const→final flip across all affected packages
+- fix(facade): rename BinaryContent.forTesting → fromHandle
+- chore(release): coordinated 0.6.0 across all simple_query packages
+- docs+tool: CHANGELOG Unreleased discipline
+- docs(api): dartdoc completeness + singleton/thread-safety notes
+- chore(release): coordinated 0.5.0 across all simple_query packages
+- feat(builder): canonical-field validation + facade entry + paged execute
+- feat(facade): BinaryContent wrapper with self-closing lifecycle
+- feat(facade): add queryPaginated + queryPaginatedTyped stream helpers
+- chore(release): coordinated 0.4.0 across all simple_query packages
+- feat(permissions): inline check, drop simple_permissions dependency
+- feat(facade): add SimpleQuery.queryRaw for first-party content providers
+- release: 0.3.1 — coordinated bump + audit-driven cleanup (#20)
+- ci: address review feedback + unblock CI
+- feat(kotlin): ContentQuery helper for sibling plugins
+- chore: alphabetize imports + refresh lockfiles
+- Initial Push
 ## Unreleased
 
 - Require platform interface >=0.2.1 for field catalog and runtime validation (UNFY-123).
