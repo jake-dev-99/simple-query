@@ -1,3 +1,25 @@
+## 0.2.2
+
+- chore(release): reset versions to align with pub.dev (smallest iteration)
+- fix: address review feedback on PR #31 (staging→main)
+- chore: bring .gitignore to Flutter-template parity + untrack pubspec.lock files
+- fix/queryrequest-const
+- test: propagate const→final flip across all affected packages
+- fix(platform_interface): enforce query invariants at runtime, not in asserts
+- fix(models): use typed initializing formals in QueryPage.offset/cursor
+- chore(release): coordinated 0.6.0 across all simple_query packages
+- docs+tool: CHANGELOG Unreleased discipline
+- docs(api): dartdoc completeness + singleton/thread-safety notes
+- chore(release): coordinated 0.5.0 across all simple_query packages
+- feat(facade): add queryPaginated + queryPaginatedTyped stream helpers
+- chore(release): coordinated 0.4.0 across all simple_query packages
+- feat(shared): enforce canonical field vocabulary on non-Android platforms
+- feat(contracts): introduce QueryFieldCatalog + extend calls optional keys
+- feat(records): expose .raw and .extras on every typed record
+- release: 0.3.1 — coordinated bump + audit-driven cleanup (#20)
+- ci: address review feedback + unblock CI
+- feat(kotlin): ContentQuery helper for sibling plugins
+- Initial Push
 ## 0.2.1
 
 ### Reset to align with pub.dev's published series
