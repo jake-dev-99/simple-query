@@ -24,7 +24,7 @@ dependencies:
   # pub publish ignores). Path-source deps inside this block
   # would fail validation with "Don't depend on X from the
   # path source."
-  simple_query_platform_interface: ^0.2.0
+  simple_query_platform_interface: ^0.2.1
   simple_query_android: ^0.2.2
   simple_query_ios: ^0.2.0
   simple_query_macos: ^0.2.0

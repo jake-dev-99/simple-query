@@ -27,17 +27,30 @@ push**, not on the merge.
 1. Land your work on `main` via a PR. CI runs; merge.
 2. Dispatch [`release.yml`](../.github/workflows/release.yml) on `main`
    via the GitHub Actions UI (`workflow_dispatch`). It computes the
-   next version per changed package, updates `pubspec.yaml`, commits,
-   tags, and pushes.
-3. Each tag push fires [`deploy.yml`](../.github/workflows/deploy.yml)
-   for the matching package, which verifies the tag version matches
-   `pubspec.yaml` and runs `dart pub publish --force` via OIDC.
+   next version for each selected package and validates published dependencies without workspace overrides.
+   It then updates `pubspec.yaml` and CHANGELOG, commits, tags, and pushes.
+3. Each tag push fires [`deploy.yml`](../.github/workflows/deploy.yml) for the matching package.
+   It verifies ancestry and version, configures OIDC credentials, and runs `flutter pub publish --force` with normal validation.
 
-Most releases are patch bumps (auto-increment from the last tag). To
-ship a minor or major release, **bump the pubspec version explicitly**
-on the PR that lands the change — the release workflow respects an
-explicit bump and publishes at that version rather than
-patch-incrementing past it.
+Choose `patch`, `minor`, or `major` in the workflow input.
+The workflow increments the current pubspec version by that choice, including versions already changed in a PR.
+Use `dry_run=true` to inspect the candidate and validate published dependencies without pushing a commit or tag.
+
+### MMS dependency release order (UNFY-123)
+
+Android and the façade require `simple_query_platform_interface ^0.2.1` for `QueryFieldCatalog` and its runtime validation.
+Published interface `0.2.0` lacks that API.
+The façade also requires `simple_query_android ^0.2.2` for the native ContentQuery implementation consumed by simple-sms.
+
+Release these packages separately, waiting for each version to appear on pub.dev before cutting its dependent package:
+
+1. `simple_query_platform_interface`: patch from `0.2.1` to `0.2.2`.
+2. `simple_query_android`: patch from `0.2.2` to `0.2.3`.
+3. `simple_query`: patch from `0.2.2` to `0.2.3`.
+
+Do not select `all` while selected packages require unpublished dependencies.
+The cut stops before tagging when dependency resolution or analysis fails.
+Development overrides prove local compatibility; they do not prove the published dependency graph.
 
 ## CHANGELOG discipline
 
@@ -45,10 +58,9 @@ Every package's `CHANGELOG.md` starts with a `## Unreleased` section.
 Every PR that changes behaviour in that package appends bullets under
 it.
 
-On release (step 2 above), the cut-a-release flow replaces
-`## Unreleased` with `## <version>` for each package being published.
-`tool/publish.sh` validates that the target version has a matching
-`## <version>` heading before talking to pub.dev.
+The release workflow prepends a version heading and commit summaries scoped to the selected package.
+Review those summaries through the dry run before cutting.
+`tool/publish.sh` is a separate legacy workspace publisher; use the tag-driven workflow described here for this dependency release.
 
 After a release lands on `main`, the next PR re-seeds `## Unreleased`
 at the top of each published CHANGELOG.
@@ -83,8 +95,11 @@ configured:
    - **Tag pattern**: `<package>-v{{version}}`
 4. Save.
 
-Without this, `dart pub publish` from the workflow errors with
-`missing OIDC authorization` and the release fails cleanly.
+Without this configuration, publishing cannot authenticate with the package's GitHub binding.
+
+To retry an existing tag, dispatch Deploy on that tag ref, with the same tag input.
+For example: `gh workflow run deploy.yml --ref simple_query_android-v0.2.3 -f tag=simple_query_android-v0.2.3`.
+Keep the existing tag and version when retrying a failed publication.
 
 ## Why this shape
 

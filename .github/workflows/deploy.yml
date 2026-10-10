@@ -11,11 +11,8 @@ name: Deploy
 # deliberately cuts one. This eliminates the orphan-tag drift class
 # that plagued the previous auto-tag flow.
 #
-# Per-package matrix using subosito/flutter-action + flutter pub
-# publish --force --skip-validation. `--skip-validation` lets pub
-# publish work for Flutter packages (skips resolution which trips
-# on `sdk: flutter`); pub.dev's server still enforces version
-# monotonicity, ownership, and OIDC binding.
+# setup-dart configures temporary pub.dev OIDC credentials. Flutter then
+# supplies the Flutter SDK environment for normal dependency validation.
 
 on:
   push:
@@ -35,15 +32,8 @@ on:
   # `simple_query_android-v0.2.1`); the resolve step keys deploys
   # off that exact value.
   #
-  # Caveat: workflow_dispatch's OIDC token claims `ref` as the
-  # branch the workflow was launched from (typically `main`), not
-  # the tag. pub.dev's automated-publishing binding validates the
-  # `ref` claim against the configured tag pattern, so a manual
-  # re-fire MAY be rejected at the OIDC handshake even though the
-  # checkout step operates on the tag. If a re-fire fails with
-  # OAuth-fallback (interactive browser URL printed), the path
-  # forward is to delete + re-cut the tag via the "Cut Release"
-  # workflow rather than re-firing this manually.
+  # Dispatch a retry on the existing tag ref so the OIDC ref claim matches
+  # pub.dev's tag pattern. Keep the original tag and package version.
   workflow_dispatch:
     inputs:
       tag:
@@ -150,6 +140,10 @@ jobs:
             exit 1
           fi
 
+      - name: Configure pub.dev OIDC authentication
+        uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1
+        if: startsWith(needs.resolve-tag.outputs.tag, format('{0}-v', matrix.package.name))
+
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         if: startsWith(needs.resolve-tag.outputs.tag, format('{0}-v', matrix.package.name))
         with:
@@ -172,20 +166,14 @@ jobs:
       - name: Install dependencies
         if: startsWith(needs.resolve-tag.outputs.tag, format('{0}-v', matrix.package.name))
         working-directory: ${{ matrix.package.path }}
-        run: flutter pub get
+        run: |
+          find . -name pubspec_overrides.yaml -type f -delete
+          flutter pub get --no-example
 
       - name: Publish
-        # `dart pub publish` (not `flutter pub publish`) — this is
-        # dart-lang's canonical automated-publishing invocation. The
-        # earlier `flutter pub` choice was because dart pub refuses to
-        # resolve a Flutter-SDK-pinned package, but `--skip-validation`
-        # skips the resolution step that throws. Going through dart pub
-        # removes one layer of indirection between the OIDC env vars
-        # (`ACTIONS_ID_TOKEN_REQUEST_*`, injected by `id-token: write`)
-        # and the pub binary that uses them. 2-min cap so an OAuth
-        # fallback fails fast instead of waiting on a prompt nobody
-        # will answer.
+        # Flutter supplies FLUTTER_ROOT for pub's SDK validation.
+        # setup-dart has registered the temporary OIDC credential.
         timeout-minutes: 2
         if: startsWith(needs.resolve-tag.outputs.tag, format('{0}-v', matrix.package.name))
         working-directory: ${{ matrix.package.path }}
-        run: dart pub publish --force --skip-validation
+        run: flutter pub publish --force
