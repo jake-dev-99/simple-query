@@ -78,6 +78,10 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+
       - name: Cut release
         env:
           PACKAGE: ${{ inputs.package }}
@@ -123,6 +127,9 @@ jobs:
           new_tags=()
           summary=""
 
+          validation_dir=""
+          trap 'if [ -n "$validation_dir" ]; then rm -rf -- "$validation_dir"; fi' EXIT
+
           for pkg in "${targets[@]}"; do
             dir="${pkgs[$pkg]}"
             pubspec="${dir}/pubspec.yaml"
@@ -131,6 +138,19 @@ jobs:
             current="$(grep '^version:' "$pubspec" | sed 's/version:[[:space:]]*//' | tr -d '\r')"
             next="$(bump_version "$current" "$BUMP")"
             tag="${pkg}-v${next}"
+
+            # Workspace links do not prove the published dependency graph.
+            # Validate a separate package copy, leaving checkout overrides intact.
+            validation_dir="$(mktemp -d)"
+            cp -R "$dir/." "$validation_dir/"
+            find "$validation_dir" -name pubspec_overrides.yaml -type f -delete
+            (
+              cd "$validation_dir"
+              flutter pub get --no-example
+              flutter analyze --no-fatal-warnings
+            )
+            rm -rf -- "$validation_dir"
+            validation_dir=""
 
             prev_tag="$(git tag --merged HEAD --list "${pkg}-v*" | sort -V | tail -1 || true)"
 

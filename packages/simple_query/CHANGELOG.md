@@ -1,5 +1,6 @@
 ## Unreleased
 
+- Require platform interface >=0.2.1 for field catalog and runtime validation (UNFY-123).
 - Require simple_query_android >=0.2.2 so Android observer identity and metadata reach consumers (UNFY-270).
 
 ## 0.2.1
