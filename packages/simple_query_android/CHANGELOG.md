@@ -1,3 +1,35 @@
+## 0.2.3
+
+- fix(UNFY-123): validate the MMS query dependency release
+- fix(UNFY-270): preserve ambiguous observer mutation types
+- fix(UNFY-270): validate observer identity and dependency contract
+- fix(UNFY-270): make observer flag tests executable
+- fix(UNFY-270): correct URI pathSegments length check for direct message-row URIs
+- fix(UNFY-270): restrict URI parsing to direct message-row URIs, clean test
+- fix(UNFY-270): clean test deps, correct selfChange contract docs
+- fix(UNFY-270): forward selfChange/flags through ContentObserver, regenerate pigeon
+- chore(release): reset versions to align with pub.dev (smallest iteration)
+- fix: address review feedback on PR #31 (staging→main)
+- chore: bring .gitignore to Flutter-template parity + untrack pubspec.lock files
+- chore(release): unblock pub publish — split path overrides into pubspec_overrides.yaml
+- fix/queryrequest-const
+- test: propagate const→final flip across all affected packages
+- chore(release): coordinated 0.6.0 across all simple_query packages
+- docs+tool: CHANGELOG Unreleased discipline
+- chore(release): coordinated 0.5.0 across all simple_query packages
+- chore(pigeon): pin to 22.7.4 + CI drift check + regen tool
+- chore(release): coordinated 0.4.0 across all simple_query packages
+- feat(permissions): inline check, drop simple_permissions dependency
+- Bumped Android Build Versions
+- feat(android): symmetric canonical/native field translation + calls extras
+- release: 0.3.1 — coordinated bump + audit-driven cleanup (#20)
+- Merge pull request #7 from jake-dev-99/staging
+- fix(android): defer SimpleQueryAndroidApi construction
+- ci: address review feedback + unblock CI
+- feat(kotlin): ContentQuery helper for sibling plugins
+- chore: alphabetize imports + refresh lockfiles
+- chore(deps): bump simple_permissions_native pin to ^1.2.0
+- Initial Push
 ## Unreleased
 
 - Require platform interface >=0.2.1 for the field catalog used by Android query mapping (UNFY-123).
