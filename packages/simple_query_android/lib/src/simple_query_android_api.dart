@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/services.dart' show PlatformException;
 import 'package:simple_query_platform_interface/simple_query_platform_interface.dart'
     as iface;
 
@@ -123,20 +124,25 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
       effectiveOffset = null;
     }
 
-    final response = await _hostApi.query(
-      p.QueryRequest(
-        contentUri: contentUri,
-        projection: _AndroidFieldAliases.translateProjection(
-          domain: request.domain,
-          projection: request.projection,
+    final response = await _mapHostUnavailable(
+      () => _hostApi.query(
+        p.QueryRequest(
+          contentUri: contentUri,
+          projection: _AndroidFieldAliases.translateProjection(
+            domain: request.domain,
+            projection: request.projection,
+          ),
+          selection: effectiveSelection,
+          selectionArgs: effectiveArgs,
+          sortOrder:
+              _sortOrderFrom(request.sort, domain: request.domain) ?? '_id ASC',
+          limit: request.page?.limit,
+          offset: effectiveOffset,
         ),
-        selection: effectiveSelection,
-        selectionArgs: effectiveArgs,
-        sortOrder:
-            _sortOrderFrom(request.sort, domain: request.domain) ?? '_id ASC',
-        limit: request.page?.limit,
-        offset: effectiveOffset,
       ),
+      contentUri: contentUri,
+      domain: request.domain,
+      operation: iface.QueryOperation.read,
     );
 
     final records = _convertRows(response.rows)
@@ -882,19 +888,24 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
       );
     }).toList(growable: false);
 
-    final response = await _hostApi.queryWithJoins(
-      p.JoinQueryRequest(
-        primary: p.QueryRequest(
-          contentUri: contentUri,
-          projection: _stringListOrNull(args?['projection']),
-          selection: args?['selection']?.toString(),
-          selectionArgs: _stringListOrNull(args?['selectionArgs']),
-          sortOrder: args?['sortOrder']?.toString(),
-          limit: args?['limit'] as int?,
-          offset: args?['offset'] as int?,
+    final response = await _mapHostUnavailable(
+      () => _hostApi.queryWithJoins(
+        p.JoinQueryRequest(
+          primary: p.QueryRequest(
+            contentUri: contentUri,
+            projection: _stringListOrNull(args?['projection']),
+            selection: args?['selection']?.toString(),
+            selectionArgs: _stringListOrNull(args?['selectionArgs']),
+            sortOrder: args?['sortOrder']?.toString(),
+            limit: args?['limit'] as int?,
+            offset: args?['offset'] as int?,
+          ),
+          joins: joinSpecs,
         ),
-        joins: joinSpecs,
       ),
+      contentUri: contentUri,
+      domain: iface.QueryDomain.platformSpecific,
+      operation: iface.QueryOperation.read,
     );
 
     final rows = response.rows.whereType<p.JoinedRow>().map((joined) {
@@ -1020,10 +1031,63 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
     );
   }
 
-  iface.SimpleQueryError _unavailable(String message) {
+  /// Pigeon error code the native read paths send when
+  /// `ContentResolver.query(...)` returns a null cursor (UNFY-284). Matches
+  /// `QueryHostApiImpl.NULL_CURSOR_ERROR_CODE` on the Kotlin side.
+  static const _hostUnavailableCode = 'unavailable';
+
+  /// Runs a host read and converts a native `unavailable` error (a null
+  /// resolver cursor: provider unreachable or returned none) into
+  /// `SimpleQueryError(unavailable)` carrying [domain], [operation] and the
+  /// failing provider's `contentUri` (a related query's, for a join), per
+  /// docs/ERROR_MAPPING.md. Other host errors propagate unchanged.
+  Future<T> _mapHostUnavailable<T>(
+    Future<T> Function() hostCall, {
+    required String contentUri,
+    required iface.QueryDomain domain,
+    required iface.QueryOperation operation,
+  }) async {
+    try {
+      return await hostCall();
+    } on PlatformException catch (error, stackTrace) {
+      if (error.code != _hostUnavailableCode) rethrow;
+      final nativeDetails = error.details;
+      final nativeUri =
+          nativeDetails is Map ? nativeDetails['contentUri'] : null;
+      final failingUri = nativeUri is String ? nativeUri : contentUri;
+      final nativeMessage = error.message;
+      Error.throwWithStackTrace(
+        _unavailable(
+          nativeMessage != null && nativeMessage.startsWith(_messagePrefix)
+              ? nativeMessage.substring(_messagePrefix.length)
+              : 'content provider unavailable for $failingUri',
+          domain: domain,
+          operation: operation,
+          details: <String, Object?>{
+            'contentUri': failingUri,
+            'code': error.code,
+            'details': nativeDetails,
+          },
+        ),
+        stackTrace,
+      );
+    }
+  }
+
+  static const _messagePrefix = 'simple_query: ';
+
+  iface.SimpleQueryError _unavailable(
+    String message, {
+    iface.QueryDomain? domain,
+    iface.QueryOperation? operation,
+    Map<String, Object?>? details,
+  }) {
     return iface.SimpleQueryError(
       code: iface.SimpleQueryErrorCode.unavailable,
-      message: 'simple_query: $message',
+      message: '$_messagePrefix$message',
+      domain: domain,
+      operation: operation,
+      details: details,
     );
   }
 }

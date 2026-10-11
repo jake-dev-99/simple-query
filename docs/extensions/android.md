@@ -11,7 +11,7 @@ Namespace: `android.provider`
   - required args: `contentUri`, `joins`
   - optional args: `projection`, `selection`, `selectionArgs`, `sortOrder`, `limit`, `offset`
   - response shape: `{ rowCount: int, rows: [{ data: Map<String,Object?>, related: Map<String,List<Map<String,Object?>>> }] }`
-  - error mapping: malformed join payload -> `invalidQuery`, provider failure -> `unavailable`/`transientFailure`
+  - error mapping: malformed join payload -> `invalidQuery`, provider failure -> `unavailable`/`transientFailure`, null cursor for the primary or any related query -> `unavailable` (native details name the failing `join`)
 - `extractToFile`
   - required args: `contentUri`
   - optional args: none

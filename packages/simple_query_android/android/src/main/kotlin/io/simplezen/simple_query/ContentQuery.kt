@@ -113,6 +113,10 @@ object ContentQuery {
      * - Otherwise returns the drained rows; an empty list means
      *   the query ran and matched zero rows.
      *
+     * `null` here is the in-process counterpart of the Dart query
+     * path, which raises `SimpleQueryError(unavailable)` for the
+     * same null cursor.
+     *
      * Exceptions thrown by the resolver (e.g. `SecurityException`)
      * propagate unchanged, exactly as with [query]. Thread-safe and
      * blocking.

@@ -1,5 +1,6 @@
 ## Unreleased
 
+- **Behavior change (Android):** `query()`, `queryRaw()`, `queryTyped()`, `QueryBuilder.execute*()`, `queryPaginated()` / `queryPaginatedTyped()` and the `android.provider` `queryWithJoins` extension now throw `SimpleQueryError(code: unavailable)` when the provider returns a null cursor (unreachable, or none returned), instead of an empty result; paginated streams emit it as a stream error. Catch `unavailable` where a provider is optional. This changes documented query semantics, so the next `simple_query` release must be at least a minor bump (0.3.0), not the default patch (UNFY-284).
 - Require `simple_query_android: ^0.3.0`, the first release with the native `ContentQuery.queryOrNull(...)` helper, so consumers resolving through `simple_query` get it (UNFY-284).
 
 ## 0.2.3

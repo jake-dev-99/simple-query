@@ -25,11 +25,20 @@ This document defines the portability guarantees for the simple_query API.
 - `implementation = filesystem_fallback` means the result came from local filesystem-derived behavior.
 - `implementation = diagnostic_synthetic` means the result is a diagnostic or placeholder response, not authoritative provider data.
 
+## Null cursor semantics (Android)
+
+On Android, `ContentResolver.query(...)` returns a null cursor when the provider could not be reached (unknown authority, or its process died during the call) or chose to return none. That is not the same as zero matching rows, and the cause may be transient.
+
+- `query()` (and everything built on it: `queryRaw`, `queryTyped`, `queryBuilder`, `queryPaginated`, `queryPaginatedTyped`) throws `SimpleQueryError(code: unavailable)` for a null cursor. The error carries the request's `domain`, `operation: read`, a `simple_query:` message, and `details` with the failing provider's `contentUri` plus the native code and details (`reason: nullCursor`). An empty `records` list always means the query ran and matched zero rows.
+- `callExtension(namespace: 'android.provider', method: 'queryWithJoins')` throws the same error when the primary query or any related (join) query gets a null cursor; `domain` is `platformSpecific`; when a related query failed, `details.contentUri` is that join's URI and the native details name the `join`. A related query that runs and matches nothing still yields an empty list for that join.
+- Before `simple_query_android` 0.3.0 both paths returned an empty result for a null cursor. Callers that want the old behavior for an optional provider catch `SimpleQueryErrorCode.unavailable` and substitute an empty result themselves.
+- A permission denial is not a null cursor. The Dart pre-flight check still throws `SimpleQueryError(permissionDenied)` before the provider is called; a `SecurityException` raised by the provider itself is not remapped by this rule. Other host errors still reach callers as a raw `PlatformException` today, contrary to [ERROR_MAPPING.md](ERROR_MAPPING.md); mapping them is tracked in UNFY-300.
+
 ## Native Kotlin helper semantics (Android)
 
 `ContentQuery` (in `simple_query_android`) is the in-process Kotlin API sibling plugins use for `content://` reads. It is not part of the Dart platform interface.
 
-- `ContentQuery.queryOrNull(...)` returns `null` if and only if `ContentResolver.query(...)` returned a null cursor: the provider could not be reached (unknown authority, or its process died during the call) or chose to return none. The cause may be transient, so callers must not treat `null` as a permanent state. Otherwise it returns the drained rows; an empty list means the query ran and matched zero rows.
+- `ContentQuery.queryOrNull(...)` returns `null` if and only if `ContentResolver.query(...)` returned a null cursor: the provider could not be reached (unknown authority, or its process died during the call) or chose to return none. The cause may be transient, so callers must not treat `null` as a permanent state. Otherwise it returns the drained rows; an empty list means the query ran and matched zero rows. This `null` is the in-process counterpart of the Dart path's `SimpleQueryError(unavailable)` (see [Null cursor semantics](#null-cursor-semantics-android)).
 - `ContentQuery.query(...)` delegates to `queryOrNull(...)` and returns an empty list for a null cursor, so a null cursor and zero matching rows are indistinguishable. Callers that must tell them apart use `queryOrNull(...)`.
 - Neither method catches resolver exceptions; they propagate to the caller. A permission denial surfaces this way (`SecurityException`), not as a null cursor.
 
