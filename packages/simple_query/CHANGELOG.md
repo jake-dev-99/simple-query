@@ -1,3 +1,7 @@
+## Unreleased
+
+- Require `simple_query_android: ^0.3.0`, the first release with the native `ContentQuery.queryOrNull(...)` helper, so consumers resolving through `simple_query` get it (UNFY-284).
+
 ## 0.2.3
 
 - fix(UNFY-123): validate the MMS query dependency release
