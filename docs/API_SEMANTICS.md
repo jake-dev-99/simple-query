@@ -25,6 +25,14 @@ This document defines the portability guarantees for the simple_query API.
 - `implementation = filesystem_fallback` means the result came from local filesystem-derived behavior.
 - `implementation = diagnostic_synthetic` means the result is a diagnostic or placeholder response, not authoritative provider data.
 
+## Native Kotlin helper semantics (Android)
+
+`ContentQuery` (in `simple_query_android`) is the in-process Kotlin API sibling plugins use for `content://` reads. It is not part of the Dart platform interface.
+
+- `ContentQuery.queryOrNull(...)` returns `null` if and only if `ContentResolver.query(...)` returned a null cursor: the provider could not be reached (unknown authority, or its process died during the call) or chose to return none. The cause may be transient, so callers must not treat `null` as a permanent state. Otherwise it returns the drained rows; an empty list means the query ran and matched zero rows.
+- `ContentQuery.query(...)` delegates to `queryOrNull(...)` and returns an empty list for a null cursor, so a null cursor and zero matching rows are indistinguishable. Callers that must tell them apart use `queryOrNull(...)`.
+- Neither method catches resolver exceptions; they propagate to the caller. A permission denial surfaces this way (`SecurityException`), not as a null cursor.
+
 ## Pagination semantics
 
 `QueryPage` supports two modes:

@@ -1,3 +1,7 @@
+## Unreleased
+
+- Add `ContentQuery.queryOrNull(...)`, which returns `null` when the resolver hands back a null cursor (provider unreachable, or none returned) and an empty list only for zero matching rows; `ContentQuery.query(...)` now delegates to it and still returns an empty list for both (UNFY-284).
+
 ## 0.2.3
 
 - fix(UNFY-123): validate the MMS query dependency release

@@ -75,8 +75,9 @@ object ContentQuery {
      * exactly so callers that already have [projection],
      * [selection], etc. can pass them through unchanged.
      * Returns an empty list when the resolver hands back a null
-     * cursor (the standard Android "no access" / "no match"
-     * signal).
+     * cursor, so that case is indistinguishable from zero matching
+     * rows. Use [queryOrNull] when the caller must tell the two
+     * apart.
      *
      * Thread-safe and blocking. Callers that need async should
      * wrap with their own coroutine / executor — matching the
@@ -90,14 +91,48 @@ object ContentQuery {
         selection: String? = null,
         selectionArgs: Array<String>? = null,
         sortOrder: String? = null,
-    ): List<Map<String, Any?>> {
+    ): List<Map<String, Any?>> = queryOrNull(
+        context,
+        contentUri,
+        projection,
+        selection,
+        selectionArgs,
+        sortOrder,
+    ) ?: emptyList()
+
+    /**
+     * Same as [query], but keeps the resolver's null-cursor signal
+     * instead of collapsing it into an empty list.
+     *
+     * - Returns `null` if and only if `ContentResolver.query(...)`
+     *   returned a null cursor: the provider could not be reached
+     *   (unknown authority, or its process died during the call)
+     *   or chose to return none. No rows were read, and the cause
+     *   may be transient. A permission denial is not a null cursor;
+     *   it throws.
+     * - Otherwise returns the drained rows; an empty list means
+     *   the query ran and matched zero rows.
+     *
+     * Exceptions thrown by the resolver (e.g. `SecurityException`)
+     * propagate unchanged, exactly as with [query]. Thread-safe and
+     * blocking.
+     */
+    @JvmStatic
+    fun queryOrNull(
+        context: Context,
+        contentUri: String,
+        projection: Array<String>? = null,
+        selection: String? = null,
+        selectionArgs: Array<String>? = null,
+        sortOrder: String? = null,
+    ): List<Map<String, Any?>>? {
         val cursor = context.contentResolver.query(
             Uri.parse(contentUri),
             projection,
             selection,
             selectionArgs,
             sortOrder,
-        ) ?: return emptyList()
+        ) ?: return null
 
         return cursor.use { c -> drainRows(c) }
     }
