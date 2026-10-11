@@ -24,7 +24,9 @@ import org.robolectric.annotation.Config
 /**
  * Drives [QueryHostApiImpl] through the generated Pigeon channels and
  * asserts the reply envelope Dart receives: a null resolver cursor must
- * arrive as an `unavailable` error, not as zero rows (UNFY-284).
+ * arrive as an `unavailable` error, not as zero rows (UNFY-284), and a
+ * provider exception as its vocabulary code, not its Java class name
+ * (UNFY-300).
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [30])
@@ -47,6 +49,8 @@ class QueryHostApiImplTest {
             queried.add(uri.lastPathSegment)
             val columns = arrayOf("_id", "body", "data")
             val cursor = when (uri.lastPathSegment) {
+                "denied" -> throw SecurityException("Permission Denial: reading $uri")
+                "broken" -> throw IllegalStateException("provider state")
                 "null" -> return null
                 "empty" -> MatrixCursor(columns)
                 "rows" -> MatrixCursor(columns).apply {
@@ -60,7 +64,8 @@ class QueryHostApiImplTest {
         }
 
         override fun getType(uri: Uri): String? = null
-        override fun insert(uri: Uri, values: ContentValues?): Uri? = null
+        override fun insert(uri: Uri, values: ContentValues?): Uri? =
+            throw UnsupportedOperationException("read-only provider")
         override fun delete(uri: Uri, selection: String?, selectionArgs: Array<String>?) = 0
         override fun update(
             uri: Uri,
@@ -177,6 +182,36 @@ class QueryHostApiImplTest {
         assertTrue(provider.opened.all { it.isClosed })
     }
 
+    @Test
+    fun queryProviderSecurityExceptionRepliesPermissionDenied() {
+        val reply = call("query", QueryRequest(contentUri = uri("denied")))
+
+        assertHostError(reply, HostErrors.PERMISSION_DENIED, "java.lang.SecurityException")
+        assertTrue((reply[1] as String).contains("Permission Denial: reading ${uri("denied")}"))
+    }
+
+    @Test
+    fun queryUnlistedFailureRepliesTransient() {
+        val reply = call("query", QueryRequest(contentUri = uri("broken")))
+
+        assertHostError(reply, HostErrors.TRANSIENT, "java.lang.IllegalStateException")
+    }
+
+    @Test
+    fun joinRelatedFailureRepliesItsClassification() {
+        val reply = call("queryWithJoins", joinRequest(primary = "rows", join = "denied"))
+
+        assertHostError(reply, HostErrors.PERMISSION_DENIED, "java.lang.SecurityException")
+        assertTrue(provider.opened.single().isClosed)
+    }
+
+    @Test
+    fun insertUnsupportedRepliesNotSupported() {
+        val reply = call("insert", InsertRequest(contentUri = uri("rows"), values = mapOf("body" to "x")))
+
+        assertHostError(reply, HostErrors.NOT_SUPPORTED, "java.lang.UnsupportedOperationException")
+    }
+
     private fun joinRequest(primary: String, join: String) = JoinQueryRequest(
         primary = QueryRequest(contentUri = uri(primary)),
         joins = listOf(
@@ -211,6 +246,14 @@ class QueryHostApiImplTest {
         assertEquals("unavailable", reply[0])
         assertTrue((reply[1] as String).startsWith("simple_query: "))
         assertEquals(details, reply[2])
+    }
+
+    /** A classified failure carries its vocabulary code and native type (UNFY-300). */
+    private fun assertHostError(reply: List<Any?>, code: String, nativeType: String) {
+        assertEquals(3, reply.size)
+        assertEquals(code, reply[0])
+        assertTrue((reply[1] as String).startsWith("simple_query: "))
+        assertEquals(nativeType, (reply[2] as Map<*, *>)["nativeType"])
     }
 
     private fun uri(path: String) = "content://$AUTHORITY/$path"

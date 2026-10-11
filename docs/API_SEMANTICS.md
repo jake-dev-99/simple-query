@@ -32,7 +32,15 @@ On Android, `ContentResolver.query(...)` returns a null cursor when the provider
 - `query()` (and everything built on it: `queryRaw`, `queryTyped`, `queryBuilder`, `queryPaginated`, `queryPaginatedTyped`) throws `SimpleQueryError(code: unavailable)` for a null cursor. The error carries the request's `domain`, `operation: read`, a `simple_query:` message, and `details` with the failing provider's `contentUri` plus the native code and details (`reason: nullCursor`). An empty `records` list always means the query ran and matched zero rows.
 - `callExtension(namespace: 'android.provider', method: 'queryWithJoins')` throws the same error when the primary query or any related (join) query gets a null cursor; `domain` is `platformSpecific`; when a related query failed, `details.contentUri` is that join's URI and the native details name the `join`. A related query that runs and matches nothing still yields an empty list for that join.
 - Before `simple_query_android` 0.3.0 both paths returned an empty result for a null cursor. Callers that want the old behavior for an optional provider catch `SimpleQueryErrorCode.unavailable` and substitute an empty result themselves.
-- A permission denial is not a null cursor. The Dart pre-flight check still throws `SimpleQueryError(permissionDenied)` before the provider is called; a `SecurityException` raised by the provider itself is not remapped by this rule. Other host errors still reach callers as a raw `PlatformException` today, contrary to [ERROR_MAPPING.md](ERROR_MAPPING.md); mapping them is tracked in UNFY-300.
+- A permission denial is not a null cursor. The Dart pre-flight check still throws `SimpleQueryError(permissionDenied)` before the provider is called. A `SecurityException` raised by the provider itself also maps to `permissionDenied`, but without `details.permissions`; see [Host error semantics](#host-error-semantics-android).
+
+## Host error semantics (Android)
+
+Since `simple_query_android` 0.3.0, no Android host call lets a raw `PlatformException` reach callers. Every host failure becomes a `SimpleQueryError`, with the code chosen by the table in [ERROR_MAPPING.md](ERROR_MAPPING.md#android-host-errors). Before 0.3.0, host errors arrived as a raw `PlatformException`, so `on SimpleQueryError` handlers missed them.
+
+- The permission pre-flight `SimpleQueryError(permissionDenied)` carries the request's `domain` and operation, and its `details.permissions` name the OS permissions to request. A provider-raised denial has no such list; its `details.nativeType` names the exception (e.g. `java.lang.SecurityException`).
+- `observe()`: a failed observer registration is delivered to listeners as a stream error. A failed unregistration on cancel has no listener left to receive it, so its mapped error goes to the zone's uncaught-error handler.
+- `unavailable` means only that the provider or host could not be reached. A failure no rule covers is `transientFailure`, so code that tolerates `unavailable` (for example, an optional provider) does not hide unrelated bugs.
 
 ## Native Kotlin helper semantics (Android)
 

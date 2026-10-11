@@ -1,11 +1,11 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:flutter/services.dart' show PlatformException;
 import 'package:simple_query_platform_interface/simple_query_platform_interface.dart'
     as iface;
 
 import 'generated/query.g.dart' as p;
+import 'host_errors.dart';
 
 class SimpleQueryAndroidApi implements p.QueryFlutterApi {
   SimpleQueryAndroidApi({
@@ -103,7 +103,11 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
       operation: iface.QueryOperation.read,
     );
 
-    await _ensurePermission(contentUri, write: false);
+    await _ensurePermission(
+      contentUri,
+      domain: request.domain,
+      write: false,
+    );
 
     final selection =
         _selectionFromFilters(request.filters, domain: request.domain);
@@ -124,7 +128,7 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
       effectiveOffset = null;
     }
 
-    final response = await _mapHostUnavailable(
+    final response = await guardHostCall(
       () => _hostApi.query(
         p.QueryRequest(
           contentUri: contentUri,
@@ -186,7 +190,11 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
       platformData: request.platformData,
       operation: iface.QueryOperation.write,
     );
-    await _ensurePermission(contentUri, write: true);
+    await _ensurePermission(
+      contentUri,
+      domain: request.domain,
+      write: true,
+    );
 
     switch (request.type) {
       case iface.MutationType.insert:
@@ -194,11 +202,16 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
         if (values == null || values.isEmpty) {
           throw _invalidQuery('insert mutation requires non-empty values');
         }
-        final uri = await _hostApi.insert(
-          p.InsertRequest(
-            contentUri: contentUri,
-            values: values,
+        final uri = await guardHostCall(
+          () => _hostApi.insert(
+            p.InsertRequest(
+              contentUri: contentUri,
+              values: values,
+            ),
           ),
+          domain: request.domain,
+          operation: iface.QueryOperation.write,
+          contentUri: contentUri,
         );
         return iface.MutationResult(
           affectedCount: uri == null ? 0 : 1,
@@ -211,24 +224,34 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
         }
         final selection =
             _selectionFromFilters(request.filters, domain: request.domain);
-        final count = await _hostApi.update(
-          p.UpdateRequest(
-            contentUri: contentUri,
-            values: values,
-            selection: selection.selection,
-            selectionArgs: selection.args,
+        final count = await guardHostCall(
+          () => _hostApi.update(
+            p.UpdateRequest(
+              contentUri: contentUri,
+              values: values,
+              selection: selection.selection,
+              selectionArgs: selection.args,
+            ),
           ),
+          domain: request.domain,
+          operation: iface.QueryOperation.write,
+          contentUri: contentUri,
         );
         return iface.MutationResult(affectedCount: count);
       case iface.MutationType.delete:
         final selection =
             _selectionFromFilters(request.filters, domain: request.domain);
-        final count = await _hostApi.delete(
-          p.DeleteRequest(
-            contentUri: contentUri,
-            selection: selection.selection,
-            selectionArgs: selection.args,
+        final count = await guardHostCall(
+          () => _hostApi.delete(
+            p.DeleteRequest(
+              contentUri: contentUri,
+              selection: selection.selection,
+              selectionArgs: selection.args,
+            ),
           ),
+          domain: request.domain,
+          operation: iface.QueryOperation.write,
+          contentUri: contentUri,
         );
         return iface.MutationResult(affectedCount: count);
     }
@@ -248,8 +271,12 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
             ))
         .toList(growable: false);
 
-    for (final uri in resolved) {
-      await _ensurePermission(uri, write: true);
+    for (var i = 0; i < resolved.length; i += 1) {
+      await _ensurePermission(
+        resolved[i],
+        domain: request.operations[i].domain,
+        write: true,
+      );
     }
 
     final explicitAuthority = request.platformData?['authority'] as String?;
@@ -286,8 +313,14 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
       );
     }
 
-    final results = await _hostApi.applyBatch(
-      p.BatchRequest(authority: authority, operations: pigeonOperations),
+    final domains =
+        request.operations.map((operation) => operation.domain).toSet();
+    final results = await guardHostCall(
+      () => _hostApi.applyBatch(
+        p.BatchRequest(authority: authority, operations: pigeonOperations),
+      ),
+      domain: domains.length == 1 ? domains.single : null,
+      operation: iface.QueryOperation.write,
     );
 
     return iface.BatchResult(
@@ -321,7 +354,13 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
           hostApi: _hostApi,
           activeObservers: _activeObservers,
         );
-        await registration.ensureRegistered();
+        try {
+          await registration.ensureRegistered();
+        } on iface.SimpleQueryError catch (error, stackTrace) {
+          // A failed registration reaches listeners as a stream error,
+          // not as an uncaught error in the onListen zone (UNFY-300).
+          controller.addError(error, stackTrace);
+        }
       },
       onCancel: () async {
         if (controller.hasListener) return;
@@ -340,9 +379,18 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
   Future<iface.BinaryContentHandle> openBinary(
       iface.BinaryRequest request) async {
     final contentUri = _resolveBinaryContentUri(request);
-    await _ensurePermission(contentUri, write: false);
+    await _ensurePermission(
+      contentUri,
+      domain: request.domain,
+      write: false,
+    );
 
-    final descriptor = await _hostApi.openStream(contentUri);
+    final descriptor = await guardHostCall(
+      () => _hostApi.openStream(contentUri),
+      domain: request.domain,
+      operation: iface.QueryOperation.read,
+      contentUri: contentUri,
+    );
     _openBinaryHandles[descriptor.streamId] = descriptor.streamId;
 
     return iface.BinaryContentHandle(
@@ -360,7 +408,10 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
 
   Future<void> closeBinary(String handleId) async {
     final streamId = _openBinaryHandles.remove(handleId) ?? handleId;
-    await _hostApi.closeStream(streamId);
+    await guardHostCall(
+      () => _hostApi.closeStream(streamId),
+      operation: iface.QueryOperation.read,
+    );
   }
 
   Future<Map<String, Object?>?> callExtension({
@@ -384,13 +435,16 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
           throw _invalidQuery(
               'android.provider providerCall requires authority');
         }
-        final response = await _hostApi.call(
-          p.ProviderCallRequest(
-            authority: authority,
-            method: args?['method'] as String? ?? '',
-            arg: args?['arg'] as String?,
-            extras: args?['extras'] as Map<String, Object?>?,
+        final response = await guardHostCall(
+          () => _hostApi.call(
+            p.ProviderCallRequest(
+              authority: authority,
+              method: args?['method'] as String? ?? '',
+              arg: args?['arg'] as String?,
+              extras: args?['extras'] as Map<String, Object?>?,
+            ),
           ),
+          domain: iface.QueryDomain.platformSpecific,
         );
 
         final result = response.result;
@@ -402,8 +456,17 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
           throw _invalidQuery(
               'android.provider extractToFile requires contentUri');
         }
-        await _ensurePermission(contentUri, write: false);
-        final extractedPath = await _hostApi.extractToFile(contentUri);
+        await _ensurePermission(
+          contentUri,
+          domain: iface.QueryDomain.platformSpecific,
+          write: false,
+        );
+        final extractedPath = await guardHostCall(
+          () => _hostApi.extractToFile(contentUri),
+          domain: iface.QueryDomain.platformSpecific,
+          operation: iface.QueryOperation.read,
+          contentUri: contentUri,
+        );
         if (extractedPath == null || extractedPath.isEmpty) {
           throw _unavailable(
               'android.provider extractToFile returned no output path');
@@ -489,7 +552,10 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
   }
 
   Future<void> dispose() async {
-    await _hostApi.unregisterAllObservers();
+    await guardHostCall(
+      _hostApi.unregisterAllObservers,
+      operation: iface.QueryOperation.observe,
+    );
     for (final registration in _activeObservers.values.toList()) {
       await registration.unregister();
     }
@@ -497,7 +563,10 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
 
     for (final streamId in _openBinaryHandles.values.toList(growable: false)) {
       try {
-        await _hostApi.closeStream(streamId);
+        await guardHostCall(
+          () => _hostApi.closeStream(streamId),
+          operation: iface.QueryOperation.read,
+        );
       } catch (_) {
         // Best-effort cleanup on dispose.
       }
@@ -509,25 +578,42 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
 
   /// Verifies the calling app holds the OS permission(s) needed for
   /// [contentUri]. Throws `SimpleQueryError(code: permissionDenied, details:
-  /// {permissions: [...], domain, operation})` when not granted.
+  /// {permissions: [...], contentUri, write})`, carrying [domain] and the
+  /// operation, when not granted. A failed host permission check throws
+  /// its mapped `SimpleQueryError` with the same context.
   ///
   /// Per MEMORY.md, simple_query never *requests* permissions. The caller
   /// catches the `permissionDenied` error, requests the named permission via
   /// their own mechanism (`simple_permissions`, `permission_handler`, raw
   /// `ActivityCompat.requestPermissions`, etc.), then retries.
-  Future<void> _ensurePermission(String contentUri,
-      {required bool write}) async {
+  Future<void> _ensurePermission(
+    String contentUri, {
+    required iface.QueryDomain domain,
+    required bool write,
+  }) async {
     if (_enforceAndroidPlatformCheck && !Platform.isAndroid) return;
 
+    final operation =
+        write ? iface.QueryOperation.write : iface.QueryOperation.read;
     final candidates = AndroidQueryPermissionResolver.permissionsForUri(
       contentUri,
       write: write,
-      sdkInt: await _androidSdkInt(),
+      sdkInt: await guardHostCall(
+        _androidSdkInt,
+        domain: domain,
+        operation: operation,
+        contentUri: contentUri,
+      ),
     );
     if (candidates.isEmpty) return;
 
     for (final candidate in candidates) {
-      final granted = await _hostApi.hasPermission(candidate);
+      final granted = await guardHostCall(
+        () => _hostApi.hasPermission(candidate),
+        domain: domain,
+        operation: operation,
+        contentUri: contentUri,
+      );
       if (granted) return;
     }
 
@@ -536,7 +622,8 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
       message: candidates.length == 1
           ? 'simple_query: ${candidates.single} is required'
           : 'simple_query: one of ${candidates.join(', ')} is required',
-      operation: write ? iface.QueryOperation.write : iface.QueryOperation.read,
+      domain: domain,
+      operation: operation,
       details: <String, Object?>{
         'permissions': candidates,
         'contentUri': contentUri,
@@ -850,7 +937,11 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
           'android.provider queryWithJoins requires contentUri');
     }
 
-    await _ensurePermission(contentUri, write: false);
+    await _ensurePermission(
+      contentUri,
+      domain: iface.QueryDomain.platformSpecific,
+      write: false,
+    );
 
     final joinsRaw = args?['joins'];
     if (joinsRaw is! List) {
@@ -888,7 +979,7 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
       );
     }).toList(growable: false);
 
-    final response = await _mapHostUnavailable(
+    final response = await guardHostCall(
       () => _hostApi.queryWithJoins(
         p.JoinQueryRequest(
           primary: p.QueryRequest(
@@ -1031,51 +1122,6 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
     );
   }
 
-  /// Pigeon error code the native read paths send when
-  /// `ContentResolver.query(...)` returns a null cursor (UNFY-284). Matches
-  /// `QueryHostApiImpl.NULL_CURSOR_ERROR_CODE` on the Kotlin side.
-  static const _hostUnavailableCode = 'unavailable';
-
-  /// Runs a host read and converts a native `unavailable` error (a null
-  /// resolver cursor: provider unreachable or returned none) into
-  /// `SimpleQueryError(unavailable)` carrying [domain], [operation] and the
-  /// failing provider's `contentUri` (a related query's, for a join), per
-  /// docs/ERROR_MAPPING.md. Other host errors propagate unchanged.
-  Future<T> _mapHostUnavailable<T>(
-    Future<T> Function() hostCall, {
-    required String contentUri,
-    required iface.QueryDomain domain,
-    required iface.QueryOperation operation,
-  }) async {
-    try {
-      return await hostCall();
-    } on PlatformException catch (error, stackTrace) {
-      if (error.code != _hostUnavailableCode) rethrow;
-      final nativeDetails = error.details;
-      final nativeUri =
-          nativeDetails is Map ? nativeDetails['contentUri'] : null;
-      final failingUri = nativeUri is String ? nativeUri : contentUri;
-      final nativeMessage = error.message;
-      Error.throwWithStackTrace(
-        _unavailable(
-          nativeMessage != null && nativeMessage.startsWith(_messagePrefix)
-              ? nativeMessage.substring(_messagePrefix.length)
-              : 'content provider unavailable for $failingUri',
-          domain: domain,
-          operation: operation,
-          details: <String, Object?>{
-            'contentUri': failingUri,
-            'code': error.code,
-            'details': nativeDetails,
-          },
-        ),
-        stackTrace,
-      );
-    }
-  }
-
-  static const _messagePrefix = 'simple_query: ';
-
   iface.SimpleQueryError _unavailable(
     String message, {
     iface.QueryDomain? domain,
@@ -1084,7 +1130,7 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
   }) {
     return iface.SimpleQueryError(
       code: iface.SimpleQueryErrorCode.unavailable,
-      message: '$_messagePrefix$message',
+      message: '$simpleQueryMessagePrefix$message',
       domain: domain,
       operation: operation,
       details: details,
@@ -1342,11 +1388,16 @@ class _ObserverRegistration {
   }
 
   Future<void> _register() async {
-    final observerId = await hostApi.registerObserver(
-      p.ObserverRequest(
-        contentUri: contentUri,
-        notifyForDescendants: true,
+    final observerId = await guardHostCall(
+      () => hostApi.registerObserver(
+        p.ObserverRequest(
+          contentUri: contentUri,
+          notifyForDescendants: true,
+        ),
       ),
+      domain: request.domain,
+      operation: iface.QueryOperation.observe,
+      contentUri: contentUri,
     );
     _observerId = observerId;
     activeObservers[observerId] = this;
@@ -1361,6 +1412,11 @@ class _ObserverRegistration {
     if (observerId == null) return;
     _observerId = null;
     activeObservers.remove(observerId);
-    await hostApi.unregisterObserver(observerId);
+    await guardHostCall(
+      () => hostApi.unregisterObserver(observerId),
+      domain: request.domain,
+      operation: iface.QueryOperation.observe,
+      contentUri: contentUri,
+    );
   }
 }

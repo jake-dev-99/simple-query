@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/services.dart' show PlatformException;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:simple_query_android/src/generated/query.g.dart' as p;
@@ -587,7 +589,7 @@ void main() {
     test('query throws SimpleQueryError(unavailable) with domain and operation',
         () async {
       final host = _FakeHostApi()
-        ..queryError = nullCursor('content://call_log/calls');
+        ..failures['query'] = nullCursor('content://call_log/calls');
 
       await expectLater(
         apiFor(host).query(
@@ -619,10 +621,11 @@ void main() {
     });
 
     test(
-        'query keeps the simple_query: prefix when the native message lacks it',
+        'query prefixes a native message that lacks simple_query: and keeps it',
         () async {
       final host = _FakeHostApi()
-        ..queryError = PlatformException(code: 'unavailable', message: 'gone');
+        ..failures['query'] =
+            PlatformException(code: 'unavailable', message: 'gone');
 
       await expectLater(
         apiFor(host).query(
@@ -640,8 +643,9 @@ void main() {
               .having(
                 (e) => e.message,
                 'message',
-                'simple_query: content provider unavailable for '
-                    'content://com.example.missing/items',
+                'simple_query: host call for '
+                    'content://com.example.missing/items failed '
+                    '(unavailable): gone',
               )
               .having((e) => e.domain, 'domain',
                   iface.QueryDomain.platformSpecific),
@@ -649,27 +653,11 @@ void main() {
       );
     });
 
-    // Today's behavior, which ERROR_MAPPING.md forbids; mapping every host
-    // error is UNFY-300, which updates this test.
-    test('query rethrows other host errors unchanged', () async {
-      final denial = PlatformException(
-        code: 'SecurityException',
-        message: 'java.lang.SecurityException: Permission Denial',
-      );
-      final host = _FakeHostApi()..queryError = denial;
-
-      await expectLater(
-        apiFor(host).query(
-          const iface.QueryRequest(domain: iface.QueryDomain.messages),
-        ),
-        throwsA(same(denial)),
-      );
-    });
-
     test('queryWithJoins throws SimpleQueryError(unavailable) for a join',
         () async {
       final host = _FakeHostApi()
-        ..joinError = nullCursor('content://mms/part', join: 'parts');
+        ..failures['queryWithJoins'] =
+            nullCursor('content://mms/part', join: 'parts');
 
       await expectLater(
         apiFor(host).callExtension(
@@ -699,6 +687,341 @@ void main() {
               .having((e) => e.details?['contentUri'], 'details.contentUri',
                   'content://mms/part'),
         ),
+      );
+    });
+  });
+
+  group('every host error maps to SimpleQueryError (UNFY-300)', () {
+    SimpleQueryAndroidApi apiFor(_FakeHostApi host) => SimpleQueryAndroidApi(
+          hostApi: host,
+          registerFlutterApi: false,
+          enforceAndroidPlatformCheck: false,
+        );
+
+    // A failure as the Kotlin side sends it (HostErrors.toFlutterError).
+    PlatformException kotlinFailure(String code, String nativeType) =>
+        PlatformException(
+          code: code,
+          message: 'simple_query: ${nativeType.split('.').last}: boom',
+          details: <Object?, Object?>{
+            'nativeType': nativeType,
+            'nativeStackTrace': '$nativeType: boom\n\tat Provider.query',
+          },
+        );
+
+    TypeMatcher<iface.SimpleQueryError> hostError({
+      required iface.SimpleQueryErrorCode code,
+      required String hostCode,
+      iface.QueryDomain? domain,
+      iface.QueryOperation? operation,
+      String? contentUri,
+    }) =>
+        isA<iface.SimpleQueryError>()
+            .having((e) => e.code, 'code', code)
+            .having((e) => e.message, 'message', startsWith('simple_query: '))
+            .having((e) => e.domain, 'domain', domain)
+            .having((e) => e.operation, 'operation', operation)
+            .having((e) => e.details?['code'], 'details.code', hostCode)
+            .having((e) => e.details?['contentUri'], 'details.contentUri',
+                contentUri);
+
+    const vocabulary = <String, iface.SimpleQueryErrorCode>{
+      'permission-denied': iface.SimpleQueryErrorCode.permissionDenied,
+      'invalid-query': iface.SimpleQueryErrorCode.invalidQuery,
+      'unavailable': iface.SimpleQueryErrorCode.unavailable,
+      'transient': iface.SimpleQueryErrorCode.transientFailure,
+      'not-supported': iface.SimpleQueryErrorCode.notSupported,
+      'channel-error': iface.SimpleQueryErrorCode.unavailable,
+      'null-error': iface.SimpleQueryErrorCode.transientFailure,
+      'SomeFutureCode': iface.SimpleQueryErrorCode.transientFailure,
+    };
+
+    for (final MapEntry(key: hostCode, value: code) in vocabulary.entries) {
+      test('query maps host code $hostCode to ${code.name}', () async {
+        final host = _FakeHostApi()
+          ..failures['query'] =
+              PlatformException(code: hostCode, message: 'native says no');
+
+        await expectLater(
+          apiFor(host).query(
+            const iface.QueryRequest(domain: iface.QueryDomain.messages),
+          ),
+          throwsA(hostError(
+            code: code,
+            hostCode: hostCode,
+            domain: iface.QueryDomain.messages,
+            operation: iface.QueryOperation.read,
+            contentUri: 'content://sms',
+          ).having((e) => e.message, 'message', endsWith(': native says no'))),
+        );
+      });
+    }
+
+    test('a classified Kotlin failure keeps its message and native details',
+        () async {
+      final failure =
+          kotlinFailure('permission-denied', 'java.lang.SecurityException');
+      final host = _FakeHostApi()..failures['query'] = failure;
+
+      await expectLater(
+        apiFor(host).query(
+          const iface.QueryRequest(domain: iface.QueryDomain.messages),
+        ),
+        throwsA(isA<iface.SimpleQueryError>()
+            .having((e) => e.code, 'code',
+                iface.SimpleQueryErrorCode.permissionDenied)
+            .having((e) => e.message, 'message',
+                'simple_query: SecurityException: boom')
+            .having((e) => e.details?['nativeType'], 'details.nativeType',
+                'java.lang.SecurityException')
+            .having((e) => e.details?['details'], 'details.details',
+                failure.details)),
+      );
+    });
+
+    test('the mapped error keeps the host stack trace', () async {
+      final host = _FakeHostApi()
+        ..failures['query'] =
+            kotlinFailure('invalid-query', 'android.database.SQLException');
+
+      final caught = await apiFor(host)
+          .query(const iface.QueryRequest(domain: iface.QueryDomain.messages))
+          .then<StackTrace?>((_) => null,
+              onError: (Object _, StackTrace stackTrace) => stackTrace);
+
+      expect(caught.toString(), 'host:query');
+    });
+
+    final mutations = <String, iface.MutationRequest>{
+      'insert': const iface.MutationRequest(
+        type: iface.MutationType.insert,
+        domain: iface.QueryDomain.messages,
+        values: <String, Object?>{'body': 'hi'},
+      ),
+      'update': const iface.MutationRequest(
+        type: iface.MutationType.update,
+        domain: iface.QueryDomain.messages,
+        values: <String, Object?>{'read': 1},
+      ),
+      'delete': const iface.MutationRequest(
+        type: iface.MutationType.delete,
+        domain: iface.QueryDomain.messages,
+      ),
+    };
+    for (final MapEntry(key: method, value: request) in mutations.entries) {
+      test('mutate $method maps a host failure with write context', () async {
+        final host = _FakeHostApi()
+          ..failures[method] =
+              kotlinFailure('not-supported', 'java.lang.UnsupportedOperation');
+
+        await expectLater(
+          apiFor(host).mutate(request),
+          throwsA(hostError(
+            code: iface.SimpleQueryErrorCode.notSupported,
+            hostCode: 'not-supported',
+            domain: iface.QueryDomain.messages,
+            operation: iface.QueryOperation.write,
+            contentUri: 'content://sms',
+          )),
+        );
+      });
+    }
+
+    test('batch maps a host failure with write context and its one domain',
+        () async {
+      final host = _FakeHostApi()
+        ..failures['applyBatch'] = kotlinFailure(
+            'invalid-query', 'android.content.OperationApplicationException');
+
+      await expectLater(
+        apiFor(host).batch(
+          const iface.BatchRequest(
+            operations: <iface.MutationRequest>[
+              iface.MutationRequest(
+                type: iface.MutationType.delete,
+                domain: iface.QueryDomain.messages,
+              ),
+            ],
+          ),
+        ),
+        throwsA(hostError(
+          code: iface.SimpleQueryErrorCode.invalidQuery,
+          hostCode: 'invalid-query',
+          domain: iface.QueryDomain.messages,
+          operation: iface.QueryOperation.write,
+        )),
+      );
+    });
+
+    test('openBinary maps a host failure with read context', () async {
+      final host = _FakeHostApi()
+        ..failures['openStream'] =
+            kotlinFailure('unavailable', 'java.io.FileNotFoundException');
+
+      await expectLater(
+        apiFor(host).openBinary(
+          const iface.BinaryRequest(
+            domain: iface.QueryDomain.media,
+            platformData: <String, Object?>{
+              'contentUri': 'content://media/external/images/media/7',
+            },
+          ),
+        ),
+        throwsA(hostError(
+          code: iface.SimpleQueryErrorCode.unavailable,
+          hostCode: 'unavailable',
+          domain: iface.QueryDomain.media,
+          operation: iface.QueryOperation.read,
+          contentUri: 'content://media/external/images/media/7',
+        )),
+      );
+    });
+
+    test('closeBinary maps a host failure', () async {
+      final host = _FakeHostApi()
+        ..failures['closeStream'] =
+            PlatformException(code: 'channel-error', message: 'detached');
+
+      await expectLater(
+        apiFor(host).closeBinary('s'),
+        throwsA(hostError(
+          code: iface.SimpleQueryErrorCode.unavailable,
+          hostCode: 'channel-error',
+          operation: iface.QueryOperation.read,
+        )),
+      );
+    });
+
+    test('providerCall maps a host failure as platformSpecific', () async {
+      final host = _FakeHostApi()
+        ..failures['call'] =
+            kotlinFailure('permission-denied', 'java.lang.SecurityException');
+
+      await expectLater(
+        apiFor(host).callExtension(
+          namespace: 'android.provider',
+          method: 'providerCall',
+          args: <String, Object?>{'authority': 'com.example', 'method': 'm'},
+        ),
+        throwsA(hostError(
+          code: iface.SimpleQueryErrorCode.permissionDenied,
+          hostCode: 'permission-denied',
+          domain: iface.QueryDomain.platformSpecific,
+        )),
+      );
+    });
+
+    test('extractToFile maps a host failure with read context', () async {
+      final host = _FakeHostApi()
+        ..failures['extractToFile'] =
+            kotlinFailure('transient', 'java.io.IOException');
+
+      await expectLater(
+        apiFor(host).callExtension(
+          namespace: 'android.provider',
+          method: 'extractToFile',
+          args: <String, Object?>{'contentUri': 'content://mms/part/9'},
+        ),
+        throwsA(hostError(
+          code: iface.SimpleQueryErrorCode.transientFailure,
+          hostCode: 'transient',
+          domain: iface.QueryDomain.platformSpecific,
+          operation: iface.QueryOperation.read,
+          contentUri: 'content://mms/part/9',
+        )),
+      );
+    });
+
+    for (final method in <String>['hasPermission', 'getAndroidSdkInt']) {
+      test('a failed $method pre-flight maps with the request context',
+          () async {
+        final host = _FakeHostApi()
+          ..failures[method] =
+              PlatformException(code: 'channel-error', message: 'detached');
+
+        await expectLater(
+          apiFor(host).query(
+            const iface.QueryRequest(domain: iface.QueryDomain.contacts),
+          ),
+          throwsA(hostError(
+            code: iface.SimpleQueryErrorCode.unavailable,
+            hostCode: 'channel-error',
+            domain: iface.QueryDomain.contacts,
+            operation: iface.QueryOperation.read,
+            contentUri: 'content://com.android.contacts/contacts',
+          )),
+        );
+        expect(host.lastQueryRequest, isNull);
+      });
+    }
+
+    test('a failed observer registration is a stream error', () async {
+      final host = _FakeHostApi()
+        ..failures['registerObserver'] =
+            kotlinFailure('permission-denied', 'java.lang.SecurityException');
+
+      final errors = <Object>[];
+      final subscription = apiFor(host)
+          .observe(const iface.ObserveRequest(domain: iface.QueryDomain.calls))
+          .listen((_) {}, onError: errors.add);
+      await Future<void>.delayed(Duration.zero);
+      await subscription.cancel();
+
+      expect(errors, <Matcher>[
+        hostError(
+          code: iface.SimpleQueryErrorCode.permissionDenied,
+          hostCode: 'permission-denied',
+          domain: iface.QueryDomain.calls,
+          operation: iface.QueryOperation.observe,
+          contentUri: 'content://call_log/calls',
+        ),
+      ]);
+    });
+
+    // A broadcast stream's cancel() does not await onCancel, and no listener
+    // is left to receive a stream error, so the mapped error goes to the
+    // zone's uncaught-error handler.
+    test('a failed observer unregistration reports a mapped zone error',
+        () async {
+      final host = _FakeHostApi()
+        ..failures['unregisterObserver'] =
+            PlatformException(code: 'channel-error', message: 'detached');
+      final uncaught = <Object>[];
+
+      await runZonedGuarded(() async {
+        final subscription = apiFor(host)
+            .observe(
+                const iface.ObserveRequest(domain: iface.QueryDomain.calls))
+            .listen((_) {});
+        await Future<void>.delayed(Duration.zero);
+        await subscription.cancel();
+        await Future<void>.delayed(Duration.zero);
+      }, (error, _) => uncaught.add(error));
+
+      expect(host.unregisterCount, 1);
+      expect(uncaught, <Matcher>[
+        hostError(
+          code: iface.SimpleQueryErrorCode.unavailable,
+          hostCode: 'channel-error',
+          domain: iface.QueryDomain.calls,
+          operation: iface.QueryOperation.observe,
+          contentUri: 'content://call_log/calls',
+        ),
+      ]);
+    });
+
+    test('dispose maps a failed unregisterAllObservers', () async {
+      final host = _FakeHostApi()
+        ..failures['unregisterAllObservers'] =
+            PlatformException(code: 'channel-error', message: 'detached');
+
+      await expectLater(
+        apiFor(host).dispose(),
+        throwsA(hostError(
+          code: iface.SimpleQueryErrorCode.unavailable,
+          hostCode: 'channel-error',
+          operation: iface.QueryOperation.observe,
+        )),
       );
     });
   });
@@ -1435,6 +1758,9 @@ void main() {
           isA<iface.SimpleQueryError>()
               .having((e) => e.code, 'code',
                   iface.SimpleQueryErrorCode.permissionDenied)
+              .having((e) => e.domain, 'domain', iface.QueryDomain.contacts)
+              .having(
+                  (e) => e.operation, 'operation', iface.QueryOperation.read)
               .having(
             (e) => e.details?['permissions'],
             'details.permissions',
@@ -1601,6 +1927,18 @@ void main() {
 }
 
 class _FakeHostApi extends p.QueryHostApi {
+  /// Host method name → the error that method throws instead of answering.
+  /// Each is thrown with the stack trace `host:<method>`, so tests can
+  /// check the mapper keeps it.
+  final Map<String, PlatformException> failures = <String, PlatformException>{};
+
+  void _failIfConfigured(String method) {
+    final failure = failures[method];
+    if (failure != null) {
+      Error.throwWithStackTrace(failure, StackTrace.fromString('host:$method'));
+    }
+  }
+
   p.QueryResponse queryResponse =
       p.QueryResponse(rows: const [], rowCount: 0, columnNames: const []);
   int registerCount = 0;
@@ -1612,25 +1950,23 @@ class _FakeHostApi extends p.QueryHostApi {
   @override
   Future<List<p.BatchOperationResult?>> applyBatch(
       p.BatchRequest request) async {
+    _failIfConfigured('applyBatch');
     applyBatchCalled = true;
     return const <p.BatchOperationResult?>[];
   }
 
   p.QueryRequest? lastQueryRequest;
 
-  /// When set, [query] throws it instead of answering.
-  PlatformException? queryError;
-
   @override
   Future<p.QueryResponse> query(p.QueryRequest request) async {
     lastQueryRequest = request;
-    final error = queryError;
-    if (error != null) throw error;
+    _failIfConfigured('query');
     return queryResponse;
   }
 
   @override
   Future<String> registerObserver(p.ObserverRequest request) async {
+    _failIfConfigured('registerObserver');
     registerCount += 1;
     return 'obs_$registerCount';
   }
@@ -1638,18 +1974,16 @@ class _FakeHostApi extends p.QueryHostApi {
   @override
   Future<void> unregisterObserver(String observerId) async {
     unregisterCount += 1;
+    _failIfConfigured('unregisterObserver');
   }
 
   @override
-  Future<void> unregisterAllObservers() async {}
-
-  /// When set, [queryWithJoins] throws it instead of answering.
-  PlatformException? joinError;
+  Future<void> unregisterAllObservers() async =>
+      _failIfConfigured('unregisterAllObservers');
 
   @override
   Future<p.JoinQueryResponse> queryWithJoins(p.JoinQueryRequest request) async {
-    final error = joinError;
-    if (error != null) throw error;
+    _failIfConfigured('queryWithJoins');
     return p.JoinQueryResponse(
       rows: <p.JoinedRow?>[
         p.JoinedRow(
@@ -1666,27 +2000,41 @@ class _FakeHostApi extends p.QueryHostApi {
   }
 
   @override
-  Future<String?> insert(p.InsertRequest request) async => null;
+  Future<String?> insert(p.InsertRequest request) async {
+    _failIfConfigured('insert');
+    return null;
+  }
 
   @override
   Future<int> bulkInsert(p.BulkInsertRequest request) async => 0;
 
   @override
-  Future<int> update(p.UpdateRequest request) async => 0;
+  Future<int> update(p.UpdateRequest request) async {
+    _failIfConfigured('update');
+    return 0;
+  }
 
   @override
-  Future<int> delete(p.DeleteRequest request) async => 0;
+  Future<int> delete(p.DeleteRequest request) async {
+    _failIfConfigured('delete');
+    return 0;
+  }
 
   @override
-  Future<p.StreamDescriptor> openStream(String contentUri) async =>
-      p.StreamDescriptor(streamId: 's', pipePath: '/tmp/p');
+  Future<p.StreamDescriptor> openStream(String contentUri) async {
+    _failIfConfigured('openStream');
+    return p.StreamDescriptor(streamId: 's', pipePath: '/tmp/p');
+  }
 
   @override
-  Future<String?> extractToFile(String contentUri) async =>
-      extractToFileResponse;
+  Future<String?> extractToFile(String contentUri) async {
+    _failIfConfigured('extractToFile');
+    return extractToFileResponse;
+  }
 
   @override
   Future<void> closeStream(String streamId) async {
+    _failIfConfigured('closeStream');
     closedStreams.add(streamId);
   }
 
@@ -1700,13 +2048,15 @@ class _FakeHostApi extends p.QueryHostApi {
   Future<String?> uncanonicalize(String contentUri) async => null;
 
   @override
-  Future<p.ProviderCallResponse> call(p.ProviderCallRequest request) async =>
-      p.ProviderCallResponse(
-        result: <String?, Object?>{
-          'ok': true,
-          'method': request.method,
-        },
-      );
+  Future<p.ProviderCallResponse> call(p.ProviderCallRequest request) async {
+    _failIfConfigured('call');
+    return p.ProviderCallResponse(
+      result: <String?, Object?>{
+        'ok': true,
+        'method': request.method,
+      },
+    );
+  }
 
   /// Permission gate stub. Default: every permission is granted. Set
   /// [grantedPermissions] to a specific allowlist to simulate denial.
@@ -1716,6 +2066,7 @@ class _FakeHostApi extends p.QueryHostApi {
   @override
   Future<bool> hasPermission(String permissionName) async {
     permissionChecks.add(permissionName);
+    _failIfConfigured('hasPermission');
     final allowlist = grantedPermissions;
     return allowlist == null || allowlist.contains(permissionName);
   }
@@ -1726,5 +2077,8 @@ class _FakeHostApi extends p.QueryHostApi {
   int sdkInt = 33;
 
   @override
-  Future<int> getAndroidSdkInt() async => sdkInt;
+  Future<int> getAndroidSdkInt() async {
+    _failIfConfigured('getAndroidSdkInt');
+    return sdkInt;
+  }
 }

@@ -17,7 +17,8 @@ import kotlinx.coroutines.launch
  *
  * Uses callback-based async pattern as required by Pigeon v22+.
  * All operations run on [Dispatchers.IO] (injectable for tests) and return
- * results via callback.
+ * results via callback. Every failure reaches Dart through [HostErrors], so
+ * its Pigeon code is one of the `docs/ERROR_MAPPING.md` vocabulary codes.
  */
 class QueryHostApiImpl(
     private val context: Context,
@@ -67,9 +68,9 @@ class QueryHostApiImpl(
                 mainHandler.post { callback(Result.success(response)) }
             } catch (e: QueryFlutterError) {
                 // QueryFlutterError extends Throwable, not Exception.
-                mainHandler.post { callback(Result.failure(e)) }
+                postFailure(callback, e)
             } catch (e: Exception) {
-                mainHandler.post { callback(Result.failure(e)) }
+                postFailure(callback, e)
             }
         }
     }
@@ -142,9 +143,9 @@ class QueryHostApiImpl(
                 mainHandler.post { callback(Result.success(response)) }
             } catch (e: QueryFlutterError) {
                 // QueryFlutterError extends Throwable, not Exception.
-                mainHandler.post { callback(Result.failure(e)) }
+                postFailure(callback, e)
             } catch (e: Exception) {
-                mainHandler.post { callback(Result.failure(e)) }
+                postFailure(callback, e)
             }
         }
     }
@@ -154,7 +155,7 @@ class QueryHostApiImpl(
      * returns a null cursor (UNFY-284): the provider could not be reached
      * (unknown authority, or its process died during the call) or chose to
      * return none. Reporting it as zero rows would hide that, so it crosses
-     * Pigeon as a `PlatformException` with code [NULL_CURSOR_ERROR_CODE],
+     * Pigeon as a `PlatformException` with code [HostErrors.UNAVAILABLE],
      * which the Dart side maps to `SimpleQueryError(unavailable)` per
      * `docs/ERROR_MAPPING.md`. [joinName] names the join whose related
      * query failed, if it was not the primary query.
@@ -164,7 +165,7 @@ class QueryHostApiImpl(
         val details = mutableMapOf("reason" to "nullCursor", "contentUri" to contentUri)
         if (joinName != null) details["join"] = joinName
         return QueryFlutterError(
-            NULL_CURSOR_ERROR_CODE,
+            HostErrors.UNAVAILABLE,
             "simple_query: content provider returned no cursor for $target; " +
                 "it is unreachable or returned none",
             details,
@@ -205,7 +206,7 @@ class QueryHostApiImpl(
                 val resultUri = contentResolver.insert(uri, values)
                 mainHandler.post { callback(Result.success(resultUri?.toString())) }
             } catch (e: Exception) {
-                mainHandler.post { callback(Result.failure(e)) }
+                postFailure(callback, e)
             }
         }
     }
@@ -222,7 +223,7 @@ class QueryHostApiImpl(
                 val count = contentResolver.bulkInsert(uri, valuesArray).toLong()
                 mainHandler.post { callback(Result.success(count)) }
             } catch (e: Exception) {
-                mainHandler.post { callback(Result.failure(e)) }
+                postFailure(callback, e)
             }
         }
     }
@@ -246,7 +247,7 @@ class QueryHostApiImpl(
 
                 mainHandler.post { callback(Result.success(count)) }
             } catch (e: Exception) {
-                mainHandler.post { callback(Result.failure(e)) }
+                postFailure(callback, e)
             }
         }
     }
@@ -268,7 +269,7 @@ class QueryHostApiImpl(
 
                 mainHandler.post { callback(Result.success(count)) }
             } catch (e: Exception) {
-                mainHandler.post { callback(Result.failure(e)) }
+                postFailure(callback, e)
             }
         }
     }
@@ -294,7 +295,7 @@ class QueryHostApiImpl(
 
                 mainHandler.post { callback(Result.success(batchResults)) }
             } catch (e: Exception) {
-                mainHandler.post { callback(Result.failure(e)) }
+                postFailure(callback, e)
             }
         }
     }
@@ -352,7 +353,7 @@ class QueryHostApiImpl(
                 val descriptor = streamManager.openStream(contentUri)
                 mainHandler.post { callback(Result.success(descriptor)) }
             } catch (e: Exception) {
-                mainHandler.post { callback(Result.failure(e)) }
+                postFailure(callback, e)
             }
         }
     }
@@ -363,7 +364,7 @@ class QueryHostApiImpl(
                 val filePath = streamManager.extractToFile(contentUri)
                 mainHandler.post { callback(Result.success(filePath)) }
             } catch (e: Exception) {
-                mainHandler.post { callback(Result.failure(e)) }
+                postFailure(callback, e)
             }
         }
     }
@@ -374,7 +375,7 @@ class QueryHostApiImpl(
                 streamManager.closeStream(streamId)
                 mainHandler.post { callback(Result.success(Unit)) }
             } catch (e: Exception) {
-                mainHandler.post { callback(Result.failure(e)) }
+                postFailure(callback, e)
             }
         }
     }
@@ -392,7 +393,7 @@ class QueryHostApiImpl(
                 )
                 mainHandler.post { callback(Result.success(observerId)) }
             } catch (e: Exception) {
-                mainHandler.post { callback(Result.failure(e)) }
+                postFailure(callback, e)
             }
         }
     }
@@ -403,7 +404,7 @@ class QueryHostApiImpl(
                 observerRegistry.unregister(observerId)
                 mainHandler.post { callback(Result.success(Unit)) }
             } catch (e: Exception) {
-                mainHandler.post { callback(Result.failure(e)) }
+                postFailure(callback, e)
             }
         }
     }
@@ -414,7 +415,7 @@ class QueryHostApiImpl(
                 observerRegistry.unregisterAll()
                 mainHandler.post { callback(Result.success(Unit)) }
             } catch (e: Exception) {
-                mainHandler.post { callback(Result.failure(e)) }
+                postFailure(callback, e)
             }
         }
     }
@@ -435,7 +436,7 @@ class QueryHostApiImpl(
                 val mimeType = contentResolver.getType(uri)
                 mainHandler.post { callback(Result.success(TypeResponse(mimeType = mimeType))) }
             } catch (e: Exception) {
-                mainHandler.post { callback(Result.failure(e)) }
+                postFailure(callback, e)
             }
         }
     }
@@ -447,7 +448,7 @@ class QueryHostApiImpl(
                 val result = contentResolver.canonicalize(uri)?.toString()
                 mainHandler.post { callback(Result.success(result)) }
             } catch (e: Exception) {
-                mainHandler.post { callback(Result.failure(e)) }
+                postFailure(callback, e)
             }
         }
     }
@@ -459,7 +460,7 @@ class QueryHostApiImpl(
                 val result = contentResolver.uncanonicalize(uri)?.toString()
                 mainHandler.post { callback(Result.success(result)) }
             } catch (e: Exception) {
-                mainHandler.post { callback(Result.failure(e)) }
+                postFailure(callback, e)
             }
         }
     }
@@ -495,7 +496,7 @@ class QueryHostApiImpl(
 
                 mainHandler.post { callback(Result.success(ProviderCallResponse(result = resultMap))) }
             } catch (e: Exception) {
-                mainHandler.post { callback(Result.failure(e)) }
+                postFailure(callback, e)
             }
         }
     }
@@ -518,7 +519,7 @@ class QueryHostApiImpl(
                 android.content.pm.PackageManager.PERMISSION_GRANTED
             callback(Result.success(granted))
         } catch (e: Exception) {
-            callback(Result.failure(e))
+            callback(Result.failure(HostErrors.toFlutterError(e)))
         }
     }
 
@@ -534,6 +535,21 @@ class QueryHostApiImpl(
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
+
+    /**
+     * Purpose: Reply to a failed host call on the main thread with its
+     * [HostErrors] classification, so no Java class name reaches Dart as an
+     * error code.
+     *
+     * @param callback the Pigeon reply callback of the failed call.
+     * @param error the failure the call raised.
+     * @return Nothing; the reply is posted to the main looper.
+     * @throws Nothing.
+     */
+    private fun <T> postFailure(callback: (Result<T>) -> Unit, error: Throwable) {
+        val hostError = HostErrors.toFlutterError(error)
+        mainHandler.post { callback(Result.failure(hostError)) }
+    }
 
     private fun cursorRowToMap(cursor: Cursor): Map<String?, Any?> {
         val map = mutableMapOf<String?, Any?>()
@@ -580,14 +596,5 @@ class QueryHostApiImpl(
     fun dispose() {
         observerRegistry.unregisterAll()
         streamManager.closeAll()
-    }
-
-    internal companion object {
-        /**
-         * Pigeon error code for a null resolver cursor. Matches the
-         * `unavailable` code the other platform bridges send for the same
-         * condition, so every Dart mapper reads one vocabulary.
-         */
-        const val NULL_CURSOR_ERROR_CODE = "unavailable"
     }
 }
