@@ -95,26 +95,29 @@ class StreamManager(
     }
 
     /**
-     * Extract content to a temporary file.
+     * Purpose: Extract content to a temporary file.
      *
-     * Returns the file:// URI to the temp file.
      * Caller is responsible for deleting the file when done.
+     *
+     * @param contentUri the content to copy.
+     * @return the file:// URI of the temp file, or null when the provider
+     *   hands back no stream.
+     * @throws Exception whatever opening or copying raises, so the host
+     *   boundary classifies it ([HostErrors], UNFY-300). The temp file is
+     *   deleted whenever no URI is returned.
      */
     fun extractToFile(contentUri: String): String? {
-        val uri = Uri.parse(contentUri)
-
-        return try {
-            val tempFile = File.createTempFile("sq_extract_", null, context.cacheDir)
-
-            contentResolver.openInputStream(uri)?.use { input ->
-                FileOutputStream(tempFile).use { output ->
-                    input.copyTo(output)
-                }
-            } ?: return null
-
-            "file://${tempFile.absolutePath}"
-        } catch (e: Exception) {
-            null
+        val tempFile = File.createTempFile("sq_extract_", null, context.cacheDir)
+        var extracted = false
+        try {
+            val input = contentResolver.openInputStream(Uri.parse(contentUri)) ?: return null
+            input.use {
+                FileOutputStream(tempFile).use { output -> it.copyTo(output) }
+            }
+            extracted = true
+            return "file://${tempFile.absolutePath}"
+        } finally {
+            if (!extracted) tempFile.delete()
         }
     }
 

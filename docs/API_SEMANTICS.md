@@ -40,6 +40,8 @@ Since `simple_query_android` 0.3.0, no Android host call lets a raw `PlatformExc
 
 - The permission pre-flight `SimpleQueryError(permissionDenied)` carries the request's `domain` and operation, and its `details.permissions` name the OS permissions to request. A provider-raised denial has no such list; its `details.nativeType` names the exception (e.g. `java.lang.SecurityException`).
 - `observe()`: a failed observer registration is delivered to listeners as a stream error. A failed unregistration has no listener left to receive it, so its mapped error goes to the zone's uncaught-error handler. That covers a cancel, and a registration that completes after its only listener cancelled.
+- `openBinary()` maps failures of the host call, which sets up the pipe. The provider content is opened and copied afterwards, in the background; a failure there arrives as an `ObserveEvent` with `source: android.stream_error` and ends the pipe early, not as a `SimpleQueryError`.
+- The `android.provider` `extractToFile` extension raises the mapped failure of opening or copying the content (e.g. `permissionDenied` for a provider `SecurityException`). It raises `unavailable` only when the provider hands back no stream.
 - `dispose()` runs every cleanup step (observer unregistration, binary stream close, event stream close) even when a host call fails, then throws the first failure.
 - `unavailable` means only that the provider or host could not be reached. A failure no rule covers is `transientFailure`, so code that tolerates `unavailable` (for example, an optional provider) does not hide unrelated bugs.
 

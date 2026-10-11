@@ -6,6 +6,7 @@ import android.database.Cursor
 import android.database.MatrixCursor
 import android.net.Uri
 import android.os.Looper
+import android.os.ParcelFileDescriptor
 import io.flutter.plugin.common.BinaryMessenger
 import java.nio.ByteBuffer
 import kotlin.test.Test
@@ -52,6 +53,11 @@ class QueryHostApiImplTest {
                 "denied" -> throw SecurityException("Permission Denial: reading $uri")
                 "broken" -> throw IllegalStateException("provider state")
                 "fatal" -> throw AssertionError("provider invariant")
+                "cancelled" -> throw java.util.concurrent.CancellationException("future cancelled")
+                "badrows" -> object : MatrixCursor(columns) {
+                    init { addRow(arrayOf<Any?>(1L, "x", null)) }
+                    override fun getType(column: Int): Int = throw IllegalStateException("window")
+                }
                 "null" -> return null
                 "empty" -> MatrixCursor(columns)
                 "rows" -> MatrixCursor(columns).apply {
@@ -63,6 +69,9 @@ class QueryHostApiImplTest {
             opened.add(cursor)
             return cursor
         }
+
+        override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor? =
+            throw SecurityException("Permission Denial: opening $uri")
 
         override fun getType(uri: Uri): String? = null
         override fun insert(uri: Uri, values: ContentValues?): Uri? =
@@ -203,6 +212,34 @@ class QueryHostApiImplTest {
         val reply = call("query", QueryRequest(contentUri = uri("fatal")))
 
         assertHostError(reply, HostErrors.TRANSIENT, "java.lang.AssertionError")
+    }
+
+    @Test
+    fun bodyCancellationExceptionStillReplies() {
+        val reply = call("query", QueryRequest(contentUri = uri("cancelled")))
+
+        assertHostError(reply, HostErrors.TRANSIENT, "java.util.concurrent.CancellationException")
+    }
+
+    @Test
+    fun joinRowReadFailureNamesTheJoinProvider() {
+        val reply = call("queryWithJoins", joinRequest(primary = "rows", join = "badrows"))
+
+        assertHostError(reply, HostErrors.TRANSIENT, "java.lang.IllegalStateException")
+        val details = reply[2] as Map<*, *>
+        assertEquals(uri("badrows"), details["contentUri"])
+        assertEquals("parts", details["join"])
+    }
+
+    @Test
+    fun extractToFileFailureRepliesItsClassificationAndLeavesNoTempFile() {
+        val cacheDir = RuntimeEnvironment.getApplication().cacheDir
+        val before = cacheDir.list()?.count { it.startsWith("sq_extract_") } ?: 0
+
+        val reply = call("extractToFile", uri("rows"))
+
+        assertHostError(reply, HostErrors.PERMISSION_DENIED, "java.lang.SecurityException")
+        assertEquals(before, cacheDir.list()?.count { it.startsWith("sq_extract_") } ?: 0)
     }
 
     @Test

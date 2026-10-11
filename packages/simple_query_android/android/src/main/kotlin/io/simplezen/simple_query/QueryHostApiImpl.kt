@@ -12,6 +12,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 
 /**
@@ -113,8 +114,9 @@ class QueryHostApiImpl(
      * @param parentKeyValue the parent row's key the join's foreign key must equal.
      * @return the related rows; an empty list when the query matched none.
      * @throws QueryFlutterError carrying the join's `contentUri` and name when
-     *   the join query fails or returns a null cursor, so Dart names the
-     *   failing provider rather than the primary one.
+     *   the join query or the read of its rows fails, or the query returns
+     *   a null cursor, so Dart names the failing provider rather than the
+     *   primary one.
      */
     private fun queryJoinRows(joinSpec: JoinSpec, parentKeyValue: String): List<Map<String?, Any?>?> {
         val joinSelection = buildJoinSelection(
@@ -126,28 +128,29 @@ class QueryHostApiImpl(
         // Combine existing args with the parent key value
         val joinArgs = (joinSpec.selectionArgs?.filterNotNull() ?: emptyList()) + parentKeyValue
 
-        val joinCursor = try {
-            contentResolver.query(
+        try {
+            val joinCursor = contentResolver.query(
                 Uri.parse(joinSpec.contentUri),
                 joinSpec.projection?.filterNotNull()?.toTypedArray(),
                 joinSelection,
                 joinArgs.toTypedArray(),
                 joinSpec.sortOrder
-            )
-        } catch (e: Exception) {
+            ) ?: throw nullCursorError(joinSpec.contentUri, joinName = joinSpec.name)
+
+            val relatedRows = mutableListOf<Map<String?, Any?>?>()
+            joinCursor.use { jc ->
+                while (jc.moveToNext()) {
+                    relatedRows.add(cursorRowToMap(jc))
+                }
+            }
+            return relatedRows
+        } catch (e: Throwable) {
+            // A QueryFlutterError (the null cursor above) passes through as is.
             throw HostErrors.toFlutterError(
                 e,
                 mapOf("contentUri" to joinSpec.contentUri, "join" to joinSpec.name),
             )
-        } ?: throw nullCursorError(joinSpec.contentUri, joinName = joinSpec.name)
-
-        val relatedRows = mutableListOf<Map<String?, Any?>?>()
-        joinCursor.use { jc ->
-            while (jc.moveToNext()) {
-                relatedRows.add(cursorRowToMap(jc))
-            }
         }
-        return relatedRows
     }
 
     /**
@@ -443,16 +446,16 @@ class QueryHostApiImpl(
      * @param callback the Pigeon reply callback of the call.
      * @param body the blocking work; its return value is the reply.
      * @return Nothing; the reply is posted to the main looper.
-     * @throws CancellationException rethrown so scope cancellation still
-     *   cancels the coroutine; every other failure becomes the reply.
+     * @throws CancellationException only when this coroutine itself was
+     *   cancelled; a `CancellationException` the blocking [body] raises is
+     *   a failure like any other and becomes the reply.
      */
     private fun <T> launchHostCall(callback: (Result<T>) -> Unit, body: () -> T) {
         scope.launch {
             val result = try {
                 Result.success(body())
-            } catch (e: CancellationException) {
-                throw e
             } catch (e: Throwable) {
+                if (e is CancellationException) ensureActive()
                 Result.failure(HostErrors.toFlutterError(e))
             }
             mainHandler.post { callback(result) }
