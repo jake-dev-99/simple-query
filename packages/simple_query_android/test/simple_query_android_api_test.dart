@@ -1,3 +1,4 @@
+import 'package:flutter/services.dart' show PlatformException;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:simple_query_android/src/generated/query.g.dart' as p;
 import 'package:simple_query_android/src/simple_query_android_api.dart';
@@ -561,6 +562,145 @@ void main() {
             (e) => e.code, 'code', iface.SimpleQueryErrorCode.unavailable),
       ),
     );
+  });
+
+  group('null resolver cursor maps to unavailable (UNFY-284)', () {
+    PlatformException nullCursor(String contentUri, {String? join}) =>
+        PlatformException(
+          code: 'unavailable',
+          message: 'simple_query: content provider returned no cursor for '
+              '${join == null ? contentUri : "join '$join' ($contentUri)"}; '
+              'it is unreachable or returned none',
+          details: <Object?, Object?>{
+            'reason': 'nullCursor',
+            'contentUri': contentUri,
+            if (join != null) 'join': join,
+          },
+        );
+
+    SimpleQueryAndroidApi apiFor(_FakeHostApi host) => SimpleQueryAndroidApi(
+          hostApi: host,
+          registerFlutterApi: false,
+          enforceAndroidPlatformCheck: false,
+        );
+
+    test('query throws SimpleQueryError(unavailable) with domain and operation',
+        () async {
+      final host = _FakeHostApi()
+        ..queryError = nullCursor('content://call_log/calls');
+
+      await expectLater(
+        apiFor(host).query(
+          const iface.QueryRequest(domain: iface.QueryDomain.calls),
+        ),
+        throwsA(
+          isA<iface.SimpleQueryError>()
+              .having(
+                  (e) => e.code, 'code', iface.SimpleQueryErrorCode.unavailable)
+              .having((e) => e.message, 'message',
+                  startsWith('simple_query: content provider returned no'))
+              .having((e) => e.domain, 'domain', iface.QueryDomain.calls)
+              .having(
+                  (e) => e.operation, 'operation', iface.QueryOperation.read)
+              .having((e) => e.details?['contentUri'], 'details.contentUri',
+                  'content://call_log/calls')
+              .having((e) => e.details?['code'], 'details.code', 'unavailable')
+              .having(
+            (e) => e.details?['details'],
+            'details.details',
+            <Object?, Object?>{
+              'reason': 'nullCursor',
+              'contentUri': 'content://call_log/calls',
+            },
+          ),
+        ),
+      );
+      expect(host.lastQueryRequest?.contentUri, 'content://call_log/calls');
+    });
+
+    test(
+        'query keeps the simple_query: prefix when the native message lacks it',
+        () async {
+      final host = _FakeHostApi()
+        ..queryError = PlatformException(code: 'unavailable', message: 'gone');
+
+      await expectLater(
+        apiFor(host).query(
+          const iface.QueryRequest(
+            domain: iface.QueryDomain.platformSpecific,
+            platformData: <String, Object?>{
+              'contentUri': 'content://com.example.missing/items',
+            },
+          ),
+        ),
+        throwsA(
+          isA<iface.SimpleQueryError>()
+              .having(
+                  (e) => e.code, 'code', iface.SimpleQueryErrorCode.unavailable)
+              .having(
+                (e) => e.message,
+                'message',
+                'simple_query: content provider unavailable for '
+                    'content://com.example.missing/items',
+              )
+              .having((e) => e.domain, 'domain',
+                  iface.QueryDomain.platformSpecific),
+        ),
+      );
+    });
+
+    // Today's behavior, which ERROR_MAPPING.md forbids; mapping every host
+    // error is UNFY-300, which updates this test.
+    test('query rethrows other host errors unchanged', () async {
+      final denial = PlatformException(
+        code: 'SecurityException',
+        message: 'java.lang.SecurityException: Permission Denial',
+      );
+      final host = _FakeHostApi()..queryError = denial;
+
+      await expectLater(
+        apiFor(host).query(
+          const iface.QueryRequest(domain: iface.QueryDomain.messages),
+        ),
+        throwsA(same(denial)),
+      );
+    });
+
+    test('queryWithJoins throws SimpleQueryError(unavailable) for a join',
+        () async {
+      final host = _FakeHostApi()
+        ..joinError = nullCursor('content://mms/part', join: 'parts');
+
+      await expectLater(
+        apiFor(host).callExtension(
+          namespace: 'android.provider',
+          method: 'queryWithJoins',
+          args: <String, Object?>{
+            'contentUri': 'content://mms',
+            'joins': <Map<String, Object?>>[
+              <String, Object?>{
+                'name': 'parts',
+                'contentUri': 'content://mms/part',
+                'foreignKeyColumn': 'mid',
+                'parentKeyColumn': '_id',
+              },
+            ],
+          },
+        ),
+        throwsA(
+          isA<iface.SimpleQueryError>()
+              .having(
+                  (e) => e.code, 'code', iface.SimpleQueryErrorCode.unavailable)
+              .having((e) => e.message, 'message', contains("join 'parts'"))
+              .having(
+                  (e) => e.domain, 'domain', iface.QueryDomain.platformSpecific)
+              .having(
+                  (e) => e.operation, 'operation', iface.QueryOperation.read)
+              .having((e) => e.details?['contentUri'], 'details.contentUri',
+                  'content://mms/part'),
+        ),
+      );
+    });
   });
 
   group('SQL filter generation via _selectionFromFilters', () {
@@ -1478,9 +1618,14 @@ class _FakeHostApi extends p.QueryHostApi {
 
   p.QueryRequest? lastQueryRequest;
 
+  /// When set, [query] throws it instead of answering.
+  PlatformException? queryError;
+
   @override
   Future<p.QueryResponse> query(p.QueryRequest request) async {
     lastQueryRequest = request;
+    final error = queryError;
+    if (error != null) throw error;
     return queryResponse;
   }
 
@@ -1498,22 +1643,27 @@ class _FakeHostApi extends p.QueryHostApi {
   @override
   Future<void> unregisterAllObservers() async {}
 
+  /// When set, [queryWithJoins] throws it instead of answering.
+  PlatformException? joinError;
+
   @override
-  Future<p.JoinQueryResponse> queryWithJoins(
-          p.JoinQueryRequest request) async =>
-      p.JoinQueryResponse(
-        rows: <p.JoinedRow?>[
-          p.JoinedRow(
-            data: <Object?, Object?>{'_id': 1, 'body': 'parent'},
-            related: <Object?, Object?>{
-              'parts': <Object?>[
-                <Object?, Object?>{'_id': 10, 'mid': 1}
-              ],
-            },
-          ),
-        ],
-        rowCount: 1,
-      );
+  Future<p.JoinQueryResponse> queryWithJoins(p.JoinQueryRequest request) async {
+    final error = joinError;
+    if (error != null) throw error;
+    return p.JoinQueryResponse(
+      rows: <p.JoinedRow?>[
+        p.JoinedRow(
+          data: <Object?, Object?>{'_id': 1, 'body': 'parent'},
+          related: <Object?, Object?>{
+            'parts': <Object?>[
+              <Object?, Object?>{'_id': 10, 'mid': 1}
+            ],
+          },
+        ),
+      ],
+      rowCount: 1,
+    );
+  }
 
   @override
   Future<String?> insert(p.InsertRequest request) async => null;

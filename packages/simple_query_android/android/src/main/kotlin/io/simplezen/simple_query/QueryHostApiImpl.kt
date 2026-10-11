@@ -6,6 +6,7 @@ import android.database.Cursor
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -15,14 +16,16 @@ import kotlinx.coroutines.launch
  * Implementation of the Pigeon-generated QueryHostApi.
  *
  * Uses callback-based async pattern as required by Pigeon v22+.
- * All operations run on IO dispatcher and return results via callback.
+ * All operations run on [Dispatchers.IO] (injectable for tests) and return
+ * results via callback.
  */
 class QueryHostApiImpl(
     private val context: Context,
     private val flutterApi: QueryFlutterApi,
+    ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : QueryHostApi {
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(SupervisorJob() + ioDispatcher)
     private val mainHandler = Handler(Looper.getMainLooper())
     private val streamManager = StreamManager(context, flutterApi, mainHandler)
     private val observerRegistry = ObserverRegistry(context, flutterApi, mainHandler)
@@ -44,32 +47,27 @@ class QueryHostApiImpl(
                     request.selection,
                     request.selectionArgs?.filterNotNull()?.toTypedArray(),
                     buildSortOrderWithLimit(request.sortOrder, request.limit, request.offset)
-                )
+                ) ?: throw nullCursorError(request.contentUri)
 
                 val response = cursor.use { c ->
-                    if (c == null) {
-                        QueryResponse(
-                            columnNames = emptyList(),
-                            rows = emptyList(),
-                            rowCount = 0
-                        )
-                    } else {
-                        val columns = c.columnNames.toList()
-                        val rows = mutableListOf<Map<String?, Any?>?>()
+                    val columns = c.columnNames.toList()
+                    val rows = mutableListOf<Map<String?, Any?>?>()
 
-                        while (c.moveToNext()) {
-                            rows.add(cursorRowToMap(c))
-                        }
-
-                        QueryResponse(
-                            columnNames = columns,
-                            rows = rows,
-                            rowCount = rows.size.toLong()
-                        )
+                    while (c.moveToNext()) {
+                        rows.add(cursorRowToMap(c))
                     }
+
+                    QueryResponse(
+                        columnNames = columns,
+                        rows = rows,
+                        rowCount = rows.size.toLong()
+                    )
                 }
 
                 mainHandler.post { callback(Result.success(response)) }
+            } catch (e: QueryFlutterError) {
+                // QueryFlutterError extends Throwable, not Exception.
+                mainHandler.post { callback(Result.failure(e)) }
             } catch (e: Exception) {
                 mainHandler.post { callback(Result.failure(e)) }
             }
@@ -87,11 +85,11 @@ class QueryHostApiImpl(
                     request.primary.selection,
                     request.primary.selectionArgs?.filterNotNull()?.toTypedArray(),
                     buildSortOrderWithLimit(request.primary.sortOrder, request.primary.limit, request.primary.offset)
-                )
+                ) ?: throw nullCursorError(request.primary.contentUri)
 
                 val joinedRows = mutableListOf<JoinedRow?>()
 
-                primaryCursor?.use { pc ->
+                primaryCursor.use { pc ->
                     while (pc.moveToNext()) {
                         val primaryRow = cursorRowToMap(pc)
                         val relatedData = mutableMapOf<String?, List<Map<String?, Any?>?>?>()
@@ -117,10 +115,10 @@ class QueryHostApiImpl(
                                 joinSelection,
                                 joinArgs.toTypedArray(),
                                 joinSpec.sortOrder
-                            )
+                            ) ?: throw nullCursorError(joinSpec.contentUri, joinName = joinSpec.name)
 
                             val relatedRows = mutableListOf<Map<String?, Any?>?>()
-                            joinCursor?.use { jc ->
+                            joinCursor.use { jc ->
                                 while (jc.moveToNext()) {
                                     relatedRows.add(cursorRowToMap(jc))
                                 }
@@ -142,10 +140,35 @@ class QueryHostApiImpl(
                 )
 
                 mainHandler.post { callback(Result.success(response)) }
+            } catch (e: QueryFlutterError) {
+                // QueryFlutterError extends Throwable, not Exception.
+                mainHandler.post { callback(Result.failure(e)) }
             } catch (e: Exception) {
                 mainHandler.post { callback(Result.failure(e)) }
             }
         }
+    }
+
+    /**
+     * The error both read paths raise when `ContentResolver.query(...)`
+     * returns a null cursor (UNFY-284): the provider could not be reached
+     * (unknown authority, or its process died during the call) or chose to
+     * return none. Reporting it as zero rows would hide that, so it crosses
+     * Pigeon as a `PlatformException` with code [NULL_CURSOR_ERROR_CODE],
+     * which the Dart side maps to `SimpleQueryError(unavailable)` per
+     * `docs/ERROR_MAPPING.md`. [joinName] names the join whose related
+     * query failed, if it was not the primary query.
+     */
+    private fun nullCursorError(contentUri: String, joinName: String? = null): QueryFlutterError {
+        val target = if (joinName == null) contentUri else "join '$joinName' ($contentUri)"
+        val details = mutableMapOf("reason" to "nullCursor", "contentUri" to contentUri)
+        if (joinName != null) details["join"] = joinName
+        return QueryFlutterError(
+            NULL_CURSOR_ERROR_CODE,
+            "simple_query: content provider returned no cursor for $target; " +
+                "it is unreachable or returned none",
+            details,
+        )
     }
 
     private fun buildSortOrderWithLimit(sortOrder: String?, limit: Long?, offset: Long?): String? {
@@ -557,5 +580,14 @@ class QueryHostApiImpl(
     fun dispose() {
         observerRegistry.unregisterAll()
         streamManager.closeAll()
+    }
+
+    internal companion object {
+        /**
+         * Pigeon error code for a null resolver cursor. Matches the
+         * `unavailable` code the other platform bridges send for the same
+         * condition, so every Dart mapper reads one vocabulary.
+         */
+        const val NULL_CURSOR_ERROR_CODE = "unavailable"
     }
 }

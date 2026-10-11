@@ -25,7 +25,9 @@ dependencies:
   # would fail validation with "Don't depend on X from the
   # path source."
   simple_query_platform_interface: ^0.2.1
-  simple_query_android: ^0.2.2
+  # ^0.3.0: the first release with ContentQuery.queryOrNull (UNFY-284).
+  # Publish simple_query_android first; the facade cut validates it.
+  simple_query_android: ^0.3.0
   simple_query_ios: ^0.2.0
   simple_query_macos: ^0.2.0
   simple_query_linux: ^0.2.0
