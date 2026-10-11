@@ -49,11 +49,19 @@ code to a `SimpleQueryError`.
 | `FileNotFoundException` | `unavailable` |
 | `RemoteException` (incl. `DeadObjectException`) | `unavailable` |
 | Null cursor from `ContentResolver.query(...)` | `unavailable` |
+| No provider installed for a write, batch or provider call | `unavailable` |
 | Pigeon `channel-error` (no host answered) | `unavailable` |
-| Pigeon `null-error`, or any other failure or code | `transientFailure` |
+| Pigeon `null-error`, or any other failure or code (including a `java.lang.Error`) | `transientFailure` |
 
 A failure no rule covers maps to `transientFailure`, so `unavailable`
 keeps meaning only "provider unreachable".
+
+Writes, batches and provider calls acquire the provider first, so a
+missing provider is `unavailable` there too (details `reason:
+noProvider`), never the `invalidQuery` its `Unknown URL` exception would
+classify as. A provider that dies mid-write is a `RemoteException` and so
+also `unavailable`, where `ContentResolver` would silently have
+returned `null` (insert) or `-1` (update, delete).
 
 Each mapped error carries:
 
@@ -62,7 +70,9 @@ Each mapped error carries:
   target and host code);
 - `details`: `code` (the host code), `details` (the host's details,
   including `nativeStackTrace` for a classified exception), plus
-  `contentUri` and `nativeType` (the Java class name) when known.
+  `contentUri` and `nativeType` (the Java class name) when known. A
+  failed join query names its own provider: `contentUri` is the join's
+  URI, and the host details name the `join`.
 
 The original stack trace is kept.
 

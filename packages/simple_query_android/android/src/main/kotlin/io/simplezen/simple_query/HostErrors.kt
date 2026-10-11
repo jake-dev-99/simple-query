@@ -37,21 +37,23 @@ internal object HostErrors {
      * Pigeon error Dart receives.
      *
      * @param error the failure the host call raised.
+     * @param context details naming what failed when the call touched more
+     *   than one provider, e.g. a join's `contentUri` and `join` name.
      * @return [error] itself when it is already a [QueryFlutterError] (its
      *   code is already in the vocabulary); otherwise a [QueryFlutterError]
      *   carrying the classified code, a `simple_query:` message naming the
-     *   native type, and details `{nativeType, nativeStackTrace}` so the
-     *   original failure is preserved.
+     *   native type, and details `{nativeType, nativeStackTrace}` plus
+     *   [context], so the original failure is preserved.
      * @throws Nothing.
      */
-    fun toFlutterError(error: Throwable): QueryFlutterError {
+    fun toFlutterError(error: Throwable, context: Map<String, String> = emptyMap()): QueryFlutterError {
         if (error is QueryFlutterError) return error
         val nativeMessage = error.message
         val type = error.javaClass.simpleName
         return QueryFlutterError(
             codeFor(error),
             if (nativeMessage == null) "$MESSAGE_PREFIX$type" else "$MESSAGE_PREFIX$type: $nativeMessage",
-            mapOf(
+            context + mapOf(
                 "nativeType" to error.javaClass.name,
                 "nativeStackTrace" to Log.getStackTraceString(error),
             ),

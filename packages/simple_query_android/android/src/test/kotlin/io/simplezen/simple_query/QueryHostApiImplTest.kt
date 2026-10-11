@@ -51,6 +51,7 @@ class QueryHostApiImplTest {
             val cursor = when (uri.lastPathSegment) {
                 "denied" -> throw SecurityException("Permission Denial: reading $uri")
                 "broken" -> throw IllegalStateException("provider state")
+                "fatal" -> throw AssertionError("provider invariant")
                 "null" -> return null
                 "empty" -> MatrixCursor(columns)
                 "rows" -> MatrixCursor(columns).apply {
@@ -198,10 +199,20 @@ class QueryHostApiImplTest {
     }
 
     @Test
-    fun joinRelatedFailureRepliesItsClassification() {
+    fun queryErrorStillRepliesInsteadOfEscaping() {
+        val reply = call("query", QueryRequest(contentUri = uri("fatal")))
+
+        assertHostError(reply, HostErrors.TRANSIENT, "java.lang.AssertionError")
+    }
+
+    @Test
+    fun joinRelatedFailureNamesTheJoinProvider() {
         val reply = call("queryWithJoins", joinRequest(primary = "rows", join = "denied"))
 
         assertHostError(reply, HostErrors.PERMISSION_DENIED, "java.lang.SecurityException")
+        val details = reply[2] as Map<*, *>
+        assertEquals(uri("denied"), details["contentUri"])
+        assertEquals("parts", details["join"])
         assertTrue(provider.opened.single().isClosed)
     }
 
@@ -210,6 +221,25 @@ class QueryHostApiImplTest {
         val reply = call("insert", InsertRequest(contentUri = uri("rows"), values = mapOf("body" to "x")))
 
         assertHostError(reply, HostErrors.NOT_SUPPORTED, "java.lang.UnsupportedOperationException")
+    }
+
+    @Test
+    fun writeToMissingProviderRepliesUnavailable() {
+        val missing = "content://io.simplezen.simple_query.missing/items"
+        val reply = call("insert", InsertRequest(contentUri = missing, values = mapOf("body" to "x")))
+
+        assertEquals(HostErrors.UNAVAILABLE, reply[0])
+        assertEquals("simple_query: no content provider for $missing", reply[1])
+        assertEquals(mapOf("reason" to "noProvider", "contentUri" to missing), reply[2])
+    }
+
+    @Test
+    fun batchForMissingAuthorityRepliesUnavailable() {
+        val authority = "io.simplezen.simple_query.missing"
+        val reply = call("applyBatch", BatchRequest(authority = authority, operations = emptyList()))
+
+        assertEquals(HostErrors.UNAVAILABLE, reply[0])
+        assertEquals(mapOf("reason" to "noProvider", "authority" to authority), reply[2])
     }
 
     private fun joinRequest(primary: String, join: String) = JoinQueryRequest(

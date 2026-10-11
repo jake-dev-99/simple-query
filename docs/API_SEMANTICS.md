@@ -39,7 +39,8 @@ On Android, `ContentResolver.query(...)` returns a null cursor when the provider
 Since `simple_query_android` 0.3.0, no Android host call lets a raw `PlatformException` reach callers. Every host failure becomes a `SimpleQueryError`, with the code chosen by the table in [ERROR_MAPPING.md](ERROR_MAPPING.md#android-host-errors). Before 0.3.0, host errors arrived as a raw `PlatformException`, so `on SimpleQueryError` handlers missed them.
 
 - The permission pre-flight `SimpleQueryError(permissionDenied)` carries the request's `domain` and operation, and its `details.permissions` name the OS permissions to request. A provider-raised denial has no such list; its `details.nativeType` names the exception (e.g. `java.lang.SecurityException`).
-- `observe()`: a failed observer registration is delivered to listeners as a stream error. A failed unregistration on cancel has no listener left to receive it, so its mapped error goes to the zone's uncaught-error handler.
+- `observe()`: a failed observer registration is delivered to listeners as a stream error. A failed unregistration has no listener left to receive it, so its mapped error goes to the zone's uncaught-error handler. That covers a cancel, and a registration that completes after its only listener cancelled.
+- `dispose()` runs every cleanup step (observer unregistration, binary stream close, event stream close) even when a host call fails, then throws the first failure.
 - `unavailable` means only that the provider or host could not be reached. A failure no rule covers is `transientFailure`, so code that tolerates `unavailable` (for example, an optional provider) does not hide unrelated bugs.
 
 ## Native Kotlin helper semantics (Android)

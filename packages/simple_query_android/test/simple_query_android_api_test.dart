@@ -1010,17 +1010,95 @@ void main() {
       ]);
     });
 
-    test('dispose maps a failed unregisterAllObservers', () async {
+    test(
+        'a late unregister failure after a mid-registration cancel is a '
+        'mapped zone error', () async {
       final host = _FakeHostApi()
-        ..failures['unregisterAllObservers'] =
+        ..failures['unregisterObserver'] =
             PlatformException(code: 'channel-error', message: 'detached');
+      final uncaught = <Object>[];
+
+      await runZonedGuarded(() async {
+        // Cancel before registerObserver answers: registration then
+        // completes with no listener and unregisters at once.
+        await apiFor(host)
+            .observe(
+                const iface.ObserveRequest(domain: iface.QueryDomain.calls))
+            .listen((_) {})
+            .cancel();
+        await Future<void>.delayed(Duration.zero);
+      }, (error, _) => uncaught.add(error));
+
+      expect(host.registerCount, 1);
+      expect(host.unregisterCount, 1);
+      expect(uncaught, <Matcher>[
+        hostError(
+          code: iface.SimpleQueryErrorCode.unavailable,
+          hostCode: 'channel-error',
+          domain: iface.QueryDomain.calls,
+          operation: iface.QueryOperation.observe,
+          contentUri: 'content://call_log/calls',
+        ),
+      ]);
+    });
+
+    test('dispose runs every cleanup step, then throws the first failure',
+        () async {
+      final host = _FakeHostApi();
+      final api = apiFor(host);
+      final subscription = api
+          .observe(const iface.ObserveRequest(domain: iface.QueryDomain.calls))
+          .listen((_) {});
+      await Future<void>.delayed(Duration.zero);
+      await api.openBinary(
+        const iface.BinaryRequest(
+          domain: iface.QueryDomain.media,
+          platformData: <String, Object?>{
+            'contentUri': 'content://media/external/images/media/7',
+          },
+        ),
+      );
+      host
+        ..failures['unregisterAllObservers'] =
+            PlatformException(code: 'channel-error', message: 'detached')
+        ..failures['closeStream'] =
+            PlatformException(code: 'transient', message: 'pipe busy');
 
       await expectLater(
-        apiFor(host).dispose(),
+        api.dispose(),
         throwsA(hostError(
           code: iface.SimpleQueryErrorCode.unavailable,
           hostCode: 'channel-error',
           operation: iface.QueryOperation.observe,
+        )),
+      );
+      // The observer was still unregistered and the stream close attempted.
+      expect(host.unregisterCount, 1);
+      expect(host.closeStreamAttempts, <String>['s']);
+      await subscription.cancel();
+    });
+
+    test('dispose reports a failed stream close instead of swallowing it',
+        () async {
+      final host = _FakeHostApi();
+      final api = apiFor(host);
+      await api.openBinary(
+        const iface.BinaryRequest(
+          domain: iface.QueryDomain.media,
+          platformData: <String, Object?>{
+            'contentUri': 'content://media/external/images/media/7',
+          },
+        ),
+      );
+      host.failures['closeStream'] =
+          PlatformException(code: 'transient', message: 'pipe busy');
+
+      await expectLater(
+        api.dispose(),
+        throwsA(hostError(
+          code: iface.SimpleQueryErrorCode.transientFailure,
+          hostCode: 'transient',
+          operation: iface.QueryOperation.read,
         )),
       );
     });
@@ -1946,6 +2024,7 @@ class _FakeHostApi extends p.QueryHostApi {
   bool applyBatchCalled = false;
   String? extractToFileResponse = '/tmp/extracted.bin';
   final List<String> closedStreams = <String>[];
+  final List<String> closeStreamAttempts = <String>[];
 
   @override
   Future<List<p.BatchOperationResult?>> applyBatch(
@@ -2034,6 +2113,7 @@ class _FakeHostApi extends p.QueryHostApi {
 
   @override
   Future<void> closeStream(String streamId) async {
+    closeStreamAttempts.add(streamId);
     _failIfConfigured('closeStream');
     closedStreams.add(streamId);
   }

@@ -357,8 +357,11 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
         try {
           await registration.ensureRegistered();
         } on iface.SimpleQueryError catch (error, stackTrace) {
-          // A failed registration reaches listeners as a stream error,
-          // not as an uncaught error in the onListen zone (UNFY-300).
+          // A failed registration reaches listeners as a stream error
+          // (UNFY-300). With no listener left (cancelled mid-registration,
+          // so a late unregister failed) a broadcast addError would drop
+          // it; it goes to the zone instead, like a failed unregistration.
+          if (!controller.hasListener) rethrow;
           controller.addError(error, stackTrace);
         }
       },
@@ -551,29 +554,50 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
     );
   }
 
+  /// Purpose: Release every observer and binary handle, then close the
+  /// event stream.
+  ///
+  /// Every cleanup step runs even when an earlier host call fails, so one
+  /// failure cannot leak the rest (UNFY-300).
+  ///
+  /// @returns Completion once every step has run.
+  /// @throws SimpleQueryError: the first host cleanup failure, with its
+  ///   stack trace, after every step has run.
   Future<void> dispose() async {
-    await guardHostCall(
-      _hostApi.unregisterAllObservers,
-      operation: iface.QueryOperation.observe,
-    );
+    final failures = <AsyncError>[];
+    Future<void> attempt(Future<void> Function() cleanup) async {
+      try {
+        await cleanup();
+      } on iface.SimpleQueryError catch (error, stackTrace) {
+        failures.add(AsyncError(error, stackTrace));
+      }
+    }
+
+    await attempt(() => guardHostCall(
+          _hostApi.unregisterAllObservers,
+          operation: iface.QueryOperation.observe,
+        ));
     for (final registration in _activeObservers.values.toList()) {
-      await registration.unregister();
+      await attempt(registration.unregister);
     }
     _activeObservers.clear();
 
     for (final streamId in _openBinaryHandles.values.toList(growable: false)) {
-      try {
-        await guardHostCall(
-          () => _hostApi.closeStream(streamId),
-          operation: iface.QueryOperation.read,
-        );
-      } catch (_) {
-        // Best-effort cleanup on dispose.
-      }
+      await attempt(() => guardHostCall(
+            () => _hostApi.closeStream(streamId),
+            operation: iface.QueryOperation.read,
+          ));
     }
     _openBinaryHandles.clear();
 
     await _observerEventsController.close();
+
+    if (failures.isNotEmpty) {
+      Error.throwWithStackTrace(
+        failures.first.error,
+        failures.first.stackTrace,
+      );
+    }
   }
 
   /// Verifies the calling app holds the OS permission(s) needed for

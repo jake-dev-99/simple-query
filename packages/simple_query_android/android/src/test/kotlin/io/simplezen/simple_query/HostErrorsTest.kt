@@ -75,6 +75,19 @@ class HostErrorsTest {
     }
 
     @Test
+    fun addsTheCallContextToTheDetails() {
+        val error = HostErrors.toFlutterError(
+            SecurityException("denied"),
+            mapOf("contentUri" to "content://contacts/1", "join" to "people"),
+        )
+
+        val details = error.details as Map<*, *>
+        assertEquals("content://contacts/1", details["contentUri"])
+        assertEquals("people", details["join"])
+        assertEquals("java.lang.SecurityException", details["nativeType"])
+    }
+
+    @Test
     fun namesTheNativeTypeWhenTheFailureHasNoMessage() {
         val error = HostErrors.toFlutterError(IllegalStateException())
 
