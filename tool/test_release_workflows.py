@@ -86,6 +86,9 @@ class WorkflowTest(unittest.TestCase):
                         result = subprocess.run(['bash', '-n'], input=step['run'], text=True, capture_output=True)
                         self.assertEqual(result.returncode, 0, str(file)+': '+result.stderr)
 
+    def test_deploy_disables_sdk_retries_so_coordinator_owns_cooldown(self):
+        self.assertEqual(workflow('deploy.yml')['jobs']['publish']['env']['PUB_MAX_HTTP_RETRIES'], '1')
+
     def test_deploy_removes_overrides_before_hosted_resolution(self):
         package = self.root / 'package'
         package.mkdir()

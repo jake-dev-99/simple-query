@@ -101,6 +101,8 @@ def build_plan(root, packages, target, bump, published, source_sha):
         spec = yaml.safe_load(text)
         if spec.get('name') != name or spec.get('publish_to') == 'none':
             raise ValueError(f'Not the configured publishable package: {name}')
+        if 'dependency_overrides' in spec:
+            raise ValueError(f'{name} pubspec contains dependency_overrides; remove development overrides before releasing')
         version(spec['version'])
         texts[name], specs[name] = text, spec
         graph[name] = {}

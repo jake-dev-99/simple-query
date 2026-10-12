@@ -85,6 +85,9 @@ jobs:
           echo "::notice::Resolved deploy tag: $tag"
 
   publish:
+    # A 429 reaches the durable coordinator immediately; never retry inside pub.
+    env:
+      PUB_MAX_HTTP_RETRIES: '1'
     needs: resolve-tag
     permissions:
       id-token: write

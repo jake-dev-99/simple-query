@@ -110,7 +110,7 @@ validate_package() {
 
   # Warn (don't fail) when `## Unreleased` is the top heading — usually
   # means we forgot to promote it to `## <version>` before publishing.
-  # See docs/RELEASE.md "CHANGELOG discipline".
+  # Authored Unreleased notes are preserved by tool/release_plan.py.
   if [[ -f "$pkg_dir/CHANGELOG.md" ]]; then
     first_heading=$(grep -m1 '^## ' "$pkg_dir/CHANGELOG.md" || true)
     if [[ "$first_heading" == "## Unreleased" ]] && ! grep -q "^## $version" "$pkg_dir/CHANGELOG.md"; then

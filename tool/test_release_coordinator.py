@@ -417,6 +417,32 @@ if sys.argv[1:] not in [['pub','get','--no-example'], ['analyze','--no-fatal-war
         self.assertIn('first manual', self.journal.load()['error'])
         self.assertEqual(self.journal.run_calls, [])
 
+    def test_embedded_overrides_block_before_source_push_or_tag(self):
+        for relative in ['packages/android/pubspec.yaml', 'packages/android/example/pubspec.yaml']:
+            with self.subTest(pubspec=relative):
+                file = self.root / relative
+                file.parent.mkdir(parents=True, exist_ok=True)
+                original = file.read_text() if file.exists() else 'name: demo_example\nversion: 1.0.0\n'
+                file.write_text(original + 'dependency_overrides:\n  external_package:\n    path: /unpublished/local/package\n')
+                self.fixture.commit('Add embedded development override')
+                self.fixture.git('push', 'origin', 'main')
+                before = self.fixture.git('ls-remote', 'origin')
+                self.assertEqual(self.cut(), 'blocked')
+                self.assertIn('dependency_overrides', self.journal.load()['error'])
+                self.assertEqual(self.fixture.git('ls-remote', 'origin', 'refs/heads/main'),
+                                 '\n'.join(line for line in before.splitlines() if line.endswith('refs/heads/main')))
+                self.assertEqual(self.journal.run_calls, [])
+                self.assertFalse(self.trace.exists())
+                self.journal.file.unlink()
+                # Start another authorized fixture cut rather than reuse its intent tag.
+                self.fixture.git('push', 'origin', ':refs/tags/sz-release-batch-12345')
+                self.fixture.git('tag', '-d', 'sz-release-batch-12345')
+                file.write_text(original)
+                self.fixture.commit('Remove fixture override')
+
+    def test_validation_disables_sdk_http_quota_retries(self):
+        self.assertEqual(self.repo.env.get('PUB_MAX_HTTP_RETRIES'), '1')
+
     def test_modified_published_assets_block_dependents(self):
         asset=self.root/'packages/android/assets/message.txt'
         asset.parent.mkdir();asset.write_text('frozen asset')
@@ -429,6 +455,8 @@ if sys.argv[1:] not in [['pub','get','--no-example'], ['analyze','--no-fatal-war
             with tarfile.open(fileobj=io.BytesIO(self.pub.archives[url])) as source:
                 with tarfile.open(fileobj=out,mode='w:gz') as target:
                     for entry in source:
+                        if not entry.isfile():
+                            continue
                         payload=source.extractfile(entry).read()
                         if entry.name=='assets/message.txt':payload=b'changed asset';entry.size=len(payload)
                         target.addfile(entry,io.BytesIO(payload))

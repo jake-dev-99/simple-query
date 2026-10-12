@@ -39,7 +39,7 @@ class Repository:
     def __init__(self, root, *, flutter='flutter', env=None):
         self.root = Path(root).resolve()
         self.flutter = flutter
-        self.env = {**os.environ, **(env or {})}
+        self.env = {**os.environ, **(env or {}), 'PUB_MAX_HTTP_RETRIES': '1'}
 
     def git(self, *args, input=None, env=None, check=True):
         result = subprocess.run(['git', *args], cwd=self.root,
@@ -145,6 +145,10 @@ class Repository:
                 destination.write_text(contents)
             for file in root.rglob('pubspec_overrides.yaml'):
                 file.unlink()
+            for file in root.rglob('pubspec.yaml'):
+                spec = yaml.safe_load(file.read_text()) or {}
+                if 'dependency_overrides' in spec:
+                    raise Blocked(f'{file.relative_to(root)} contains dependency_overrides; remove development overrides before releasing')
             # Pub inherits ignore rules from the git repository root. Retain
             # that boundary for nested packages, with a clean disposable index.
             subprocess.run(['git', 'init', '-q', str(root)], check=True, capture_output=True)
