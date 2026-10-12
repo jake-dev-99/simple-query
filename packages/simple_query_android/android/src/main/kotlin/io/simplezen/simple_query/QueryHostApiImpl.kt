@@ -7,11 +7,11 @@ import android.database.Cursor
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
-import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 
@@ -446,18 +446,18 @@ class QueryHostApiImpl(
      * @param callback the Pigeon reply callback of the call.
      * @param body the blocking work; its return value is the reply.
      * @return Nothing; the reply is posted to the main looper.
-     * @throws CancellationException only when this coroutine itself was
-     *   cancelled; a `CancellationException` the blocking [body] raises is
-     *   a failure like any other and becomes the reply.
+     * @throws CancellationException when [dispose] cancelled the scope: the
+     *   engine is detached, so no reply is sent. A `CancellationException`
+     *   the blocking [body] raises is a failure like any other.
      */
     private fun <T> launchHostCall(callback: (Result<T>) -> Unit, body: () -> T) {
         scope.launch {
             val result = try {
                 Result.success(body())
             } catch (e: Throwable) {
-                if (e is CancellationException) ensureActive()
                 Result.failure(HostErrors.toFlutterError(e))
             }
+            ensureActive()
             mainHandler.post { callback(result) }
         }
     }
@@ -554,9 +554,11 @@ class QueryHostApiImpl(
     }
 
     /**
-     * Clean up all resources on plugin detach.
+     * Clean up all resources on plugin detach. Cancelling the scope first
+     * means no host call replies to the detached engine.
      */
     fun dispose() {
+        scope.cancel()
         observerRegistry.unregisterAll()
         streamManager.closeAll()
     }

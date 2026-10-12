@@ -11,6 +11,7 @@ import io.flutter.plugin.common.BinaryMessenger
 import java.nio.ByteBuffer
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.Dispatchers
 import org.junit.After
@@ -279,6 +280,14 @@ class QueryHostApiImplTest {
         assertEquals(mapOf("reason" to "noProvider", "authority" to authority), reply[2])
     }
 
+    @Test
+    fun noReplyIsSentAfterDispose() {
+        api.dispose()
+
+        assertNull(send("query", QueryRequest(contentUri = uri("rows"))))
+        assertTrue(provider.queried.isEmpty())
+    }
+
     private fun joinRequest(primary: String, join: String) = JoinQueryRequest(
         primary = QueryRequest(contentUri = uri(primary)),
         joins = listOf(
@@ -293,6 +302,14 @@ class QueryHostApiImplTest {
 
     /** Sends one Pigeon message and returns the decoded reply envelope. */
     private fun call(method: String, request: Any): List<Any?> {
+        val bytes = checkNotNull(send(method, request)) { "no reply for $method" }
+        bytes.flip()
+        @Suppress("UNCHECKED_CAST")
+        return QueryHostApi.codec.decodeMessage(bytes) as List<Any?>
+    }
+
+    /** Sends one Pigeon message and returns the raw reply, or null when none came. */
+    private fun send(method: String, request: Any): ByteBuffer? {
         val handler = handlers.getValue("dev.flutter.pigeon.simple_query.QueryHostApi.$method")
         val message = QueryHostApi.codec.encodeMessage(listOf(request))!!
         message.flip()
@@ -301,10 +318,7 @@ class QueryHostApiImplTest {
 
         // The read runs inline (Unconfined); the reply is posted to the main looper.
         shadowOf(Looper.getMainLooper()).idle()
-        val bytes = checkNotNull(reply) { "no reply for $method" }
-        bytes.flip()
-        @Suppress("UNCHECKED_CAST")
-        return QueryHostApi.codec.decodeMessage(bytes) as List<Any?>
+        return reply
     }
 
     /** A Pigeon error reply is `[code, message, details]`. */

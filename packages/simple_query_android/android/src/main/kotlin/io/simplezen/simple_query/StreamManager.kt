@@ -4,11 +4,13 @@ import android.content.Context
 import android.net.Uri
 import android.os.Handler
 import android.os.ParcelFileDescriptor
+import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicLong
@@ -20,11 +22,16 @@ import java.util.concurrent.atomic.AtomicLong
  * mechanism that avoids MethodChannel size limits.
  *
  * Enforces a soft limit of 8 concurrent streams with queue for additional requests.
+ *
+ * [executor] runs the background copies and [createPipe] makes each
+ * stream's pipe pair; both are injectable so tests can observe them.
  */
 class StreamManager(
     private val context: Context,
     private val flutterApi: QueryFlutterApi,
     private val mainHandler: Handler,
+    private val executor: ExecutorService = Executors.newFixedThreadPool(MAX_CONCURRENT_STREAMS),
+    private val createPipe: () -> Array<ParcelFileDescriptor> = { ParcelFileDescriptor.createPipe() },
 ) {
     companion object {
         private const val MAX_CONCURRENT_STREAMS = 8
@@ -33,7 +40,6 @@ class StreamManager(
 
     private val contentResolver get() = context.contentResolver
     private val streamSemaphore = Semaphore(MAX_CONCURRENT_STREAMS)
-    private val executor = Executors.newFixedThreadPool(MAX_CONCURRENT_STREAMS)
     private val activeStreams = ConcurrentHashMap<String, StreamInfo>()
 
     private data class StreamInfo(
@@ -57,7 +63,7 @@ class StreamManager(
         val streamId = UUID.randomUUID().toString()
 
         // Create a pipe pair
-        val pipes = ParcelFileDescriptor.createPipe()
+        val pipes = createPipe()
         val readPipe = pipes[0]
         val writePipe = pipes[1]
 
@@ -73,7 +79,7 @@ class StreamManager(
         activeStreams[streamId] = streamInfo
 
         // Start background copy with semaphore-based throttling
-        executor.submit {
+        executor.execute {
             try {
                 // Wait for permit (blocks if at limit)
                 streamSemaphore.acquire()
@@ -84,7 +90,12 @@ class StreamManager(
                     streamSemaphore.release()
                 }
             } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
                 notifyError(streamId, contentUri, "Stream interrupted", 0)
+            } finally {
+                // Every exit closes the write end, so the reader sees
+                // end-of-stream instead of blocking until closeStream (UNFY-300).
+                closeWriteEnd(streamId, streamInfo)
             }
         }
 
@@ -107,46 +118,60 @@ class StreamManager(
      *   deleted whenever no URI is returned.
      */
     fun extractToFile(contentUri: String): String? {
-        val tempFile = File.createTempFile("sq_extract_", null, context.cacheDir)
-        var extracted = false
-        try {
-            val input = contentResolver.openInputStream(Uri.parse(contentUri)) ?: return null
-            input.use {
+        val input = contentResolver.openInputStream(Uri.parse(contentUri)) ?: return null
+        return input.use {
+            val tempFile = File.createTempFile("sq_extract_", null, context.cacheDir)
+            var extracted = false
+            try {
                 FileOutputStream(tempFile).use { output -> it.copyTo(output) }
+                extracted = true
+                "file://${tempFile.absolutePath}"
+            } finally {
+                if (!extracted) tempFile.delete()
             }
-            extracted = true
-            return "file://${tempFile.absolutePath}"
-        } finally {
-            if (!extracted) tempFile.delete()
         }
     }
 
     /**
-     * Close a stream and release its resources.
+     * Purpose: Close a stream and release its resources.
+     *
+     * @param streamId the stream to close; an unknown id is a no-op.
+     * @return Nothing.
+     * @throws IOException the first failure closing either pipe end, after
+     *   both ends were attempted, so a failed close reaches the host
+     *   boundary instead of being ignored (UNFY-300).
      */
     fun closeStream(streamId: String) {
         val streamInfo = activeStreams.remove(streamId) ?: return
 
-        try {
-            streamInfo.writePipe.close()
-        } catch (e: Exception) {
-            // Ignore close errors on write side
+        var failure: IOException? = null
+        for (end in listOf(streamInfo.writePipe, streamInfo.readPipe)) {
+            try {
+                end.close()
+            } catch (e: IOException) {
+                failure?.addSuppressed(e) ?: run { failure = e }
+            }
         }
-
-        try {
-            streamInfo.readPipe.close()
-        } catch (e: Exception) {
-            // Ignore close errors on read side
-        }
+        failure?.let { throw it }
     }
 
     /**
-     * Close all active streams. Called on plugin dispose.
+     * Purpose: Close all active streams on plugin detach.
+     *
+     * No caller remains to act on a failure at detach, so each failed close
+     * is logged with its stream id and the rest still close.
+     *
+     * @return Nothing.
+     * @throws Nothing.
      */
     fun closeAll() {
         val ids = activeStreams.keys.toList()
         for (id in ids) {
-            closeStream(id)
+            try {
+                closeStream(id)
+            } catch (e: IOException) {
+                Log.e(TAG, "closeAll: closing stream $id failed", e)
+            }
         }
         executor.shutdown()
     }
@@ -183,11 +208,33 @@ class StreamManager(
                     streamInfo.bytesTransferred.get()
                 )
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             notifyError(
                 streamId,
                 streamInfo.contentUri,
                 "Stream error: ${e.message}",
+                streamInfo.bytesTransferred.get()
+            )
+        }
+    }
+
+    /**
+     * Purpose: Close a stream's write end once its copy has ended. Closing
+     * is idempotent, so an end the copy already closed is a no-op.
+     *
+     * @param streamId the stream whose copy ended.
+     * @param streamInfo the stream's pipes.
+     * @return Nothing.
+     * @throws Nothing; a failed close is reported as a stream error.
+     */
+    private fun closeWriteEnd(streamId: String, streamInfo: StreamInfo) {
+        try {
+            streamInfo.writePipe.close()
+        } catch (e: IOException) {
+            notifyError(
+                streamId,
+                streamInfo.contentUri,
+                "Stream close failed: ${e.message}",
                 streamInfo.bytesTransferred.get()
             )
         }
