@@ -153,7 +153,7 @@ jobs:
           RESOLVED_TAG: ${{ needs.resolve-tag.outputs.tag }}
           PACKAGE_NAME: ${{ matrix.package.name }}
         run: |
-          expected="${RESOLVED_TAG#${PACKAGE_NAME}-v}"
+          expected="${RESOLVED_TAG#"${PACKAGE_NAME}-v"}"
           actual="$(grep '^version:' pubspec.yaml | sed 's/version:[[:space:]]*//')"
           if [ "$expected" != "$actual" ]; then
             echo "::error::Tag ${RESOLVED_TAG} does not match pubspec version ${actual} (expected ${expected})"
