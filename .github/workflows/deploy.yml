@@ -170,7 +170,15 @@ jobs:
       - name: Publish
         # Flutter supplies FLUTTER_ROOT for pub's SDK validation.
         # setup-dart has registered the temporary OIDC credential.
+        # Only the original tag-push event uploads; see workflow_dispatch above.
         timeout-minutes: 2
-        if: startsWith(needs.resolve-tag.outputs.tag, format('{0}-v', matrix.package.name))
+        if: github.event_name == 'push' && startsWith(needs.resolve-tag.outputs.tag, format('{0}-v', matrix.package.name))
         working-directory: ${{ matrix.package.path }}
         run: flutter pub publish --force
+
+      - name: Validate publish (dry run)
+        # Manual dispatch inspects the tag without uploading.
+        timeout-minutes: 2
+        if: github.event_name != 'push' && startsWith(needs.resolve-tag.outputs.tag, format('{0}-v', matrix.package.name))
+        working-directory: ${{ matrix.package.path }}
+        run: flutter pub publish --dry-run

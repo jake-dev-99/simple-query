@@ -89,6 +89,12 @@ class WorkflowTest(unittest.TestCase):
     def test_deploy_disables_sdk_retries_so_coordinator_owns_cooldown(self):
         self.assertEqual(workflow('deploy.yml')['jobs']['publish']['env']['PUB_MAX_HTTP_RETRIES'], '1')
 
+    def test_deploy_uploads_only_from_original_tag_push(self):
+        steps = {step['name']: step for step in workflow('deploy.yml')['jobs']['publish']['steps'] if 'name' in step}
+        self.assertIn("github.event_name == 'push'", steps['Publish']['if'])
+        self.assertIn("github.event_name != 'push'", steps['Validate publish (dry run)']['if'])
+        self.assertEqual(steps['Validate publish (dry run)']['run'], 'flutter pub publish --dry-run')
+
     def test_deploy_removes_overrides_before_hosted_resolution(self):
         package = self.root / 'package'
         package.mkdir()

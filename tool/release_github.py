@@ -3,6 +3,7 @@ import base64
 import io
 import json
 import os
+import re
 import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlparse
@@ -139,13 +140,16 @@ class GitHubClient:
         return {'id': run['id'], 'status': run['status'], 'conclusion': run['conclusion'],
                 'attempt': run['run_attempt']}
 
-    def logs(self, run_id):
+    def logs(self, run_id, step=None):
+        """Return the run's logs, or only the named step's when `step` is given."""
         raw = self.request('GET', self.path + f'/actions/runs/{run_id}/logs', binary=True)
+        in_step = re.compile(rf'/\d+_{re.escape(step)}\.txt$') if step else None
         with zipfile.ZipFile(io.BytesIO(raw)) as archive:
             if sum(file.file_size for file in archive.infolist()) > 50_000_000:
                 raise Blocked('Deploy logs exceed bounded inspection size')
             return '\n'.join(archive.read(file).decode(errors='replace')
-                             for file in archive.namelist() if file.endswith('.txt'))
+                             for file in archive.namelist()
+                             if file.endswith('.txt') and (in_step is None or in_step.search(file)))
 
     def retry(self, run_id):
         self.request('POST', self.path + f'/actions/runs/{run_id}/rerun-failed-jobs', {})

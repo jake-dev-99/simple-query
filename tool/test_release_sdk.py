@@ -14,17 +14,6 @@ from release_services import upload_deadline
 
 @unittest.skipUnless(os.environ.get('RELEASE_SDK_SMOKE') == 'true', 'SDK integration job only')
 class SDKQuotaTest(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        # Fresh SDKs must bootstrap their tool dependencies before the hosted
-        # URL is replaced with the deliberately incomplete publishing fixture.
-        cls.flutter = shutil.which('flutter') or 'flutter'
-        result = subprocess.run([cls.flutter, '--version'],
-            env={**os.environ, 'PUB_HOSTED_URL': 'https://pub.dev', 'PUB_MAX_HTTP_RETRIES': '1'},
-            text=True, capture_output=True, timeout=180)
-        if result.returncode:
-            raise RuntimeError('Flutter initialization failed: '+result.stdout+result.stderr)
-
     def exercise(self, window, seconds):
         requests = []
         class Handler(BaseHTTPRequestHandler):
@@ -48,11 +37,13 @@ class SDKQuotaTest(unittest.TestCase):
             root = Path(temp)
             (root/'lib').mkdir()
             (root/'lib/sdk_quota_fixture.dart').write_text('const value = 1;\n')
-            (root/'pubspec.yaml').write_text('name: sdk_quota_fixture\nversion: 1.0.0\ndescription: Local publishing quota recovery verification fixture.\nhomepage: https://example.invalid/quota\nenvironment:\n  sdk: ^3.6.0\n')
+            # publish_to points only the upload at the fixture; the SDK's own
+            # dependency resolution keeps using the real hosted URL.
+            (root/'pubspec.yaml').write_text(f'name: sdk_quota_fixture\nversion: 1.0.0\ndescription: Local publishing quota recovery verification fixture.\nhomepage: https://example.invalid/quota\npublish_to: http://127.0.0.1:{server.server_port}\nenvironment:\n  sdk: ^3.6.0\n')
             for file, content in [('README.md', '# SDK quota fixture\n'), ('CHANGELOG.md', '## 1.0.0\nInitial fixture.\n'), ('LICENSE', 'MIT License\nCopyright 2026 Fixture\n')]:
                 (root/file).write_text(content)
-            env = {**os.environ, 'PUB_HOSTED_URL': f'http://127.0.0.1:{server.server_port}', 'PUB_MAX_HTTP_RETRIES': '1', 'CI': 'true'}
-            result = subprocess.run([self.flutter, 'pub', 'publish', '--force'], cwd=root, env=env, text=True, capture_output=True, timeout=90)
+            env = {**os.environ, 'PUB_MAX_HTTP_RETRIES': '1', 'CI': 'true'}
+            result = subprocess.run([shutil.which('flutter') or 'flutter', 'pub', 'publish', '--force'], cwd=root, env=env, text=True, capture_output=True, timeout=90)
         output = result.stdout + result.stderr
         self.assertNotEqual(result.returncode, 0, output)
         self.assertEqual(requests.count('/api/packages/versions/new'), 1, output)

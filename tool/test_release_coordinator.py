@@ -47,7 +47,7 @@ class Journal:
                               'failure' if outcome not in ('success', 'visibility') else 'success',
                 'attempt': self.run_attempts.get(package['name'], 1)}
 
-    def logs(self, run_id):
+    def logs(self, run_id, step=None):
         return getattr(self, 'failure_log', 'Manifest validation failed')
 
     def retry(self, run_id):

@@ -84,7 +84,7 @@ class Coordinator:
                 raise Blocked('Cancelled Deploy succeeded; wait for its exact hosted receipt before a new cut')
             until = package.get('cancel_check_after')
             if until is None:
-                until = upload_deadline(self.journal.logs(run['id']), self.now()) or self.pub.next_check(package['name'])
+                until = upload_deadline(self.journal.logs(run['id'], step='Publish'), self.now()) or self.pub.next_check(package['name'])
                 package['cancel_check_after'] = until
                 if not dry_run:
                     self.save(plan)
@@ -324,12 +324,13 @@ class Coordinator:
     def handle_failure(self, plan, current, run):
         """Convert server quota windows and bounded transient errors into pauses."""
         current['attempts'] = run['attempt']
-        logs = self.journal.logs(run['id'])
-        deadline = upload_deadline(logs, self.now())
+        # Only the upload step can report a publishing quota; other steps may
+        # print unrelated rate-limit text.
+        deadline = upload_deadline(self.journal.logs(run['id'], step='Publish'), self.now())
         if deadline:
             current['retry_pending'] = True
             raise Deferred(deadline, f'Upload quota cooldown for {current["name"]}')
-        if re.search(r'HTTP(?: error)?[ :]+(?:408|500|502|503|504)\b|SocketException|Connection reset|Connection timed out', logs, re.I):
+        if re.search(r'HTTP(?: error)?[ :]+(?:408|500|502|503|504)\b|SocketException|Connection reset|Connection timed out', self.journal.logs(run['id']), re.I):
             failures = current.get('transient_failures', 0) + 1
             current['transient_failures'] = failures
             if failures <= 3:

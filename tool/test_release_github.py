@@ -1,8 +1,10 @@
 import importlib
+import io
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import threading
 import unittest
+import zipfile
 
 from test_release_services import Clock
 
@@ -85,6 +87,16 @@ class GitHubTest(unittest.TestCase):
         self.responses = [(302, {'Location':f'http://127.0.0.1:{server.server_port}/logs'}, None)]
         self.assertEqual(self.client.request('GET', '/logs', binary=True), b'log bytes')
         self.assertEqual(seen,[None])
+
+    def test_step_logs_exclude_other_steps_of_the_run(self):
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, 'w') as bundle:
+            bundle.writestr('publish (demo)/3_Install dependencies.txt', 'GitHub API rate limit exceeded')
+            bundle.writestr('publish (demo)/5_Publish.txt', 'Publishing demo 1.0.1')
+            bundle.writestr('publish (demo).txt', 'combined job log')
+        self.client.request = lambda *args, **kwargs: archive.getvalue()
+        self.assertEqual(self.client.logs(7, step='Publish'), 'Publishing demo 1.0.1')
+        self.assertIn('rate limit', self.client.logs(7))
 
     def test_corrupt_journal_is_preserved_for_attention(self):
         services = importlib.import_module('release_services')
