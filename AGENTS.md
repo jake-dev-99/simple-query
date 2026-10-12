@@ -64,7 +64,7 @@ See `melos.yaml` for the workspace scripts.
 
 `main`-only with git tags for releases (no `develop`/`staging`). One
 short-lived branch per work item; PRs target `main`. Releases are cut via
-`.github/workflows/release.yml`; see [`docs/RELEASE.md`](docs/RELEASE.md).
+`.github/workflows/release.yml`; see [UNFY-345 release procedure](https://linear.app/simple-zen/issue/UNFY-345/repair-plugin-dependency-floors-and-telephony-release-example).
 Batch source preflight uses isolated snapshots with intentional batch links.
 Each package gets clean hosted validation after its prerequisites publish and before its tag;
 `all` coordinates changed packages and affected dependents, including quota pause/resume.
@@ -93,3 +93,12 @@ Each package gets clean hosted validation after its prerequisites publish and be
 - **Don't commit secrets.**
 - **Don't add app-level concerns** here (GTM, brand, product roadmap) —
   this is a library.
+
+## Release tooling configuration
+
+`tool/release-packages.json` defines package ownership; `release_coordinator.py`
+coordinates frozen batches, dependency gates, and original tag-push Deploy runs.
+The app credentials are `RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY`;
+`GITHUB_TOKEN` accesses draft journals and Actions recovery. Package tags follow
+`<package>-v<version>`. `PUB_MAX_HTTP_RETRIES=1` leaves quota recovery to the
+coordinator rather than SDK retries. Authored dependency overrides are rejected.

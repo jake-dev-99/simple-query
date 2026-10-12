@@ -145,10 +145,6 @@ class Repository:
                 destination.write_text(contents)
             for file in root.rglob('pubspec_overrides.yaml'):
                 file.unlink()
-            for file in root.rglob('pubspec.yaml'):
-                spec = yaml.safe_load(file.read_text()) or {}
-                if 'dependency_overrides' in spec:
-                    raise Blocked(f'{file.relative_to(root)} contains dependency_overrides; remove development overrides before releasing')
             # Pub inherits ignore rules from the git repository root. Retain
             # that boundary for nested packages, with a clean disposable index.
             subprocess.run(['git', 'init', '-q', str(root)], check=True, capture_output=True)
@@ -162,6 +158,15 @@ class Repository:
     def validate(self, plan, package=None, *, linked=False):
         packages = [package] if package else plan['packages']
         with self.snapshot(plan) as root, tempfile.TemporaryDirectory(prefix='release-artifact-') as artifact_dir:
+            # Validate only this cut's packages and bundled examples. An
+            # unrelated implementation must not block an individual cut.
+            for current in packages:
+                directory = root / current['path']
+                manifests = [directory / 'pubspec.yaml', *(directory / 'example').rglob('pubspec.yaml')]
+                for file in manifests:
+                    spec = yaml.safe_load(file.read_text()) or {}
+                    if 'dependency_overrides' in spec:
+                        raise Blocked(f'{file.relative_to(root)} contains dependency_overrides; remove development overrides before releasing')
             if linked:
                 for current in packages:
                     links = {p['name']: {'path': str(root / p['path'])}

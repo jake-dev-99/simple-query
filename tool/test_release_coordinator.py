@@ -440,6 +440,14 @@ if sys.argv[1:] not in [['pub','get','--no-example'], ['analyze','--no-fatal-war
                 file.write_text(original)
                 self.fixture.commit('Remove fixture override')
 
+    def test_individual_cut_ignores_unrelated_embedded_overrides(self):
+        file = self.root / 'packages/ios/pubspec.yaml'
+        file.write_text(file.read_text() + 'dependency_overrides:\n  external_package:\n    path: /unrelated/development/package\n')
+        self.fixture.commit('Add unrelated development override')
+        self.fixture.git('push', 'origin', 'main')
+        self.assertEqual(self.runner().run('cut', package='demo_android'), 'complete')
+        self.assertEqual(self.journal.run_calls, ['demo_android'])
+
     def test_validation_disables_sdk_http_quota_retries(self):
         self.assertEqual(self.repo.env.get('PUB_MAX_HTTP_RETRIES'), '1')
 
