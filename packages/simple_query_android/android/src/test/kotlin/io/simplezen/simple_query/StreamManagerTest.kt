@@ -15,6 +15,7 @@ import java.io.IOException
 import java.io.InputStream
 import java.nio.ByteBuffer
 import java.util.concurrent.AbstractExecutorService
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.function.Supplier
@@ -246,6 +247,40 @@ class StreamManagerTest {
     }
 
     @Test
+    fun closeStreamUnblocksACopyStalledInAProviderRead() {
+        executor.runInline = false
+        val readEntered = CountDownLatch(1)
+        val closed = CountDownLatch(1)
+        register(CONTENT) {
+            object : InputStream() {
+                override fun read(): Int = throw UnsupportedOperationException()
+                override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                    readEntered.countDown()
+                    // A provider that never answers until its stream is closed.
+                    closed.await()
+                    throw IOException("Stream closed")
+                }
+
+                override fun close() = closed.countDown()
+            }
+        }
+        val descriptor = manager.openStream(CONTENT)
+        val copy = Thread { executor.runQueued() }.apply {
+            isDaemon = true
+            start()
+        }
+        assertTrue(readEntered.await(5, TimeUnit.SECONDS))
+
+        manager.closeStream(descriptor.streamId)
+        copy.join(5_000)
+
+        assertFalse(copy.isAlive, "copy stayed blocked in the provider read")
+        assertFalse(writeEnd().fileDescriptor.valid())
+        idle()
+        assertTrue(sentChannels.isEmpty())
+    }
+
+    @Test
     fun aRejectedCopyWithAFailingWriteCloseStillClosesTheReadEnd() {
         executor.rejecting = true
         wrapWriteEnd = { FailingCloseEnd(it) }
@@ -341,6 +376,21 @@ class StreamManagerTest {
         val error = assertFailsWith<IOException> { manager.extractToFile(CONTENT) }
 
         assertEquals("disk read failed", error.message)
+        assertEquals(before, tempFileCount())
+    }
+
+    @Test
+    fun extractToFileLeavesNoTempFileWhenTheProviderStreamFailsToClose() {
+        register(CONTENT) {
+            object : ByteArrayInputStream(byteArrayOf(7, 8)) {
+                override fun close() = throw IOException("provider close failed")
+            }
+        }
+        val before = tempFileCount()
+
+        val error = assertFailsWith<IOException> { manager.extractToFile(CONTENT) }
+
+        assertEquals("provider close failed", error.message)
         assertEquals(before, tempFileCount())
     }
 

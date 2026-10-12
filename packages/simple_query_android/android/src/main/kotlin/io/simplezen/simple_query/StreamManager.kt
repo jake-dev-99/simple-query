@@ -8,6 +8,7 @@ import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.InputStream
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
@@ -15,6 +16,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Manages streaming of binary content via named pipes.
@@ -57,6 +59,8 @@ class StreamManager(
         val released: AtomicBoolean = AtomicBoolean(false),
         /** Claims the single close of [writePipe]. */
         val writeClosed: AtomicBoolean = AtomicBoolean(false),
+        /** The provider stream being copied, so a release can unblock a stalled read. */
+        val activeInput: AtomicReference<InputStream?> = AtomicReference(null),
     )
 
     /**
@@ -126,24 +130,29 @@ class StreamManager(
      */
     fun extractToFile(contentUri: String): String? {
         val input = contentResolver.openInputStream(Uri.parse(contentUri)) ?: return null
-        return input.use {
-            val tempFile = File.createTempFile("sq_extract_", null, context.cacheDir)
-            var extracted = false
-            try {
-                FileOutputStream(tempFile).use { output -> it.copyTo(output) }
-                extracted = true
-                "file://${tempFile.absolutePath}"
-            } finally {
-                if (!extracted) tempFile.delete()
+        // Non-null until the file is delivered, so any failure (including the
+        // provider stream's own close) deletes it.
+        var undelivered: File? = null
+        try {
+            val file = input.use {
+                File.createTempFile("sq_extract_", null, context.cacheDir).also { created ->
+                    undelivered = created
+                    FileOutputStream(created).use { output -> it.copyTo(output) }
+                }
             }
+            undelivered = null
+            return "file://${file.absolutePath}"
+        } finally {
+            undelivered?.delete()
         }
     }
 
     /**
      * Purpose: Release a stream: stop its copy and close both pipe ends.
      *
-     * Closing the write end also unblocks a copy stuck writing to a reader
-     * that stopped reading.
+     * Closing the write end unblocks a copy stuck writing to a reader that
+     * stopped reading; closing the provider stream unblocks one stuck in a
+     * stalled provider read.
      *
      * @param streamId the stream to release; an unknown id is a no-op.
      * @return Nothing.
@@ -199,17 +208,22 @@ class StreamManager(
     }
 
     /**
-     * Purpose: Close both pipe ends of a released stream, each attempted
-     * even when the other fails.
+     * Purpose: Close a released stream's provider input and both pipe ends,
+     * each attempted even when another fails.
      *
-     * @param streamInfo the stream's pipes.
+     * @param streamInfo the stream's pipes and active input.
      * @return the first close failure, with any later one suppressed onto
-     *   it; null when both closed.
+     *   it; null when all closed.
      * @throws Nothing.
      */
     private fun releaseEnds(streamInfo: StreamInfo): IOException? {
         var failure: IOException? = null
-        for (close in listOf({ closeWriteEndOnce(streamInfo) }, { streamInfo.readPipe.close() })) {
+        val closes = listOf(
+            { streamInfo.activeInput.getAndSet(null)?.close() },
+            { closeWriteEndOnce(streamInfo) },
+            { streamInfo.readPipe.close() },
+        )
+        for (close in closes) {
             try {
                 close()
             } catch (e: IOException) {
@@ -261,6 +275,9 @@ class StreamManager(
 
         try {
             contentResolver.openInputStream(uri)?.use { input ->
+                // Published so a release can close it; a release that came
+                // first is seen by the loop's released check.
+                streamInfo.activeInput.set(input)
                 // Not closed itself: the write end closes only through
                 // closeWriteEndOnce, so a release on another thread can close
                 // it without a second close here.
