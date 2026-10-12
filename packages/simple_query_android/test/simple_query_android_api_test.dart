@@ -877,19 +877,47 @@ void main() {
       );
     });
 
-    test('closeBinary maps a host failure', () async {
+    test('closeBinary maps a host failure with the handle\'s request context',
+        () async {
+      final host = _FakeHostApi();
+      final api = apiFor(host);
+      final handle = await api.openBinary(
+        const iface.BinaryRequest(
+          domain: iface.QueryDomain.media,
+          platformData: <String, Object?>{
+            'contentUri': 'content://media/external/images/media/7',
+          },
+        ),
+      );
+      host.failures['closeStream'] =
+          PlatformException(code: 'channel-error', message: 'detached');
+
+      await expectLater(
+        api.closeBinary(handle.handleId),
+        throwsA(hostError(
+          code: iface.SimpleQueryErrorCode.unavailable,
+          hostCode: 'channel-error',
+          domain: iface.QueryDomain.media,
+          operation: iface.QueryOperation.read,
+          contentUri: 'content://media/external/images/media/7',
+        )),
+      );
+    });
+
+    test('closeBinary of an unknown handle still closes it by id', () async {
       final host = _FakeHostApi()
         ..failures['closeStream'] =
             PlatformException(code: 'channel-error', message: 'detached');
 
       await expectLater(
-        apiFor(host).closeBinary('s'),
+        apiFor(host).closeBinary('unknown'),
         throwsA(hostError(
           code: iface.SimpleQueryErrorCode.unavailable,
           hostCode: 'channel-error',
           operation: iface.QueryOperation.read,
         )),
       );
+      expect(host.closeStreamAttempts, <String>['unknown']);
     });
 
     test('providerCall maps a host failure as platformSpecific', () async {
@@ -1098,7 +1126,9 @@ void main() {
         throwsA(hostError(
           code: iface.SimpleQueryErrorCode.transientFailure,
           hostCode: 'transient',
+          domain: iface.QueryDomain.media,
           operation: iface.QueryOperation.read,
+          contentUri: 'content://media/external/images/media/7',
         )),
       );
     });

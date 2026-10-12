@@ -266,7 +266,7 @@ class QueryHostApiImpl(
                 .map { it.toContentProviderOperation() }
 
             val results = withProvider(request.authority) {
-                it.applyBatch(request.authority, ArrayList(operations))
+                it.applyBatch(ArrayList(operations))
             }
             results.map { result ->
                 BatchOperationResult(
@@ -391,7 +391,7 @@ class QueryHostApiImpl(
             }
 
             val result = withProvider(request.authority) {
-                it.call(request.authority, request.method, request.arg, extras)
+                it.call(request.method, request.arg, extras)
             }
 
             val resultMap = mutableMapOf<String?, Any?>()

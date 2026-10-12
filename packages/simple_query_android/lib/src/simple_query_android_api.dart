@@ -26,7 +26,7 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
   final _observerEventsController =
       StreamController<iface.ObserveEvent>.broadcast();
   final _activeObservers = <String, _ObserverRegistration>{};
-  final _openBinaryHandles = <String, String>{};
+  final _openBinaryHandles = <String, _OpenBinaryHandle>{};
 
   Future<iface.CapabilitySnapshot> getCapabilities() async {
     return iface.RuntimeContractValidation.validateCapabilitySnapshot(
@@ -394,7 +394,11 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
       operation: iface.QueryOperation.read,
       contentUri: contentUri,
     );
-    _openBinaryHandles[descriptor.streamId] = descriptor.streamId;
+    _openBinaryHandles[descriptor.streamId] = _OpenBinaryHandle(
+      streamId: descriptor.streamId,
+      domain: request.domain,
+      contentUri: contentUri,
+    );
 
     return iface.BinaryContentHandle(
       handleId: descriptor.streamId,
@@ -410,12 +414,26 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
   }
 
   Future<void> closeBinary(String handleId) async {
-    final streamId = _openBinaryHandles.remove(handleId) ?? handleId;
-    await guardHostCall(
-      () => _hostApi.closeStream(streamId),
-      operation: iface.QueryOperation.read,
+    final handle = _openBinaryHandles.remove(handleId);
+    // A handle this instance did not open is still closed by its id; only
+    // its request context is unknown.
+    await _closeBinaryStream(
+      handle ?? _OpenBinaryHandle(streamId: handleId),
     );
   }
+
+  /// Purpose: Close one binary stream on the host, reporting a failure with
+  /// the request context it was opened with (UNFY-300).
+  ///
+  /// @param handle the stream and, when known, its domain and content URI.
+  /// @returns Completion once the host closed the stream.
+  /// @throws SimpleQueryError mapped from a failed host close.
+  Future<void> _closeBinaryStream(_OpenBinaryHandle handle) => guardHostCall(
+        () => _hostApi.closeStream(handle.streamId),
+        domain: handle.domain,
+        operation: iface.QueryOperation.read,
+        contentUri: handle.contentUri,
+      );
 
   Future<Map<String, Object?>?> callExtension({
     required String namespace,
@@ -582,11 +600,8 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
     }
     _activeObservers.clear();
 
-    for (final streamId in _openBinaryHandles.values.toList(growable: false)) {
-      await attempt(() => guardHostCall(
-            () => _hostApi.closeStream(streamId),
-            operation: iface.QueryOperation.read,
-          ));
+    for (final handle in _openBinaryHandles.values.toList(growable: false)) {
+      await attempt(() => _closeBinaryStream(handle));
     }
     _openBinaryHandles.clear();
 
@@ -1367,6 +1382,20 @@ abstract final class _AndroidFieldAliases {
         toNativeColumn(domain: domain, canonical: field),
     ];
   }
+}
+
+/// Purpose: Remember the request an open binary handle came from, so a
+/// failed close reports its domain and content URI (UNFY-300).
+class _OpenBinaryHandle {
+  const _OpenBinaryHandle({
+    required this.streamId,
+    this.domain,
+    this.contentUri,
+  });
+
+  final String streamId;
+  final iface.QueryDomain? domain;
+  final String? contentUri;
 }
 
 class _Selection {
