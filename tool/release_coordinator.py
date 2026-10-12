@@ -1,0 +1,265 @@
+"""Manual release intent, sequential tag publication, and durable automatic resume."""
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import random
+import time
+
+import yaml
+
+from release_plan import build_plan, bump_version
+from release_services import Blocked, Deferred, publication_times, quota_deadline, upload_deadline
+
+
+class Coordinator:
+    def __init__(self, repo, journal, pub, packages, *, now=time.time,
+                 sleep=time.sleep, run_id=None, wait_budget=2700):
+        self.repo, self.journal, self.pub, self.packages = repo, journal, pub, packages
+        self.now, self.sleep = now, sleep
+        self.run_id = str(run_id or os.environ['GITHUB_RUN_ID'])
+        self.deadline = now() + wait_budget
+
+    def save(self, plan):
+        self.journal.save(plan)
+
+    def validate_plan(self, plan):
+        if plan.get('schema') != 1 or plan.get('package_paths') != self.packages:
+            raise Blocked('Journal schema or package configuration differs from this repository')
+        if not re.fullmatch(r'[0-9a-f]{40}', plan.get('source_sha', '')):
+            raise Blocked('Invalid frozen source SHA')
+        if not re.fullmatch(r'sz-release-batch-\d+', plan.get('batch_tag', '')):
+            raise Blocked('Invalid batch intent tag')
+        records = {p['name']: p for p in plan['packages']}
+        allowed = set()
+        for package in plan['packages']:
+            if package['name'] not in self.packages or package['path'] != self.packages[package['name']]:
+                raise Blocked('Journal contains an unknown package path')
+            if bump_version(package['current'], plan['bump']) != package['version']:
+                raise Blocked('Journal version differs from frozen bump')
+            if package['tag'] != package['name'] + '-v' + package['version']:
+                raise Blocked('Journal tag differs from candidate version')
+            prefix = '' if package['path'] == '.' else package['path'] + '/'
+            allowed.update({prefix + 'pubspec.yaml', prefix + 'CHANGELOG.md'})
+            manifest = yaml.safe_load(plan['files'][prefix + 'pubspec.yaml'])
+            if manifest['name'] != package['name'] or str(manifest['version']) != package['version']:
+                raise Blocked('Frozen manifest does not match its package')
+            expected = {name: records[name]['version'] for section in ('dependencies', 'dev_dependencies')
+                        for name in (manifest.get(section) or {}) if name in records}
+            if package['prerequisites'] != expected:
+                raise Blocked('Journal prerequisites differ from frozen dependency graph')
+        if set(plan['files']) != allowed:
+            raise Blocked('Journal contains files outside the selected release manifests/changelogs')
+        seen = set()
+        for package in plan['packages']:
+            if not set(package['prerequisites']).issubset(seen):
+                raise Blocked('Journal packages are not in dependency order')
+            seen.add(package['name'])
+
+    def wait(self, until, reason):
+        if until > self.deadline:
+            raise Deferred(until, reason)
+        remaining = max(0, until - self.now())
+        while remaining:
+            self.sleep(min(60, remaining))
+            remaining = max(0, until - self.now())
+
+    def run(self, operation, *, package='all', bump='patch', dry_run=False, scheduled=False):
+        plan = self.journal.load()
+        if hasattr(self.repo, 'recover_intent'):
+            orphan = self.repo.recover_intent(plan)
+            if orphan:
+                plan = orphan
+                if not dry_run:
+                    self.journal.create(plan)
+        if operation == 'cut' and plan and plan['batch_tag'] == 'sz-release-batch-' + self.run_id:
+            operation = 'resume'
+        if operation == 'cut' and plan and plan['status'] not in ('complete', 'cancelled'):
+            print('An incomplete batch already exists; resume or cancel that batch.', flush=True)
+            return 'blocked'
+        if operation == 'cancel':
+            if not plan:
+                return 'noop'
+            if dry_run:
+                return 'preview'
+            plan.update(status='cancelled', error='Cancelled by manual dispatch')
+            self.save(plan)
+            return 'cancelled'
+        if operation == 'resume':
+            if not plan or plan['status'] in ('complete', 'cancelled'):
+                return 'noop'
+            if scheduled and plan['status'] == 'blocked':
+                return 'noop'
+            if self.now() < plan['not_before']:
+                return 'deferred'
+            if dry_run:
+                print(json.dumps(plan, indent=2), flush=True)
+                return 'preview'
+        else:
+            plan = {'schema': 1, 'source_sha': self.repo.source_sha(), 'prepared_sha': None,
+                    'status': 'planning', 'phase': 'planning', 'not_before': 0,
+                    'error': None, 'package_paths': self.packages, 'packages': [], 'files': {},
+                    'target': package, 'bump': bump, 'created_at': self.now(),
+                    'batch_tag': 'sz-release-batch-' + self.run_id}
+            if not dry_run:
+                self.repo.tag(plan['batch_tag'], plan['source_sha'], message=json.dumps(plan))
+                self.journal.create(plan)
+        try:
+            if plan['phase'] == 'planning':
+                published = {}
+                for name in self.packages:
+                    metadata = self.pub.package(name)
+                    if metadata is None:
+                        raise Blocked(f'{name} needs its first manual pub.dev publication before automated cuts')
+                    published[name] = metadata
+                candidate = build_plan(self.repo.root, self.packages, plan['target'], plan['bump'],
+                                       published, plan['source_sha'])
+                plan.update(candidate, status='planned', phase='preflight')
+                print('Release plan:\n' + json.dumps(plan['packages'], indent=2), flush=True)
+                if dry_run:
+                    self.repo.validate(plan, linked=True)
+                    return 'preview'
+                self.save(plan)
+            self.validate_plan(plan)
+            if not plan['packages']:
+                plan.update(status='complete', phase='complete', error=None)
+                self.save(plan)
+                return 'complete'
+            if plan['phase'] == 'preflight':
+                self.repo.validate(plan, linked=True)
+                plan.update(prepared_sha=self.repo.prepare(plan), phase='push', status='prepared')
+                self.save(plan)
+            if plan['phase'] == 'push':
+                self.repo.prepare(plan)  # recreate git objects on a fresh runner
+                self.repo.push_prepared(plan)
+                plan.update(phase='publication', status='publishing', error=None, not_before=0)
+                self.save(plan)
+            self.repo.prepare(plan)
+            for current in plan['packages']:
+                if current['state'] == 'published':
+                    continue
+                while True:
+                    # Reconcile a possibly successful upload before every retry.
+                    receipt = self.pub.receipt(current['name'], current['version'])
+                    if receipt:
+                        self.repo.verify_receipt(plan, current, receipt, self.pub)
+                        current.update(state='published', retry_pending=False, published_at=receipt.get('published'))
+                        plan.update(status='publishing', error=None, not_before=0)
+                        self.save(plan)
+                        break
+                    metadata = self.pub.package(current['name'])
+                    known = getattr(self.journal, 'known_publications', []) + publication_times(
+                        {'versions': [{'published': p['published_at']} for p in plan['packages'] if p.get('published_at')]})
+                    deadline = quota_deadline(publication_times(metadata), self.now(),
+                                              [(3, 120), (6, 3600), (12, 86400)])
+                    deadline = max(deadline, quota_deadline(known, self.now(),
+                                                           [(200, 120), (200, 3600), (200, 86400)]))
+                    if deadline > self.now():
+                        raise Deferred(deadline, f'{current["name"]} known publication quota cooldown')
+                    if current['state'] == 'pending':
+                        for dep, wanted in current['prerequisites'].items():
+                            if self.pub.receipt(dep, wanted) is None:
+                                raise Deferred(self.pub.next_check(dep), f'Waiting for {dep} {wanted}')
+                        self.repo.validate(plan, current, linked=False)
+                        self.repo.tag(current['tag'], plan['prepared_sha'])
+                        current['state'] = 'tagged'
+                        self.save(plan)
+                    run = self.journal.run(current, plan['prepared_sha'])
+                    if not run:
+                        self.wait(self.now() + 120, 'Waiting for tag-triggered Deploy run')
+                        continue
+                    current['run_id'] = run['id']
+                    if self.pub.receipt(current['name'], current['version']):
+                        continue
+                    if run['status'] != 'completed':
+                        self.save(plan)
+                        self.wait(self.now() + 30, 'Waiting for Deploy completion')
+                        continue
+                    if run['conclusion'] == 'success':
+                        self.save(plan)
+                        self.wait(self.pub.next_check(current['name']), 'Waiting for exact version visibility')
+                        continue
+                    if current.get('retry_pending'):
+                        # A rerun may have been accepted just before the runner stopped.
+                        previous = current['attempts']
+                        if run['attempt'] > previous:
+                            current['retry_pending'] = False
+                            current.pop('retry_requested_at', None)
+                        elif current.get('retry_requested_at') is not None:
+                            if self.now() - current['retry_requested_at'] > 900:
+                                raise Blocked('Rerun acceptance is ambiguous after 15 minutes; inspect original Deploy run')
+                            self.wait(self.now() + 120, 'Waiting for the accepted rerun attempt to become visible')
+                            continue
+                        else:
+                            current['retry_requested_at'] = self.now()
+                            self.save(plan)
+                            self.journal.retry(run['id'])
+                            self.save(plan)
+                            continue
+                    current['attempts'] = run['attempt']
+                    logs = self.journal.logs(run['id'])
+                    deadline = upload_deadline(logs, self.now())
+                    if deadline:
+                        current['retry_pending'] = True
+                        raise Deferred(deadline, f'Upload quota cooldown for {current["name"]}')
+                    if re.search(r'HTTP(?: error)?[ :]+(?:408|500|502|503|504)\b|SocketException|Connection reset|Connection timed out', logs, re.I):
+                        failures = current.get('transient_failures', 0) + 1
+                        current['transient_failures'] = failures
+                        if failures <= 3:
+                            current['retry_pending'] = True
+                            raise Deferred(self.now() + 60 * 2 ** (failures - 1) + random.uniform(0, 15),
+                                           f'Transient upload failure for {current["name"]}; bounded retry {failures}/3')
+                    raise Blocked(f'Deploy run {run["id"]} {run["conclusion"]}; inspect its validation/authentication error')
+            plan.update(status='complete', phase='complete', error=None, not_before=0)
+            self.save(plan)
+            return 'complete'
+        except Deferred as error:
+            if not dry_run:
+                plan.update(status='deferred', error=str(error), not_before=error.until)
+                self.save(plan)
+            print(f'Batch paused until {error.until}: {error}', flush=True)
+            return 'deferred'
+        except (Blocked, ValueError) as error:
+            if not dry_run:
+                plan.update(status='blocked', error=str(error), not_before=0)
+                self.save(plan)
+            print(f'Batch blocked: {error}', flush=True)
+            return 'blocked'
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--operation', choices=('cut', 'resume', 'cancel'), default='cut')
+    parser.add_argument('--package', default='all')
+    parser.add_argument('--bump', choices=('patch', 'minor', 'major'), default='patch')
+    parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument('--scheduled', action='store_true')
+    args = parser.parse_args()
+    from release_github import GitHubClient
+    from release_repository import Repository
+    from release_services import PubClient
+    root = Path(__file__).resolve().parents[1]
+    packages = json.loads((root / 'tool/release-packages.json').read_text())
+    journal = GitHubClient(os.environ['GITHUB_REPOSITORY'], os.environ['GH_TOKEN'])
+    coordinator = Coordinator(Repository(root), journal, PubClient(os.environ.get('PUB_HOSTED_URL', 'https://pub.dev')), packages)
+    result = coordinator.run(args.operation, package=args.package, bump=args.bump,
+                             dry_run=args.dry_run, scheduled=args.scheduled)
+    summary = os.environ.get('GITHUB_STEP_SUMMARY')
+    if summary:
+        plan = journal.load()
+        with open(summary, 'a') as file:
+            file.write(f'## Batch release: {result}\n\n')
+            if plan:
+                file.write(f'Intent: `{plan["batch_tag"]}`\n\n')
+                for package in plan['packages']:
+                    file.write(f'- `{package["name"]} {package["version"]}`: {package["state"]}\n')
+                if plan.get('error'):
+                    file.write('\n' + plan['error'] + '\n')
+                if result == 'deferred':
+                    file.write('\nThe authorized batch will resume automatically after its cooldown.\n')
+    raise SystemExit(1 if result == 'blocked' else 0)
+
+
+if __name__ == '__main__':
+    main()

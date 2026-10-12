@@ -1,0 +1,10 @@
+{
+  "simple_query": "packages/simple_query",
+  "simple_query_platform_interface": "packages/simple_query_platform_interface",
+  "simple_query_android": "packages/simple_query_android",
+  "simple_query_ios": "packages/simple_query_ios",
+  "simple_query_macos": "packages/simple_query_macos",
+  "simple_query_linux": "packages/simple_query_linux",
+  "simple_query_windows": "packages/simple_query_windows",
+  "simple_query_shared": "packages/simple_query_shared"
+}

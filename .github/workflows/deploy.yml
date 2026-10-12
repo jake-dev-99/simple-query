@@ -25,15 +25,9 @@ on:
       - 'simple_query_linux-v*'
       - 'simple_query_windows-v*'
       - 'simple_query_shared-v*'
-  # Manual re-fire for an existing tag — e.g. transient pub.dev
-  # outage swallowed the original tag-push run, or an OIDC config
-  # was fixed and the publish needs to be retried against the same
-  # tag. The `tag` input must be an existing tag name (e.g.
-  # `simple_query_android-v0.2.1`); the resolve step keys deploys
-  # off that exact value.
-  #
-  # Dispatch a retry on the existing tag ref so the OIDC ref claim matches
-  # pub.dev's tag pattern. Keep the original tag and package version.
+  # Manual dispatch remains for inspection/validation. Pub.dev automated upload
+  # requires the original tag-push event: recover through Cut Release resume or
+  # Re-run failed jobs on that original run. Never move/delete a package tag.
   workflow_dispatch:
     inputs:
       tag:

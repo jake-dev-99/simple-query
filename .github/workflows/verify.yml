@@ -17,6 +17,17 @@ on:
   workflow_dispatch:
 
 jobs:
+  release-tooling:
+    name: Batch release recovery tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - run: python3 -m pip install -r tool/release-requirements.txt
+      - run: python3 -m unittest discover -s tool -p 'test_release_*.py' -v
+
   linux-native-tests:
     name: Linux native callback tests
     runs-on: ubuntu-latest

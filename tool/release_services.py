@@ -1,14 +1,9 @@
 """Release boundaries: hosted HTTP, quotas, git snapshots, and GitHub journal."""
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-import hashlib
-import io
 import json
-from pathlib import Path
 import random
 import re
-import subprocess
-import tarfile
 import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
