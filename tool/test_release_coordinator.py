@@ -448,6 +448,22 @@ if sys.argv[1:] not in [['pub','get','--no-example'], ['analyze','--no-fatal-war
         self.assertEqual(self.runner().run('cut', package='demo_android'), 'complete')
         self.assertEqual(self.journal.run_calls, ['demo_android'])
 
+    def test_external_local_and_git_sources_block_before_sdk_or_push(self):
+        file = self.root / 'packages/android/pubspec.yaml'
+        original = file.read_text()
+        for source in ['path: ../external', 'git: https://example.invalid/package.git', 'hosted: https://example.invalid']:
+            with self.subTest(source=source):
+                file.write_text(original + 'dependencies:\n  external_package:\n    '+source+'\n')
+                self.fixture.commit('Add external development source')
+                self.fixture.git('push', 'origin', 'main')
+                before = self.fixture.git('ls-remote', 'origin', 'refs/heads/main')
+                self.assertEqual(self.cut(), 'blocked')
+                self.assertEqual(self.fixture.git('ls-remote', 'origin', 'refs/heads/main'), before)
+                self.assertFalse(self.trace.exists())
+                self.journal.file.unlink()
+                self.fixture.git('push', 'origin', ':refs/tags/sz-release-batch-12345')
+                self.fixture.git('tag', '-d', 'sz-release-batch-12345')
+
     def test_validation_disables_sdk_http_quota_retries(self):
         self.assertEqual(self.repo.env.get('PUB_MAX_HTTP_RETRIES'), '1')
 

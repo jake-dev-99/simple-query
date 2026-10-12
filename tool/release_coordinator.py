@@ -103,175 +103,21 @@ class Coordinator:
             remaining = max(0, until - self.now())
 
     def run(self, operation, *, package='all', bump='patch', dry_run=False, scheduled=False):
-        plan = self.journal.load()
-        if hasattr(self.repo, 'recover_intent'):
-            orphan = self.repo.recover_intent(plan)
-            if orphan:
-                plan = orphan
-                if not dry_run:
-                    self.journal.create(plan)
+        plan = self.load_authorized(dry_run=dry_run)
         if operation == 'cut' and plan and plan['batch_tag'] == 'sz-release-batch-' + self.run_id:
             operation = 'resume'
-        if operation == 'cut' and plan and plan['status'] not in ('complete', 'cancelled'):
-            print('An incomplete batch already exists; resume or cancel that batch.', flush=True)
+        if operation == 'cut' and not self.can_cut(plan, dry_run=dry_run):
             return 'blocked'
-        if operation == 'cut' and plan and plan['status'] == 'cancelled':
-            try:
-                self.reconcile_cancelled(plan, dry_run=dry_run)
-            except (Blocked, Deferred) as error:
-                print(f'New cut blocked: {error}', flush=True)
-                return 'blocked'
         if operation == 'cancel':
-            if not plan:
-                return 'noop'
-            if dry_run:
-                return 'preview'
-            plan.update(status='cancelled', error='Cancelled by manual dispatch')
-            self.save(plan)
-            return 'cancelled'
+            return self.cancel(plan, dry_run=dry_run)
         if operation == 'resume':
-            if not plan or plan['status'] in ('complete', 'cancelled'):
-                return 'noop'
-            if scheduled and plan['status'] == 'blocked':
-                return 'noop'
-            if self.now() < plan['not_before']:
-                return 'deferred'
-            if dry_run:
-                print(json.dumps(plan, indent=2), flush=True)
-                return 'preview'
+            early = self.resume_status(plan, dry_run=dry_run, scheduled=scheduled)
+            if early:
+                return early
         else:
-            if plan:
-                previous = publication_times({'versions': [{'published': p['published_at']}
-                    for p in plan['packages'] if p.get('published_at')]})
-                self.journal.known_publications = getattr(self.journal, 'known_publications', []) + previous
-            plan = {'schema': 1, 'source_sha': self.repo.source_sha(), 'prepared_sha': None,
-                    'status': 'planning', 'phase': 'planning', 'not_before': 0,
-                    'error': None, 'package_paths': self.packages, 'packages': [], 'files': {},
-                    'target': package, 'bump': bump, 'created_at': self.now(),
-                    'batch_tag': 'sz-release-batch-' + self.run_id}
-            if not dry_run:
-                self.repo.tag(plan['batch_tag'], plan['source_sha'], message=json.dumps(plan))
-                self.journal.create(plan)
+            plan = self.new_plan(plan, package, bump, dry_run=dry_run)
         try:
-            if plan['phase'] == 'planning':
-                published = dict(plan.get('planning_metadata', {}))
-                refresh_missing = operation == 'resume' and plan['status'] == 'blocked'
-                for name in self.packages:
-                    if name in published and (published[name] is not None or not refresh_missing):
-                        continue
-                    metadata = self.pub.package(name)
-                    published[name] = None if metadata is None else {
-                        'versions': [{'version': item['version']} for item in metadata.get('versions', [])],
-                        'latest': metadata.get('latest')}
-                    plan.setdefault('planning_metadata', {})[name] = published[name]
-                    if not dry_run:
-                        self.save(plan)  # metadata quotas must not restart reads from package one
-                candidate = build_plan(self.repo.root, self.packages, plan['target'], plan['bump'],
-                                       published, plan['source_sha'])
-                for selected in candidate['packages']:
-                    if published[selected['name']] is None:
-                        raise Blocked(f'{selected["name"]} needs its first manual pub.dev publication before automated cuts')
-                plan.update(candidate, status='planned', phase='preflight')
-                plan.pop('planning_metadata', None)
-                print('Release plan:\n' + json.dumps(plan['packages'], indent=2), flush=True)
-                if dry_run:
-                    self.repo.validate(plan, linked=True)
-                    return 'preview'
-                self.save(plan)
-            self.validate_plan(plan)
-            if not plan['packages']:
-                plan.update(status='complete', phase='complete', error=None)
-                self.save(plan)
-                return 'complete'
-            if plan['phase'] == 'preflight':
-                self.repo.validate(plan, linked=True)
-                plan.update(prepared_sha=self.repo.prepare(plan), phase='push', status='prepared')
-                self.save(plan)
-            if plan['phase'] == 'push':
-                self.repo.prepare(plan)  # recreate git objects on a fresh runner
-                self.repo.push_prepared(plan)
-                plan.update(phase='publication', status='publishing', error=None, not_before=0)
-                self.save(plan)
-            self.repo.prepare(plan)
-            for current in plan['packages']:
-                if current['state'] == 'published':
-                    continue
-                while True:
-                    # Reconcile a possibly successful upload before every retry.
-                    receipt = self.pub.receipt(current['name'], current['version'])
-                    if receipt:
-                        self.repo.verify_receipt(plan, current, receipt, self.pub)
-                        current.update(state='published', retry_pending=False, published_at=receipt.get('published'))
-                        plan.update(status='publishing', error=None, not_before=0)
-                        self.save(plan)
-                        break
-                    metadata = self.pub.package(current['name'])
-                    known = getattr(self.journal, 'known_publications', []) + publication_times(
-                        {'versions': [{'published': p['published_at']} for p in plan['packages'] if p.get('published_at')]})
-                    deadline = quota_deadline(publication_times(metadata), self.now(),
-                                              [(3, 120), (6, 3600), (12, 86400)])
-                    deadline = max(deadline, quota_deadline(known, self.now(),
-                                                           [(200, 120), (200, 3600), (200, 86400)]))
-                    if deadline > self.now():
-                        raise Deferred(deadline, f'{current["name"]} known publication quota cooldown')
-                    if current['state'] == 'pending':
-                        for dep, wanted in current['prerequisites'].items():
-                            if self.pub.receipt(dep, wanted) is None:
-                                raise Deferred(self.pub.next_check(dep), f'Waiting for {dep} {wanted}')
-                        self.repo.validate(plan, current, linked=False)
-                        self.save(plan)  # exact publish contents checkpoint precedes tag push
-                        self.repo.tag(current['tag'], plan['prepared_sha'])
-                        current['state'] = 'tagged'
-                        self.save(plan)
-                    run = self.journal.run(current, plan['prepared_sha'])
-                    if not run:
-                        self.wait(self.now() + 120, 'Waiting for tag-triggered Deploy run')
-                        continue
-                    current['run_id'] = run['id']
-                    if self.pub.receipt(current['name'], current['version']):
-                        continue
-                    if run['status'] != 'completed':
-                        self.save(plan)
-                        self.wait(self.now() + 30, 'Waiting for Deploy completion')
-                        continue
-                    if run['conclusion'] == 'success':
-                        self.save(plan)
-                        self.wait(self.pub.next_check(current['name']), 'Waiting for exact version visibility')
-                        continue
-                    if current.get('retry_pending'):
-                        # A rerun may have been accepted just before the runner stopped.
-                        previous = current['attempts']
-                        if run['attempt'] > previous:
-                            current['retry_pending'] = False
-                            current.pop('retry_requested_at', None)
-                        elif current.get('retry_requested_at') is not None:
-                            if self.now() - current['retry_requested_at'] > 900:
-                                raise Blocked('Rerun acceptance is ambiguous after 15 minutes; inspect original Deploy run')
-                            self.wait(self.now() + 120, 'Waiting for the accepted rerun attempt to become visible')
-                            continue
-                        else:
-                            current['retry_requested_at'] = self.now()
-                            self.save(plan)
-                            self.journal.retry(run['id'])
-                            self.save(plan)
-                            continue
-                    current['attempts'] = run['attempt']
-                    logs = self.journal.logs(run['id'])
-                    deadline = upload_deadline(logs, self.now())
-                    if deadline:
-                        current['retry_pending'] = True
-                        raise Deferred(deadline, f'Upload quota cooldown for {current["name"]}')
-                    if re.search(r'HTTP(?: error)?[ :]+(?:408|500|502|503|504)\b|SocketException|Connection reset|Connection timed out', logs, re.I):
-                        failures = current.get('transient_failures', 0) + 1
-                        current['transient_failures'] = failures
-                        if failures <= 3:
-                            current['retry_pending'] = True
-                            raise Deferred(self.now() + 60 * 2 ** (failures - 1) + random.uniform(0, 15),
-                                           f'Transient upload failure for {current["name"]}; bounded retry {failures}/3')
-                    raise Blocked(f'Deploy run {run["id"]} {run["conclusion"]}; inspect its validation/authentication error')
-            plan.update(status='complete', phase='complete', error=None, not_before=0)
-            self.save(plan)
-            return 'complete'
+            return self.execute(plan, operation, dry_run=dry_run)
         except Deferred as error:
             if not dry_run:
                 plan.update(status='deferred', error=str(error), not_before=error.until)
@@ -284,6 +130,213 @@ class Coordinator:
                 self.save(plan)
             print(f'Batch blocked: {error}', flush=True)
             return 'blocked'
+
+
+    def load_authorized(self, *, dry_run=False):
+        """Recover the immutable manual intent if journal creation was interrupted."""
+        plan = self.journal.load()
+        if hasattr(self.repo, 'recover_intent'):
+            orphan = self.repo.recover_intent(plan)
+            if orphan:
+                plan = orphan
+                if not dry_run:
+                    self.journal.create(plan)
+        return plan
+
+    def can_cut(self, plan, *, dry_run=False):
+        operation = 'cut'
+        if operation == 'cut' and plan and plan['status'] not in ('complete', 'cancelled'):
+            print('An incomplete batch already exists; resume or cancel that batch.', flush=True)
+            return False
+        if operation == 'cut' and plan and plan['status'] == 'cancelled':
+            try:
+                self.reconcile_cancelled(plan, dry_run=dry_run)
+            except (Blocked, Deferred) as error:
+                print(f'New cut blocked: {error}', flush=True)
+                return False
+        return True
+
+    def cancel(self, plan, *, dry_run=False):
+        if not plan:
+            return 'noop'
+        if dry_run:
+            return 'preview'
+        plan.update(status='cancelled', error='Cancelled by manual dispatch')
+        self.save(plan)
+        return 'cancelled'
+
+    def resume_status(self, plan, *, dry_run=False, scheduled=False):
+        if not plan or plan['status'] in ('complete', 'cancelled'):
+            return 'noop'
+        if scheduled and plan['status'] == 'blocked':
+            return 'noop'
+        if self.now() < plan['not_before']:
+            return 'deferred'
+        if dry_run:
+            print(json.dumps(plan, indent=2), flush=True)
+            return 'preview'
+        return None
+
+    def new_plan(self, plan, package, bump, *, dry_run=False):
+        """Write manual intent before querying mutable hosted metadata."""
+        if plan:
+            previous = publication_times({'versions': [{'published': p['published_at']}
+                for p in plan['packages'] if p.get('published_at')]})
+            self.journal.known_publications = getattr(self.journal, 'known_publications', []) + previous
+        plan = {'schema': 1, 'source_sha': self.repo.source_sha(), 'prepared_sha': None,
+                'status': 'planning', 'phase': 'planning', 'not_before': 0,
+                'error': None, 'package_paths': self.packages, 'packages': [], 'files': {},
+                'target': package, 'bump': bump, 'created_at': self.now(),
+                'batch_tag': 'sz-release-batch-' + self.run_id}
+        if not dry_run:
+            self.repo.tag(plan['batch_tag'], plan['source_sha'], message=json.dumps(plan))
+            self.journal.create(plan)
+        return plan
+
+    def plan_candidates(self, plan, operation, *, dry_run=False):
+        """Persist metadata progress before source validation or publication."""
+        if plan['phase'] == 'planning':
+            published = dict(plan.get('planning_metadata', {}))
+            refresh_missing = operation == 'resume' and plan['status'] == 'blocked'
+            for name in self.packages:
+                if name in published and (published[name] is not None or not refresh_missing):
+                    continue
+                metadata = self.pub.package(name)
+                published[name] = None if metadata is None else {
+                    'versions': [{'version': item['version']} for item in metadata.get('versions', [])],
+                    'latest': metadata.get('latest')}
+                plan.setdefault('planning_metadata', {})[name] = published[name]
+                if not dry_run:
+                    self.save(plan)  # metadata quotas must not restart reads from package one
+            candidate = build_plan(self.repo.root, self.packages, plan['target'], plan['bump'],
+                                   published, plan['source_sha'])
+            for selected in candidate['packages']:
+                if published[selected['name']] is None:
+                    raise Blocked(f'{selected["name"]} needs its first manual pub.dev publication before automated cuts')
+            plan.update(candidate, status='planned', phase='preflight')
+            plan.pop('planning_metadata', None)
+            print('Release plan:\n' + json.dumps(plan['packages'], indent=2), flush=True)
+            if dry_run:
+                self.repo.validate(plan, linked=True)
+                return 'preview'
+            self.save(plan)
+        return None
+
+    def prepare_publication(self, plan):
+        """Checkpoint reproducible git preparation and the ordinary main push."""
+        self.validate_plan(plan)
+        if not plan['packages']:
+            plan.update(status='complete', phase='complete', error=None)
+            self.save(plan)
+            return False
+        if plan['phase'] == 'preflight':
+            self.repo.validate(plan, linked=True)
+            plan.update(prepared_sha=self.repo.prepare(plan), phase='push', status='prepared')
+            self.save(plan)
+        if plan['phase'] == 'push':
+            self.repo.prepare(plan)  # recreate git objects on a fresh runner
+            self.repo.push_prepared(plan)
+            plan.update(phase='publication', status='publishing', error=None, not_before=0)
+            self.save(plan)
+        self.repo.prepare(plan)
+        return True
+
+    def execute(self, plan, operation, *, dry_run=False):
+        preview = self.plan_candidates(plan, operation, dry_run=dry_run)
+        if preview:
+            return preview
+        if self.prepare_publication(plan):
+            self.publish_packages(plan)
+        plan.update(status='complete', phase='complete', error=None, not_before=0)
+        self.save(plan)
+        return 'complete'
+
+    def publish_packages(self, plan):
+        """Reconcile each exact receipt before advancing to its dependents."""
+        for current in plan['packages']:
+            if current['state'] == 'published':
+                continue
+            while True:
+                # Reconcile a possibly successful upload before every retry.
+                receipt = self.pub.receipt(current['name'], current['version'])
+                if receipt:
+                    self.repo.verify_receipt(plan, current, receipt, self.pub)
+                    current.update(state='published', retry_pending=False, published_at=receipt.get('published'))
+                    plan.update(status='publishing', error=None, not_before=0)
+                    self.save(plan)
+                    break
+                metadata = self.pub.package(current['name'])
+                known = getattr(self.journal, 'known_publications', []) + publication_times(
+                    {'versions': [{'published': p['published_at']} for p in plan['packages'] if p.get('published_at')]})
+                deadline = quota_deadline(publication_times(metadata), self.now(),
+                                          [(3, 120), (6, 3600), (12, 86400)])
+                deadline = max(deadline, quota_deadline(known, self.now(),
+                                                       [(200, 120), (200, 3600), (200, 86400)]))
+                if deadline > self.now():
+                    raise Deferred(deadline, f'{current["name"]} known publication quota cooldown')
+                if current['state'] == 'pending':
+                    for dep, wanted in current['prerequisites'].items():
+                        if self.pub.receipt(dep, wanted) is None:
+                            raise Deferred(self.pub.next_check(dep), f'Waiting for {dep} {wanted}')
+                    self.repo.validate(plan, current, linked=False)
+                    self.save(plan)  # exact publish contents checkpoint precedes tag push
+                    self.repo.tag(current['tag'], plan['prepared_sha'])
+                    current['state'] = 'tagged'
+                    self.save(plan)
+                run = self.journal.run(current, plan['prepared_sha'])
+                if not run:
+                    self.wait(self.now() + 120, 'Waiting for tag-triggered Deploy run')
+                    continue
+                current['run_id'] = run['id']
+                if self.pub.receipt(current['name'], current['version']):
+                    continue
+                if run['status'] != 'completed':
+                    self.save(plan)
+                    self.wait(self.now() + 30, 'Waiting for Deploy completion')
+                    continue
+                if run['conclusion'] == 'success':
+                    self.save(plan)
+                    self.wait(self.pub.next_check(current['name']), 'Waiting for exact version visibility')
+                    continue
+                if self.retry_if_pending(plan, current, run):
+                    continue
+                self.handle_failure(plan, current, run)
+
+    def retry_if_pending(self, plan, current, run):
+        """An accepted rerun must become visible before inspecting its result."""
+        if not current.get('retry_pending'):
+            return False
+        if run['attempt'] > current['attempts']:
+            current['retry_pending'] = False
+            current.pop('retry_requested_at', None)
+            return False
+        if current.get('retry_requested_at') is not None:
+            if self.now() - current['retry_requested_at'] > 900:
+                raise Blocked('Rerun acceptance is ambiguous after 15 minutes; inspect original Deploy run')
+            self.wait(self.now() + 120, 'Waiting for the accepted rerun attempt to become visible')
+            return True
+        current['retry_requested_at'] = self.now()
+        self.save(plan)
+        self.journal.retry(run['id'])
+        self.save(plan)
+        return True
+
+    def handle_failure(self, plan, current, run):
+        """Convert server quota windows and bounded transient errors into pauses."""
+        current['attempts'] = run['attempt']
+        logs = self.journal.logs(run['id'])
+        deadline = upload_deadline(logs, self.now())
+        if deadline:
+            current['retry_pending'] = True
+            raise Deferred(deadline, f'Upload quota cooldown for {current["name"]}')
+        if re.search(r'HTTP(?: error)?[ :]+(?:408|500|502|503|504)\b|SocketException|Connection reset|Connection timed out', logs, re.I):
+            failures = current.get('transient_failures', 0) + 1
+            current['transient_failures'] = failures
+            if failures <= 3:
+                current['retry_pending'] = True
+                raise Deferred(self.now() + 60 * 2 ** (failures - 1) + random.uniform(0, 15),
+                               f'Transient upload failure for {current["name"]}; bounded retry {failures}/3')
+        raise Blocked(f'Deploy run {run["id"]} {run["conclusion"]}; inspect its validation/authentication error')
 
 
 def main():

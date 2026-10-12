@@ -92,40 +92,8 @@ def release_file(relative):
             and '/.github/' not in relative)
 
 
-def build_plan(root, packages, target, bump, published, source_sha):
-    root = Path(root)
-    packages = {name: str(Path(path)) for name, path in packages.items()}
-    specs, texts, graph = {}, {}, {}
-    for name, path in packages.items():
-        text = git(root, 'show', f'{source_sha}:{path + "/" if path != "." else ""}pubspec.yaml') + '\n'
-        spec = yaml.safe_load(text)
-        if spec.get('name') != name or spec.get('publish_to') == 'none':
-            raise ValueError(f'Not the configured publishable package: {name}')
-        version(spec['version'])
-        texts[name], specs[name] = text, spec
-        graph[name] = {}
-        for section in ('dependencies', 'dev_dependencies'):
-            for dep, constraint in (spec.get(section) or {}).items():
-                if dep in packages:
-                    floor(constraint)
-                    graph[name].setdefault(dep, {})[section] = constraint
-    # Check the full graph, even if this invocation happens to select a leaf.
-    order, visiting, visited = [], set(), set()
-
-    def visit(name):
-        if name in visiting:
-            raise ValueError(f'Dependency cycle at {name}')
-        if name in visited:
-            return
-        visiting.add(name)
-        for dep in sorted(graph[name]):
-            visit(dep)
-        visiting.remove(name)
-        visited.add(name)
-        order.append(name)
-
-    for name in sorted(packages):
-        visit(name)
+def selection_reasons(root, packages, target, published, source_sha, specs):
+    """Require verified history or hosted manifest evidence for owned changes."""
     baselines, reasons, verified = {}, {}, []
     for name in packages:
         hosted_versions = {v['version'] for v in (published.get(name) or {}).get('versions', [])}
@@ -157,6 +125,52 @@ def build_plan(root, packages, target, bump, published, source_sha):
         if target not in packages:
             raise ValueError(f'Unknown package: {target}')
         reasons = {target: 'explicit individual cut'}
+    return baselines, reasons
+
+
+def load_specs(root, packages, source_sha):
+    """Read immutable package manifests and their internal dependency graph."""
+    specs, texts, graph = {}, {}, {}
+    for name, path in packages.items():
+        text = git(root, 'show', f'{source_sha}:{path + "/" if path != "." else ""}pubspec.yaml') + '\n'
+        spec = yaml.safe_load(text)
+        if spec.get('name') != name or spec.get('publish_to') == 'none':
+            raise ValueError(f'Not the configured publishable package: {name}')
+        version(spec['version'])
+        texts[name], specs[name] = text, spec
+        graph[name] = {}
+        for section in ('dependencies', 'dev_dependencies'):
+            for dep, constraint in (spec.get(section) or {}).items():
+                if dep in packages:
+                    floor(constraint)
+                    graph[name].setdefault(dep, {})[section] = constraint
+    return texts, specs, graph
+
+
+def package_order(packages, graph):
+    """A full graph cycle check precedes dependency-first selection."""
+    # Check the full graph, even if this invocation happens to select a leaf.
+    order, visiting, visited = [], set(), set()
+
+    def visit(name):
+        if name in visiting:
+            raise ValueError(f'Dependency cycle at {name}')
+        if name in visited:
+            return
+        visiting.add(name)
+        for dep in sorted(graph[name]):
+            visit(dep)
+        visiting.remove(name)
+        visited.add(name)
+        order.append(name)
+
+    for name in sorted(packages):
+        visit(name)
+    return order
+
+
+def update_floors(packages, specs, graph, order, reasons, target, bump):
+    """Select affected dependents without ever lowering an authored floor."""
     floor_updates = {name: {} for name in packages}
     while True:
         selected_before = set(reasons)
@@ -175,6 +189,16 @@ def build_plan(root, packages, target, bump, published, source_sha):
                         reasons.setdefault(name, 'dependency: requires updated ' + dep + ' floor')
         if set(reasons) == selected_before:
             break
+    return floor_updates, candidates
+
+
+def build_plan(root, packages, target, bump, published, source_sha):
+    root = Path(root)
+    packages = {name: str(Path(path)) for name, path in packages.items()}
+    texts, specs, graph = load_specs(root, packages, source_sha)
+    order = package_order(packages, graph)
+    baselines, reasons = selection_reasons(root, packages, target, published, source_sha, specs)
+    floor_updates, candidates = update_floors(packages, specs, graph, order, reasons, target, bump)
     files, selected = {}, []
     for name in order:
         if name not in reasons:

@@ -155,18 +155,42 @@ class Repository:
                            check=True, capture_output=True)
             yield root
 
+    def validate_sources(self, root, directory, plan):
+        """Permit hosted dependencies, SDK packages, and the example's own batch links."""
+        manifests = [directory / 'pubspec.yaml', *(directory / 'example').rglob('pubspec.yaml')]
+        selected = {p['name']: (root / p['path']).resolve() for p in plan['packages']}
+        for file in manifests:
+            spec = yaml.safe_load(file.read_text()) or {}
+            if 'dependency_overrides' in spec:
+                raise Blocked(f'{file.relative_to(root)} contains dependency_overrides; remove development overrides before releasing')
+            for section in ('dependencies', 'dev_dependencies'):
+                for name, source in (spec.get(section) or {}).items():
+                    if isinstance(source, str):
+                        continue
+                    if not isinstance(source, dict):
+                        raise Blocked(f'{name} has an unsupported dependency source')
+                    if 'path' in source:
+                        expected = selected.get(name)
+                        if (file != directory / 'pubspec.yaml' and expected is not None
+                                and set(source) == {'path'}
+                                and (file.parent / source['path']).resolve() == expected):
+                            continue
+                        raise Blocked(f'{name} local path dependency is outside intentional selected-batch example links')
+                    if 'sdk' in source and set(source) == {'sdk'} and source['sdk'] in ('flutter', 'dart'):
+                        continue
+                    if set(source).issubset({'version', 'hosted'}):
+                        hosted = source.get('hosted', 'https://pub.dev')
+                        if isinstance(hosted, dict):
+                            hosted = hosted.get('url')
+                        if hosted in ('https://pub.dev', 'https://pub.dev/', 'https://pub.dartlang.org'):
+                            continue
+                    raise Blocked(f'{name} external dependency must resolve from pub.dev or a supported SDK')
+
     def validate(self, plan, package=None, *, linked=False):
         packages = [package] if package else plan['packages']
         with self.snapshot(plan) as root, tempfile.TemporaryDirectory(prefix='release-artifact-') as artifact_dir:
-            # Validate only this cut's packages and bundled examples. An
-            # unrelated implementation must not block an individual cut.
             for current in packages:
-                directory = root / current['path']
-                manifests = [directory / 'pubspec.yaml', *(directory / 'example').rglob('pubspec.yaml')]
-                for file in manifests:
-                    spec = yaml.safe_load(file.read_text()) or {}
-                    if 'dependency_overrides' in spec:
-                        raise Blocked(f'{file.relative_to(root)} contains dependency_overrides; remove development overrides before releasing')
+                self.validate_sources(root, root / current['path'], plan)
             if linked:
                 for current in packages:
                     links = {p['name']: {'path': str(root / p['path'])}

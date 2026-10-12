@@ -93,6 +93,26 @@ class GitHubTest(unittest.TestCase):
             self.client.load()
         self.assertEqual(len(self.requests),1)
 
+    def test_history_scan_is_bounded_before_using_incomplete_quota_accounting(self):
+        from release_services import Blocked
+        page = [{'id': n, 'tag_name': 'demo-v1.0.0', 'draft': False} for n in range(100)]
+        self.responses = [(200, {}, page)] * 10
+        with self.assertRaisesRegex(Blocked, 'exceeds 1000'):
+            self.client.load()
+        self.assertEqual(len(self.requests), 10)
+
+    def test_history_retains_only_prior_publications_in_the_daily_window(self):
+        from datetime import datetime, timezone
+        def body(when):
+            return self.module.encode({'schema': 1, 'files': {}, 'packages': [
+                {'published_at': datetime.fromtimestamp(t, timezone.utc).isoformat()} for t in when]})
+        self.responses = [(200, {}, [
+            {'id': 2, 'draft': True, 'tag_name': 'sz-release-batch-2', 'body': body([])},
+            {'id': 1, 'draft': True, 'tag_name': 'sz-release-batch-1',
+             'body': body([self.clock.now()-10, self.clock.now()-86401])}])]
+        self.assertEqual(self.client.load()['journal_id'], 2)
+        self.assertEqual(self.client.known_publications, [self.clock.now()-10])
+
     def test_retry_preserves_original_tag_event_and_only_reruns_failed_jobs(self):
         self.responses = [(201, {}, None)]
         self.client.retry(4)

@@ -86,29 +86,35 @@ class GitHubClient:
         except (URLError, TimeoutError) as error:
             raise Deferred(self.now() + 120, 'GitHub request interrupted; reconcile on resume') from error
 
+    def remember_publications(self, plan):
+        recent = publication_times({'versions': [
+            {'published': package['published_at']} for package in plan.get('packages', [])
+            if package.get('published_at')]})
+        self.known_publications.extend(t for t in recent if self.now() - 86400 < t <= self.now())
+
     def load(self):
-        journals = []
+        # Keep only one full journal and rolling-window timestamps, never all
+        # historical frozen files. An incomplete bounded scan requires attention.
+        latest = None
         self.known_publications = []
-        page = 1
-        while True:
+        for page in range(1, 11):
             releases = self.request('GET', self.path + f'/releases?per_page=100&page={page}')
             for release in releases:
-                if release['tag_name'].startswith('sz-release-batch-'):
-                    plan = decode(release.get('body') or '')
-                    plan['journal_id'] = release['id']
-                    if not release['draft']:
-                        plan.update(status='blocked', error='Batch journal is no longer an internal draft release')
-                    journals.append(plan)
+                if not release['tag_name'].startswith('sz-release-batch-'):
+                    continue
+                plan = decode(release.get('body') or '')
+                plan['journal_id'] = release['id']
+                if not release['draft']:
+                    plan.update(status='blocked', error='Batch journal is no longer an internal draft release')
+                if latest is None or plan['journal_id'] > latest['journal_id']:
+                    if latest:
+                        self.remember_publications(latest)
+                    latest = plan
+                else:
+                    self.remember_publications(plan)
             if len(releases) < 100:
-                break
-            page += 1
-        latest = max(journals, key=lambda plan: plan['journal_id']) if journals else None
-        for plan in journals:
-            if plan is not latest:
-                self.known_publications.extend(publication_times({'versions': [
-                    {'published': package['published_at']} for package in plan.get('packages', [])
-                    if package.get('published_at')]}))
-        return latest
+                return latest
+        raise Blocked('Release history exceeds 1000 records; inspect/archive obsolete journals before resuming')
 
     def create(self, plan):
         release = self.request('POST', self.path + '/releases',
