@@ -22,14 +22,14 @@ import java.util.concurrent.atomic.AtomicLong
  * Uses ParcelFileDescriptor.createPipe() to create a zero-copy streaming
  * mechanism that avoids MethodChannel size limits.
  *
- * [executor] runs the background copies and bounds how many run at once:
- * the default pool runs 8 and queues the rest. [createPipe] makes each
- * stream's pipe pair. Both are injectable so tests can observe them.
+ * [executor] runs the background copies, and it alone bounds how many run
+ * at once: the default pool runs 8 and queues the rest. [createPipe] makes
+ * each stream's pipe pair. Both are injectable so tests can observe them.
  *
- * Each pipe end has exactly one closer, so no descriptor is closed twice
- * from two threads (UNFY-300): the copy task closes the write end when it
- * ends, and whoever removes the stream from [activeStreams] (closeStream,
- * dispose, or a failed openStream) closes the read end.
+ * No pipe end is closed twice from two threads (UNFY-300): the write end
+ * closes through [closeWriteEndOnce], and only whoever removes a stream
+ * from [activeStreams] (closeStream, dispose, or a failed openStream)
+ * closes its read end.
  */
 class StreamManager(
     private val context: Context,
@@ -53,8 +53,10 @@ class StreamManager(
         val writePipe: ParcelFileDescriptor,
         val pipePath: String,
         val bytesTransferred: AtomicLong = AtomicLong(0),
-        /** Set once the reader released the stream; a queued copy then skips its work. */
+        /** Set once the stream is released; its copy then stops, or never starts. */
         val released: AtomicBoolean = AtomicBoolean(false),
+        /** Claims the single close of [writePipe]. */
+        val writeClosed: AtomicBoolean = AtomicBoolean(false),
     )
 
     /**
@@ -91,11 +93,15 @@ class StreamManager(
         // either sees and releases this stream or this check sees it disposed.
         activeStreams[streamId] = streamInfo
 
+        if (disposed.get()) {
+            throw abandon(
+                streamId,
+                streamInfo,
+                IllegalStateException("simple_query: stream manager is disposed"),
+            )
+        }
         try {
-            check(!disposed.get()) { "simple_query: stream manager is disposed" }
             executor.execute { runCopy(streamId, streamInfo) }
-        } catch (e: IllegalStateException) {
-            throw abandon(streamId, streamInfo, e)
         } catch (e: RejectedExecutionException) {
             throw abandon(streamId, streamInfo, e)
         }
@@ -134,29 +140,30 @@ class StreamManager(
     }
 
     /**
-     * Purpose: Release a stream: close its read end and let its copy stop.
+     * Purpose: Release a stream: stop its copy and close both pipe ends.
      *
-     * The write end belongs to the copy, which closes it when it ends; a
-     * copy still queued skips its work.
+     * Closing the write end also unblocks a copy stuck writing to a reader
+     * that stopped reading.
      *
      * @param streamId the stream to release; an unknown id is a no-op.
      * @return Nothing.
-     * @throws IOException when the platform reports a failed close of the
-     *   read end (UNFY-300).
+     * @throws IOException when the platform reports a failed close, after
+     *   both ends were attempted (UNFY-300).
      */
     fun closeStream(streamId: String) {
-        val streamInfo = activeStreams.remove(streamId) ?: return
+        val streamInfo = activeStreams[streamId] ?: return
+        // Marked before it is claimed, so a copy starting in between skips its work.
         streamInfo.released.set(true)
-        streamInfo.readPipe.close()
+        if (!activeStreams.remove(streamId, streamInfo)) return
+        releaseEnds(streamInfo)?.let { throw it }
     }
 
     /**
      * Purpose: Release every stream on plugin detach, and refuse new ones.
      *
-     * Copies still queued run only to close their write ends; stream errors
-     * raised after this are logged, not sent to the detached engine. No
-     * caller remains to act on a failed close, so each is logged with its
-     * stream id and the rest still close.
+     * Stream errors raised after this are logged, not sent to the detached
+     * engine. No caller remains to act on a failed close, so each is logged
+     * with its stream id and the rest still close.
      *
      * @return Nothing.
      * @throws Nothing.
@@ -177,20 +184,51 @@ class StreamManager(
      * Purpose: Release a stream whose copy will never run.
      *
      * @param streamId the stream.
-     * @param streamInfo its pipes; both are closed here, since no copy owns
-     *   the write end.
+     * @param streamInfo its pipes.
      * @param error why the copy will not run.
      * @return [error], with any close failure attached as suppressed.
      * @throws Nothing.
      */
     private fun <E : Throwable> abandon(streamId: String, streamInfo: StreamInfo, error: E): E {
-        try {
-            streamInfo.writePipe.close()
-            closeStream(streamId)
-        } catch (closeFailure: IOException) {
-            error.addSuppressed(closeFailure)
+        streamInfo.released.set(true)
+        // A concurrent dispose() that claimed the stream first releases it itself.
+        if (activeStreams.remove(streamId, streamInfo)) {
+            releaseEnds(streamInfo)?.let(error::addSuppressed)
         }
         return error
+    }
+
+    /**
+     * Purpose: Close both pipe ends of a released stream, each attempted
+     * even when the other fails.
+     *
+     * @param streamInfo the stream's pipes.
+     * @return the first close failure, with any later one suppressed onto
+     *   it; null when both closed.
+     * @throws Nothing.
+     */
+    private fun releaseEnds(streamInfo: StreamInfo): IOException? {
+        var failure: IOException? = null
+        for (close in listOf({ closeWriteEndOnce(streamInfo) }, { streamInfo.readPipe.close() })) {
+            try {
+                close()
+            } catch (e: IOException) {
+                failure?.addSuppressed(e) ?: run { failure = e }
+            }
+        }
+        return failure
+    }
+
+    /**
+     * Purpose: Close a stream's write end exactly once, whichever thread
+     * (the copy, or a release) gets there first.
+     *
+     * @param streamInfo the stream's pipes.
+     * @return Nothing.
+     * @throws IOException when the platform reports a failed close.
+     */
+    private fun closeWriteEndOnce(streamInfo: StreamInfo) {
+        if (streamInfo.writeClosed.compareAndSet(false, true)) streamInfo.writePipe.close()
     }
 
     /**
@@ -210,7 +248,11 @@ class StreamManager(
         try {
             if (!streamInfo.released.get()) copyContentToPipe(streamInfo, streamId)
         } finally {
-            closeWriteEnd(streamId, streamInfo)
+            try {
+                closeWriteEndOnce(streamInfo)
+            } catch (e: IOException) {
+                notifyError(streamId, streamInfo, "Stream close failed: ${e.message}")
+            }
         }
     }
 
@@ -219,81 +261,49 @@ class StreamManager(
 
         try {
             contentResolver.openInputStream(uri)?.use { input ->
-                ParcelFileDescriptor.AutoCloseOutputStream(streamInfo.writePipe).use { output ->
-                    val buffer = ByteArray(8192)
-                    var bytesRead: Int
+                // Not closed itself: the write end closes only through
+                // closeWriteEndOnce, so a release on another thread can close
+                // it without a second close here.
+                val output = FileOutputStream(streamInfo.writePipe.fileDescriptor)
+                val buffer = ByteArray(8192)
 
-                    while (input.read(buffer).also { bytesRead = it } != -1) {
-                        output.write(buffer, 0, bytesRead)
-                        streamInfo.bytesTransferred.addAndGet(bytesRead.toLong())
-                    }
+                // A release stops the copy between chunks.
+                while (!streamInfo.released.get()) {
+                    val bytesRead = input.read(buffer)
+                    if (bytesRead == -1) break
+                    output.write(buffer, 0, bytesRead)
+                    streamInfo.bytesTransferred.addAndGet(bytesRead.toLong())
                 }
             } ?: run {
-                notifyError(
-                    streamId,
-                    streamInfo.contentUri,
-                    "Failed to open input stream for URI",
-                    streamInfo.bytesTransferred.get()
-                )
+                notifyError(streamId, streamInfo, "Failed to open input stream for URI")
             }
         } catch (e: IOException) {
             // Don't report broken pipe - it usually means reader closed early (expected)
             if (!e.message.orEmpty().contains("Broken pipe", ignoreCase = true)) {
-                notifyError(
-                    streamId,
-                    streamInfo.contentUri,
-                    "Stream copy failed: ${e.message}",
-                    streamInfo.bytesTransferred.get()
-                )
+                notifyError(streamId, streamInfo, "Stream copy failed: ${e.message}")
             }
         } catch (e: Throwable) {
-            notifyError(
-                streamId,
-                streamInfo.contentUri,
-                "Stream error: ${e.message}",
-                streamInfo.bytesTransferred.get()
-            )
+            notifyError(streamId, streamInfo, "Stream error: ${e.message}")
         }
     }
 
     /**
-     * Purpose: Close a stream's write end once its copy has ended. Only the
-     * copy's own thread calls this, and closing is idempotent on one
-     * thread, so an end the copy's output stream already closed is a no-op.
+     * Purpose: Report a stream failure to Dart.
      *
-     * @param streamId the stream whose copy ended.
-     * @param streamInfo the stream's pipes.
-     * @return Nothing.
-     * @throws Nothing; a failed close is reported as a stream error.
-     */
-    private fun closeWriteEnd(streamId: String, streamInfo: StreamInfo) {
-        try {
-            streamInfo.writePipe.close()
-        } catch (e: IOException) {
-            notifyError(
-                streamId,
-                streamInfo.contentUri,
-                "Stream close failed: ${e.message}",
-                streamInfo.bytesTransferred.get()
-            )
-        }
-    }
-
-    /**
-     * Purpose: Report a stream failure to Dart, or log it once disposed.
-     *
-     * The disposed check runs on the main thread, as dispose() does, so no
+     * A failure of a released stream is the release itself (e.g. its closed
+     * write end), so it is not reported. Once disposed, failures are logged
+     * instead; that check runs on the main thread, as dispose() does, so no
      * error reaches a detached engine.
      *
+     * @param streamId the failed stream.
+     * @param streamInfo its URI and progress.
+     * @param message what failed.
      * @return Nothing.
      * @throws Nothing.
      */
-    private fun notifyError(
-        streamId: String,
-        contentUri: String,
-        message: String,
-        bytesTransferred: Long
-    ) {
+    private fun notifyError(streamId: String, streamInfo: StreamInfo, message: String) {
+        if (streamInfo.released.get()) return
+        val bytesTransferred = streamInfo.bytesTransferred.get()
         mainHandler.post {
             if (disposed.get()) {
                 Log.w(TAG, "Stream $streamId failed after dispose: $message")
@@ -302,7 +312,7 @@ class StreamManager(
             flutterApi.onStreamError(
                 StreamError(
                     streamId = streamId,
-                    contentUri = contentUri,
+                    contentUri = streamInfo.contentUri,
                     message = message,
                     bytesTransferred = bytesTransferred,
                 )

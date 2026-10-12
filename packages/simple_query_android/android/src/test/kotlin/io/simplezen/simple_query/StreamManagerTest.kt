@@ -122,6 +122,7 @@ class StreamManagerTest {
     private val executor = ManualExecutor()
     private val createdPipes = mutableListOf<Array<ParcelFileDescriptor>>()
     private var wrapReadEnd: (ParcelFileDescriptor) -> ParcelFileDescriptor = { it }
+    private var wrapWriteEnd: (ParcelFileDescriptor) -> ParcelFileDescriptor = { it }
     private var opens = 0
 
     private lateinit var manager: StreamManager
@@ -136,7 +137,7 @@ class StreamManagerTest {
             executor = executor,
             createPipe = {
                 val pipes = ParcelFileDescriptor.createPipe()
-                arrayOf(wrapReadEnd(pipes[0]), pipes[1]).also { createdPipes.add(it) }
+                arrayOf(wrapReadEnd(pipes[0]), wrapWriteEnd(pipes[1])).also { createdPipes.add(it) }
             },
         )
     }
@@ -177,7 +178,7 @@ class StreamManagerTest {
     }
 
     @Test
-    fun closeStreamClosesTheReadEndAndLeavesTheWriteEndToTheCopy() {
+    fun closeStreamClosesBothEndsAndAQueuedCopyDoesNoWork() {
         register(CONTENT) { ByteArrayInputStream(byteArrayOf(1)) }
         executor.runInline = false
         val descriptor = manager.openStream(CONTENT)
@@ -185,12 +186,37 @@ class StreamManagerTest {
         manager.closeStream(descriptor.streamId)
 
         assertFalse(readEnd().fileDescriptor.valid())
-        assertTrue(writeEnd().fileDescriptor.valid())
+        assertFalse(writeEnd().fileDescriptor.valid())
 
-        // The queued copy then skips its work and closes its own end.
         executor.runQueued()
         idle()
         assertEquals(0, opens)
+        assertTrue(sentChannels.isEmpty())
+    }
+
+    @Test
+    fun closeStreamStopsARunningCopyWithoutAStreamError() {
+        executor.runInline = false
+        lateinit var streamId: String
+        var reads = 0
+        register(CONTENT) {
+            object : InputStream() {
+                override fun read(): Int = throw UnsupportedOperationException()
+                override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                    reads += 1
+                    // The reader gives up while the copy is mid-stream.
+                    if (reads == 1) manager.closeStream(streamId)
+                    // Endless content, bounded so a regression fails instead of hanging.
+                    return if (reads < MAX_READS) length.coerceAtMost(4) else -1
+                }
+            }
+        }
+        streamId = manager.openStream(CONTENT).streamId
+
+        executor.runQueued()
+        idle()
+
+        assertTrue(reads < MAX_READS, "copy kept reading after release: $reads reads")
         assertFalse(writeEnd().fileDescriptor.valid())
         assertTrue(sentChannels.isEmpty())
     }
@@ -220,6 +246,17 @@ class StreamManagerTest {
     }
 
     @Test
+    fun aRejectedCopyWithAFailingWriteCloseStillClosesTheReadEnd() {
+        executor.rejecting = true
+        wrapWriteEnd = { FailingCloseEnd(it) }
+
+        val error = assertFailsWith<RejectedExecutionException> { manager.openStream(CONTENT) }
+
+        assertEquals("close failed", error.suppressed.single().message)
+        assertFalse(readEnd().fileDescriptor.valid())
+    }
+
+    @Test
     fun aRejectedCopyReleasesBothEndsAndThrows() {
         executor.rejecting = true
 
@@ -242,6 +279,19 @@ class StreamManagerTest {
         assertFalse(readEnd().fileDescriptor.valid())
         assertFalse(writeEnd().fileDescriptor.valid())
         assertEquals(0, opens)
+        assertTrue(sentChannels.isEmpty())
+    }
+
+    @Test
+    fun aStreamErrorPostedJustBeforeDisposeIsNotSent() {
+        register(CONTENT) { throw SecurityException("Permission Denial") }
+        // The failed copy's report is queued on the main looper...
+        manager.openStream(CONTENT)
+
+        // ...when the plugin detaches, before that report runs.
+        manager.dispose()
+        idle()
+
         assertTrue(sentChannels.isEmpty())
     }
 
@@ -316,6 +366,7 @@ class StreamManagerTest {
     private companion object {
         const val CONTENT = "content://io.simplezen.simple_query.streams.test/item"
         const val NO_STREAM_AUTHORITY = "io.simplezen.simple_query.nostream.test"
+        const val MAX_READS = 1000
         const val STREAM_ERROR_CHANNEL =
             "dev.flutter.pigeon.simple_query.QueryFlutterApi.onStreamError"
     }

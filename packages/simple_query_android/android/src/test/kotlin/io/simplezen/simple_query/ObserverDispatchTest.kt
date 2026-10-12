@@ -89,6 +89,15 @@ class ObserverDispatchTest {
     }
 
     @Test
+    fun aChangeDeliveredAfterUnregisterIsNotSent() {
+        registry.unregister(observerId)
+
+        observer.onChange(true)
+
+        assertTrue(events.isEmpty())
+    }
+
+    @Test
     fun aChangeDeliveredAfterDisposeIsNotSent() {
         registry.dispose()
 
