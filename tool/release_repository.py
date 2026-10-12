@@ -170,6 +170,8 @@ class Repository:
                     if not isinstance(source, dict):
                         raise Blocked(f'{name} has an unsupported dependency source')
                     if 'path' in source:
+                        if not isinstance(source['path'], str):
+                            raise Blocked(f'{name} path dependency must be a string')
                         expected = selected.get(name)
                         if (file != directory / 'pubspec.yaml' and expected is not None
                                 and set(source) == {'path'}

@@ -50,3 +50,5 @@ class SDKQuotaTest(unittest.TestCase):
     def test_burst_quota(self): self.exercise('last 2 minutes', 120)
     def test_hourly_quota(self): self.exercise('last hour', 3600)
     def test_daily_quota(self): self.exercise('last day', 86400)
+
+    def test_unknown_quota(self): self.exercise('unknown window', 86400)

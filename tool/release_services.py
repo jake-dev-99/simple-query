@@ -44,7 +44,9 @@ def upload_deadline(message, now):
                             ('last 2 minutes', 120), ('last two minutes', 120), ('last 120 seconds', 120)]:
         if window in lowered:
             return now + seconds
-    raise Blocked('Unknown upload quota window: pause for attention; no speculative retry')
+    # The SDK can hide reset headers. Use the longest known publication window
+    # and persist another pause if the server is still limited on the next run.
+    return now + 86400
 
 
 def quota_deadline(timestamps, now, limits):
@@ -85,9 +87,8 @@ class PubClient:
                 error.close()
                 deadline = retry_deadline(error.headers.get('Retry-After'), self.now())
                 if error.code == 429:
-                    if deadline is None:
-                        raise Blocked('Hosted API quota response has no usable Retry-After') from error
-                    raise Deferred(deadline, 'Hosted API quota cooldown') from error
+                    raise Deferred(deadline if deadline is not None else self.now()+86400,
+                                   'Hosted API quota cooldown') from error
                 if error.code == 404:
                     self.cache[url] = (self.now() + 120, None)
                     return None

@@ -77,10 +77,12 @@ class HttpTest(unittest.TestCase):
             self.client.package('demo')
         self.assertEqual(result.exception.until, 1700003600.0)
 
-    def test_429_without_usable_deadline_pauses_instead_of_guessing(self):
+    def test_429_without_reset_time_pauses_a_full_day_without_another_request(self):
         self.responses = [(429, {}, {})]
-        with self.assertRaisesRegex(self.module.Blocked, 'quota|Retry-After'):
+        with self.assertRaises(self.module.Deferred) as result:
             self.client.package('demo')
+        self.assertEqual(result.exception.until, self.clock.now()+86400)
+        self.assertEqual(len(self.requests), 1)
         self.assertEqual(len(self.requests), 1)
 
     def test_transient_503_uses_backoff_then_returns_actual_metadata(self):
@@ -127,9 +129,8 @@ class HttpTest(unittest.TestCase):
             self.assertEqual(self.module.upload_deadline('rate limit has been reached (3 in the '+window+')',
                                                        self.clock.now()),1700000120)
 
-    def test_unrecognized_upload_quota_message_requires_attention(self):
-        with self.assertRaisesRegex(self.module.Blocked, 'quota'):
-            self.module.upload_deadline('rate limit has been reached (unknown window)', self.clock.now())
+    def test_unrecognized_upload_quota_message_uses_conservative_daily_pause(self):
+        self.assertEqual(self.module.upload_deadline('rate limit has been reached (unknown window)', self.clock.now()), self.clock.now()+86400)
         self.assertIsNone(self.module.upload_deadline('Analyzer error: missing import', self.clock.now()))
 
     def test_known_package_publications_defer_until_rolling_window_clears(self):

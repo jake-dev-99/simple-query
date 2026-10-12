@@ -263,8 +263,28 @@ if sys.argv[1:] not in [['pub','get','--no-example'], ['analyze','--no-fatal-war
         self.assertEqual(self.runner().run('resume', scheduled=True), 'noop')
         self.assertEqual(self.journal.retries, [])
 
-    def test_unknown_quota_window_pauses_for_attention(self):
-        self.assert_attention('rate limit has been reached (unknown window)')
+    def test_unknown_quota_repeatedly_pauses_until_available_then_resumes(self):
+        self.journal.outcomes['demo_android'] = 'quota'
+        self.journal.failure_log = 'rate limit has been reached (unknown window)'
+        retry = self.journal.retry
+        def still_limited_once(run_id):
+            retry(run_id)
+            if len(self.journal.retries) == 1:
+                self.journal.outcomes['demo_android'] = 'quota'
+        self.journal.retry = still_limited_once
+        self.assertEqual(self.cut(), 'deferred')
+        first = self.journal.load()
+        self.clock.value += 86399
+        self.assertEqual(self.runner().run('resume', scheduled=True), 'deferred')
+        self.assertEqual(self.journal.retries, [])
+        self.clock.value += 2
+        self.assertEqual(self.runner().run('resume', scheduled=True), 'deferred')
+        self.assertEqual(self.journal.load()['not_before'], self.clock.now()+86400)
+        self.assertNotIn('demo-v1.0.1', self.fixture.git('ls-remote', '--tags', 'origin'))
+        self.clock.value += 86401
+        self.assertEqual(self.runner().run('resume', scheduled=True), 'complete')
+        self.assertEqual(self.journal.load()['prepared_sha'], first['prepared_sha'])
+        self.assertEqual(self.journal.retries, [10, 10])
 
     def test_validation_errors_are_not_retried_by_schedule(self):
         self.assert_attention('Analyzer error')
@@ -463,6 +483,17 @@ if sys.argv[1:] not in [['pub','get','--no-example'], ['analyze','--no-fatal-war
                 self.journal.file.unlink()
                 self.fixture.git('push', 'origin', ':refs/tags/sz-release-batch-12345')
                 self.fixture.git('tag', '-d', 'sz-release-batch-12345')
+
+    def test_invalid_example_path_type_records_blocked_before_sdk(self):
+        file = self.root / 'packages/android/example/pubspec.yaml'
+        file.parent.mkdir(parents=True)
+        file.write_text('name: demo_example\nversion: 1.0.0\ndependencies:\n  demo_android:\n    path: true\n')
+        self.fixture.commit('Add invalid example path value')
+        self.fixture.git('push', 'origin', 'main')
+        self.assertEqual(self.cut(), 'blocked')
+        self.assertIn('path', self.journal.load()['error'])
+        self.assertEqual(self.journal.run_calls, [])
+        self.assertFalse(self.trace.exists())
 
     def test_validation_disables_sdk_http_quota_retries(self):
         self.assertEqual(self.repo.env.get('PUB_MAX_HTTP_RETRIES'), '1')
