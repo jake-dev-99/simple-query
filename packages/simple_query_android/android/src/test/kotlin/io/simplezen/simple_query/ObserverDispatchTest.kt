@@ -10,6 +10,8 @@ import io.flutter.plugin.common.BinaryMessenger
 import java.nio.ByteBuffer
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 import org.junit.After
 import org.junit.Before
 import org.junit.runner.RunWith
@@ -73,6 +75,26 @@ class ObserverDispatchTest {
     @After
     fun unregisterObserver() {
         registry.unregisterAll()
+    }
+
+    @Test
+    fun disposeUnregistersAndRefusesLaterObservers() {
+        val resolver = RuntimeEnvironment.getApplication().contentResolver
+
+        registry.dispose()
+
+        assertTrue(shadowOf(resolver).getContentObservers(Uri.parse("content://sms")).isEmpty())
+        assertFailsWith<IllegalStateException> { registry.register("content://mms", true) }
+        assertTrue(shadowOf(resolver).getContentObservers(Uri.parse("content://mms")).isEmpty())
+    }
+
+    @Test
+    fun aChangeDeliveredAfterDisposeIsNotSent() {
+        registry.dispose()
+
+        observer.onChange(true)
+
+        assertTrue(events.isEmpty())
     }
 
     @Test

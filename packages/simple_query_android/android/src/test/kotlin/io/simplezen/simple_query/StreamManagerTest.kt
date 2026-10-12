@@ -15,6 +15,7 @@ import java.io.IOException
 import java.io.InputStream
 import java.nio.ByteBuffer
 import java.util.concurrent.AbstractExecutorService
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.function.Supplier
 import kotlin.test.Test
@@ -32,16 +33,34 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 
 /**
- * Pins StreamManager's failure handling (UNFY-300): a background copy
- * always closes the pipe's write end, a failed close reaches the caller,
- * and extraction neither swallows failures nor leaks its temp file.
+ * Pins StreamManager's failure and lifecycle handling (UNFY-300): the copy
+ * closes the write end on every exit, each pipe end has one closer, a
+ * released or disposed stream does no work, no stream error reaches a
+ * disposed manager's engine, and extraction neither swallows failures nor
+ * leaks its temp file.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [30])
 class StreamManagerTest {
-    /** Runs each copy inline, so a test observes it without waiting. */
-    private class DirectExecutor : AbstractExecutorService() {
-        override fun execute(command: Runnable) = command.run()
+    /**
+     * Runs copies only when told to, inline. [rejecting] makes it refuse
+     * work, as a shut-down pool does.
+     */
+    private class ManualExecutor : AbstractExecutorService() {
+        val queued = mutableListOf<Runnable>()
+        var runInline = true
+        var rejecting = false
+
+        override fun execute(command: Runnable) {
+            if (rejecting) throw RejectedExecutionException("shut down")
+            if (runInline) command.run() else queued.add(command)
+        }
+
+        fun runQueued() {
+            queued.toList().forEach { it.run() }
+            queued.clear()
+        }
+
         override fun shutdown() = Unit
         override fun shutdownNow(): MutableList<Runnable> = mutableListOf()
         override fun isShutdown() = false
@@ -49,12 +68,15 @@ class StreamManagerTest {
         override fun awaitTermination(timeout: Long, unit: TimeUnit) = true
     }
 
-    /** A pipe end whose close fails, as a dying descriptor's can. */
-    private class FailingCloseEnd(wrapped: ParcelFileDescriptor) : ParcelFileDescriptor(wrapped) {
-        override fun close() = throw IOException("close failed")
+    /** A pipe end whose close releases the descriptor but reports failure. */
+    private class FailingCloseEnd(private val inner: ParcelFileDescriptor) : ParcelFileDescriptor(inner) {
+        override fun close() {
+            inner.close()
+            throw IOException("close failed")
+        }
     }
 
-    // "nostream" -> the provider hands back no stream.
+    // Answers every open with no stream.
     class NoStreamProvider : ContentProvider() {
         override fun onCreate() = true
         override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor? = null
@@ -97,8 +119,10 @@ class StreamManagerTest {
     }
 
     private val context = RuntimeEnvironment.getApplication()
+    private val executor = ManualExecutor()
     private val createdPipes = mutableListOf<Array<ParcelFileDescriptor>>()
-    private var wrapWriteEnd: (ParcelFileDescriptor) -> ParcelFileDescriptor = { it }
+    private var wrapReadEnd: (ParcelFileDescriptor) -> ParcelFileDescriptor = { it }
+    private var opens = 0
 
     private lateinit var manager: StreamManager
 
@@ -109,10 +133,10 @@ class StreamManagerTest {
             context,
             QueryFlutterApi(messenger),
             Handler(Looper.getMainLooper()),
-            executor = DirectExecutor(),
+            executor = executor,
             createPipe = {
                 val pipes = ParcelFileDescriptor.createPipe()
-                arrayOf(pipes[0], wrapWriteEnd(pipes[1])).also { createdPipes.add(it) }
+                arrayOf(wrapReadEnd(pipes[0]), pipes[1]).also { createdPipes.add(it) }
             },
         )
     }
@@ -122,9 +146,9 @@ class StreamManagerTest {
         register(CONTENT) { throw SecurityException("Permission Denial") }
 
         manager.openStream(CONTENT)
-        shadowOf(Looper.getMainLooper()).idle()
+        idle()
 
-        assertFalse(createdPipes.single()[1].fileDescriptor.valid())
+        assertFalse(writeEnd().fileDescriptor.valid())
         assertEquals(listOf(STREAM_ERROR_CHANNEL), sentChannels)
     }
 
@@ -135,9 +159,9 @@ class StreamManagerTest {
         register(CONTENT) { throw FileNotFoundException("No content provider") }
 
         manager.openStream(CONTENT)
-        shadowOf(Looper.getMainLooper()).idle()
+        idle()
 
-        assertFalse(createdPipes.single()[1].fileDescriptor.valid())
+        assertFalse(writeEnd().fileDescriptor.valid())
         assertEquals(listOf(STREAM_ERROR_CHANNEL), sentChannels)
     }
 
@@ -146,22 +170,94 @@ class StreamManagerTest {
         register(CONTENT) { ByteArrayInputStream(byteArrayOf(1, 2, 3)) }
 
         manager.openStream(CONTENT)
-        shadowOf(Looper.getMainLooper()).idle()
+        idle()
 
-        assertFalse(createdPipes.single()[1].fileDescriptor.valid())
+        assertFalse(writeEnd().fileDescriptor.valid())
         assertTrue(sentChannels.isEmpty())
     }
 
     @Test
-    fun closeStreamReportsAFailedCloseAfterClosingTheOtherEnd() {
+    fun closeStreamClosesTheReadEndAndLeavesTheWriteEndToTheCopy() {
         register(CONTENT) { ByteArrayInputStream(byteArrayOf(1)) }
-        wrapWriteEnd = { FailingCloseEnd(it) }
+        executor.runInline = false
+        val descriptor = manager.openStream(CONTENT)
+
+        manager.closeStream(descriptor.streamId)
+
+        assertFalse(readEnd().fileDescriptor.valid())
+        assertTrue(writeEnd().fileDescriptor.valid())
+
+        // The queued copy then skips its work and closes its own end.
+        executor.runQueued()
+        idle()
+        assertEquals(0, opens)
+        assertFalse(writeEnd().fileDescriptor.valid())
+        assertTrue(sentChannels.isEmpty())
+    }
+
+    @Test
+    fun closeStreamRaisesAFailedReadEndClose() {
+        register(CONTENT) { ByteArrayInputStream(byteArrayOf(1)) }
+        wrapReadEnd = { FailingCloseEnd(it) }
         val descriptor = manager.openStream(CONTENT)
 
         val error = assertFailsWith<IOException> { manager.closeStream(descriptor.streamId) }
 
         assertEquals("close failed", error.message)
-        assertFalse(createdPipes.single()[0].fileDescriptor.valid())
+        // The stream is released all the same: a second close is a no-op.
+        manager.closeStream(descriptor.streamId)
+    }
+
+    @Test
+    fun openStreamAfterDisposeReleasesBothEndsAndThrows() {
+        manager.dispose()
+
+        assertFailsWith<IllegalStateException> { manager.openStream(CONTENT) }
+
+        assertFalse(readEnd().fileDescriptor.valid())
+        assertFalse(writeEnd().fileDescriptor.valid())
+        assertEquals(0, opens)
+    }
+
+    @Test
+    fun aRejectedCopyReleasesBothEndsAndThrows() {
+        executor.rejecting = true
+
+        assertFailsWith<RejectedExecutionException> { manager.openStream(CONTENT) }
+
+        assertFalse(readEnd().fileDescriptor.valid())
+        assertFalse(writeEnd().fileDescriptor.valid())
+    }
+
+    @Test
+    fun disposeReleasesQueuedStreamsWhoseCopiesThenDoNoWork() {
+        register(CONTENT) { ByteArrayInputStream(byteArrayOf(1)) }
+        executor.runInline = false
+        manager.openStream(CONTENT)
+
+        manager.dispose()
+        executor.runQueued()
+        idle()
+
+        assertFalse(readEnd().fileDescriptor.valid())
+        assertFalse(writeEnd().fileDescriptor.valid())
+        assertEquals(0, opens)
+        assertTrue(sentChannels.isEmpty())
+    }
+
+    @Test
+    fun aStreamErrorRaisedAfterDisposeIsNotSent() {
+        // The copy is in flight when the plugin detaches, then fails.
+        register(CONTENT) {
+            manager.dispose()
+            throw SecurityException("Permission Denial")
+        }
+
+        manager.openStream(CONTENT)
+        idle()
+
+        assertTrue(sentChannels.isEmpty())
+        assertFalse(writeEnd().fileDescriptor.valid())
     }
 
     @Test
@@ -199,9 +295,20 @@ class StreamManagerTest {
     }
 
     private fun register(uri: String, stream: () -> InputStream) {
-        shadowOf(context.contentResolver)
-            .registerInputStreamSupplier(Uri.parse(uri), Supplier { stream() })
+        shadowOf(context.contentResolver).registerInputStreamSupplier(
+            Uri.parse(uri),
+            Supplier {
+                opens += 1
+                stream()
+            },
+        )
     }
+
+    private fun readEnd() = createdPipes.single()[0]
+
+    private fun writeEnd() = createdPipes.single()[1]
+
+    private fun idle() = shadowOf(Looper.getMainLooper()).idle()
 
     private fun tempFileCount() =
         context.cacheDir.list()?.count { it.startsWith("sq_extract_") } ?: 0

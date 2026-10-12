@@ -12,7 +12,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
@@ -446,9 +446,9 @@ class QueryHostApiImpl(
      * @param callback the Pigeon reply callback of the call.
      * @param body the blocking work; its return value is the reply.
      * @return Nothing; the reply is posted to the main looper.
-     * @throws CancellationException when [dispose] cancelled the scope: the
-     *   engine is detached, so no reply is sent. A `CancellationException`
-     *   the blocking [body] raises is a failure like any other.
+     * @throws Nothing. Once [dispose] cancelled the scope the engine is
+     *   detached, and no reply is sent. A `CancellationException` the
+     *   blocking [body] raises is a failure like any other.
      */
     private fun <T> launchHostCall(callback: (Result<T>) -> Unit, body: () -> T) {
         scope.launch {
@@ -457,8 +457,9 @@ class QueryHostApiImpl(
             } catch (e: Throwable) {
                 Result.failure(HostErrors.toFlutterError(e))
             }
-            ensureActive()
-            mainHandler.post { callback(result) }
+            // Checked on the main thread, where dispose() runs, so a reply
+            // queued just before detach is dropped too.
+            mainHandler.post { if (scope.isActive) callback(result) }
         }
     }
 
@@ -559,7 +560,7 @@ class QueryHostApiImpl(
      */
     fun dispose() {
         scope.cancel()
-        observerRegistry.unregisterAll()
-        streamManager.closeAll()
+        observerRegistry.dispose()
+        streamManager.dispose()
     }
 }
