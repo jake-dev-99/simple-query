@@ -1,5 +1,6 @@
 package io.simplezen.simple_query
 
+import android.content.ContentProviderClient
 import android.content.ContentValues
 import android.content.Context
 import android.database.Cursor
@@ -10,6 +11,8 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
@@ -17,7 +20,8 @@ import kotlinx.coroutines.launch
  *
  * Uses callback-based async pattern as required by Pigeon v22+.
  * All operations run on [Dispatchers.IO] (injectable for tests) and return
- * results via callback.
+ * results via callback. Every failure reaches Dart through [HostErrors], so
+ * its Pigeon code is one of the `docs/ERROR_MAPPING.md` vocabulary codes.
  */
 class QueryHostApiImpl(
     private val context: Context,
@@ -36,116 +40,116 @@ class QueryHostApiImpl(
     // Query
     // -------------------------------------------------------------------------
 
-    override fun query(request: QueryRequest, callback: (Result<QueryResponse>) -> Unit) {
-        scope.launch {
-            try {
-                val uri = Uri.parse(request.contentUri)
+    override fun query(request: QueryRequest, callback: (Result<QueryResponse>) -> Unit) =
+        launchHostCall(callback) {
+            val uri = Uri.parse(request.contentUri)
 
-                val cursor = contentResolver.query(
-                    uri,
-                    request.projection?.filterNotNull()?.toTypedArray(),
-                    request.selection,
-                    request.selectionArgs?.filterNotNull()?.toTypedArray(),
-                    buildSortOrderWithLimit(request.sortOrder, request.limit, request.offset)
-                ) ?: throw nullCursorError(request.contentUri)
+            val cursor = contentResolver.query(
+                uri,
+                request.projection?.filterNotNull()?.toTypedArray(),
+                request.selection,
+                request.selectionArgs?.filterNotNull()?.toTypedArray(),
+                buildSortOrderWithLimit(request.sortOrder, request.limit, request.offset)
+            ) ?: throw nullCursorError(request.contentUri)
 
-                val response = cursor.use { c ->
-                    val columns = c.columnNames.toList()
-                    val rows = mutableListOf<Map<String?, Any?>?>()
+            cursor.use { c ->
+                val columns = c.columnNames.toList()
+                val rows = mutableListOf<Map<String?, Any?>?>()
 
-                    while (c.moveToNext()) {
-                        rows.add(cursorRowToMap(c))
-                    }
-
-                    QueryResponse(
-                        columnNames = columns,
-                        rows = rows,
-                        rowCount = rows.size.toLong()
-                    )
+                while (c.moveToNext()) {
+                    rows.add(cursorRowToMap(c))
                 }
 
-                mainHandler.post { callback(Result.success(response)) }
-            } catch (e: QueryFlutterError) {
-                // QueryFlutterError extends Throwable, not Exception.
-                mainHandler.post { callback(Result.failure(e)) }
-            } catch (e: Exception) {
-                mainHandler.post { callback(Result.failure(e)) }
+                QueryResponse(
+                    columnNames = columns,
+                    rows = rows,
+                    rowCount = rows.size.toLong()
+                )
             }
         }
-    }
 
-    override fun queryWithJoins(request: JoinQueryRequest, callback: (Result<JoinQueryResponse>) -> Unit) {
-        scope.launch {
-            try {
-                // Execute primary query synchronously (we're already on IO)
-                val primaryUri = Uri.parse(request.primary.contentUri)
-                val primaryCursor = contentResolver.query(
-                    primaryUri,
-                    request.primary.projection?.filterNotNull()?.toTypedArray(),
-                    request.primary.selection,
-                    request.primary.selectionArgs?.filterNotNull()?.toTypedArray(),
-                    buildSortOrderWithLimit(request.primary.sortOrder, request.primary.limit, request.primary.offset)
-                ) ?: throw nullCursorError(request.primary.contentUri)
+    override fun queryWithJoins(request: JoinQueryRequest, callback: (Result<JoinQueryResponse>) -> Unit) =
+        launchHostCall(callback) {
+            // Execute primary query synchronously (we're already on IO)
+            val primaryUri = Uri.parse(request.primary.contentUri)
+            val primaryCursor = contentResolver.query(
+                primaryUri,
+                request.primary.projection?.filterNotNull()?.toTypedArray(),
+                request.primary.selection,
+                request.primary.selectionArgs?.filterNotNull()?.toTypedArray(),
+                buildSortOrderWithLimit(request.primary.sortOrder, request.primary.limit, request.primary.offset)
+            ) ?: throw nullCursorError(request.primary.contentUri)
 
-                val joinedRows = mutableListOf<JoinedRow?>()
+            val joinedRows = mutableListOf<JoinedRow?>()
 
-                primaryCursor.use { pc ->
-                    while (pc.moveToNext()) {
-                        val primaryRow = cursorRowToMap(pc)
-                        val relatedData = mutableMapOf<String?, List<Map<String?, Any?>?>?>()
+            primaryCursor.use { pc ->
+                while (pc.moveToNext()) {
+                    val primaryRow = cursorRowToMap(pc)
+                    val relatedData = mutableMapOf<String?, List<Map<String?, Any?>?>?>()
 
-                        for (joinSpec in request.joins) {
-                            if (joinSpec == null) continue
+                    for (joinSpec in request.joins) {
+                        if (joinSpec == null) continue
 
-                            val parentKeyValue = primaryRow[joinSpec.parentKeyColumn]?.toString() ?: continue
-
-                            val joinUri = Uri.parse(joinSpec.contentUri)
-                            val joinSelection = buildJoinSelection(
-                                joinSpec.selection,
-                                joinSpec.foreignKeyColumn,
-                                parentKeyValue
-                            )
-
-                            // Combine existing args with the parent key value
-                            val joinArgs = (joinSpec.selectionArgs?.filterNotNull() ?: emptyList()) + parentKeyValue
-
-                            val joinCursor = contentResolver.query(
-                                joinUri,
-                                joinSpec.projection?.filterNotNull()?.toTypedArray(),
-                                joinSelection,
-                                joinArgs.toTypedArray(),
-                                joinSpec.sortOrder
-                            ) ?: throw nullCursorError(joinSpec.contentUri, joinName = joinSpec.name)
-
-                            val relatedRows = mutableListOf<Map<String?, Any?>?>()
-                            joinCursor.use { jc ->
-                                while (jc.moveToNext()) {
-                                    relatedRows.add(cursorRowToMap(jc))
-                                }
-                            }
-
-                            relatedData[joinSpec.name] = relatedRows
-                        }
-
-                        joinedRows.add(JoinedRow(
-                            data = primaryRow,
-                            related = relatedData
-                        ))
+                        val parentKeyValue = primaryRow[joinSpec.parentKeyColumn]?.toString() ?: continue
+                        relatedData[joinSpec.name] = queryJoinRows(joinSpec, parentKeyValue)
                     }
+
+                    joinedRows.add(JoinedRow(
+                        data = primaryRow,
+                        related = relatedData
+                    ))
                 }
-
-                val response = JoinQueryResponse(
-                    rows = joinedRows,
-                    rowCount = joinedRows.size.toLong()
-                )
-
-                mainHandler.post { callback(Result.success(response)) }
-            } catch (e: QueryFlutterError) {
-                // QueryFlutterError extends Throwable, not Exception.
-                mainHandler.post { callback(Result.failure(e)) }
-            } catch (e: Exception) {
-                mainHandler.post { callback(Result.failure(e)) }
             }
+
+            JoinQueryResponse(
+                rows = joinedRows,
+                rowCount = joinedRows.size.toLong()
+            )
+        }
+
+    /**
+     * Purpose: Read the related rows of one join for one parent row.
+     *
+     * @param joinSpec the join whose provider is queried.
+     * @param parentKeyValue the parent row's key the join's foreign key must equal.
+     * @return the related rows; an empty list when the query matched none.
+     * @throws QueryFlutterError carrying the join's `contentUri` and name when
+     *   the join query or the read of its rows fails, or the query returns
+     *   a null cursor, so Dart names the failing provider rather than the
+     *   primary one.
+     */
+    private fun queryJoinRows(joinSpec: JoinSpec, parentKeyValue: String): List<Map<String?, Any?>?> {
+        val joinSelection = buildJoinSelection(
+            joinSpec.selection,
+            joinSpec.foreignKeyColumn,
+            parentKeyValue
+        )
+
+        // Combine existing args with the parent key value
+        val joinArgs = (joinSpec.selectionArgs?.filterNotNull() ?: emptyList()) + parentKeyValue
+
+        try {
+            val joinCursor = contentResolver.query(
+                Uri.parse(joinSpec.contentUri),
+                joinSpec.projection?.filterNotNull()?.toTypedArray(),
+                joinSelection,
+                joinArgs.toTypedArray(),
+                joinSpec.sortOrder
+            ) ?: throw nullCursorError(joinSpec.contentUri, joinName = joinSpec.name)
+
+            val relatedRows = mutableListOf<Map<String?, Any?>?>()
+            joinCursor.use { jc ->
+                while (jc.moveToNext()) {
+                    relatedRows.add(cursorRowToMap(jc))
+                }
+            }
+            return relatedRows
+        } catch (e: Throwable) {
+            // A QueryFlutterError (the null cursor above) passes through as is.
+            throw HostErrors.toFlutterError(
+                e,
+                mapOf("contentUri" to joinSpec.contentUri, "join" to joinSpec.name),
+            )
         }
     }
 
@@ -154,7 +158,7 @@ class QueryHostApiImpl(
      * returns a null cursor (UNFY-284): the provider could not be reached
      * (unknown authority, or its process died during the call) or chose to
      * return none. Reporting it as zero rows would hide that, so it crosses
-     * Pigeon as a `PlatformException` with code [NULL_CURSOR_ERROR_CODE],
+     * Pigeon as a `PlatformException` with code [HostErrors.UNAVAILABLE],
      * which the Dart side maps to `SimpleQueryError(unavailable)` per
      * `docs/ERROR_MAPPING.md`. [joinName] names the join whose related
      * query failed, if it was not the primary query.
@@ -164,7 +168,7 @@ class QueryHostApiImpl(
         val details = mutableMapOf("reason" to "nullCursor", "contentUri" to contentUri)
         if (joinName != null) details["join"] = joinName
         return QueryFlutterError(
-            NULL_CURSOR_ERROR_CODE,
+            HostErrors.UNAVAILABLE,
             "simple_query: content provider returned no cursor for $target; " +
                 "it is unreachable or returned none",
             details,
@@ -197,107 +201,80 @@ class QueryHostApiImpl(
     // Insert
     // -------------------------------------------------------------------------
 
-    override fun insert(request: InsertRequest, callback: (Result<String?>) -> Unit) {
-        scope.launch {
-            try {
-                val uri = Uri.parse(request.contentUri)
-                val values = toContentValues(request.values)
-                val resultUri = contentResolver.insert(uri, values)
-                mainHandler.post { callback(Result.success(resultUri?.toString())) }
-            } catch (e: Exception) {
-                mainHandler.post { callback(Result.failure(e)) }
-            }
+    override fun insert(request: InsertRequest, callback: (Result<String?>) -> Unit) =
+        launchHostCall(callback) {
+            val uri = Uri.parse(request.contentUri)
+            val values = toContentValues(request.values)
+            withProvider(uri) { it.insert(uri, values) }?.toString()
         }
-    }
 
-    override fun bulkInsert(request: BulkInsertRequest, callback: (Result<Long>) -> Unit) {
-        scope.launch {
-            try {
-                val uri = Uri.parse(request.contentUri)
-                val valuesArray = request.valuesList
-                    .filterNotNull()
-                    .map { toContentValues(it) }
-                    .toTypedArray()
+    override fun bulkInsert(request: BulkInsertRequest, callback: (Result<Long>) -> Unit) =
+        launchHostCall(callback) {
+            val uri = Uri.parse(request.contentUri)
+            val valuesArray = request.valuesList
+                .filterNotNull()
+                .map { toContentValues(it) }
+                .toTypedArray()
 
-                val count = contentResolver.bulkInsert(uri, valuesArray).toLong()
-                mainHandler.post { callback(Result.success(count)) }
-            } catch (e: Exception) {
-                mainHandler.post { callback(Result.failure(e)) }
-            }
+            withProvider(uri) { it.bulkInsert(uri, valuesArray) }.toLong()
         }
-    }
 
     // -------------------------------------------------------------------------
     // Update
     // -------------------------------------------------------------------------
 
-    override fun update(request: UpdateRequest, callback: (Result<Long>) -> Unit) {
-        scope.launch {
-            try {
-                val uri = Uri.parse(request.contentUri)
-                val values = toContentValues(request.values)
+    override fun update(request: UpdateRequest, callback: (Result<Long>) -> Unit) =
+        launchHostCall(callback) {
+            val uri = Uri.parse(request.contentUri)
+            val values = toContentValues(request.values)
 
-                val count = contentResolver.update(
+            withProvider(uri) {
+                it.update(
                     uri,
                     values,
                     request.selection,
                     request.selectionArgs?.filterNotNull()?.toTypedArray()
-                ).toLong()
-
-                mainHandler.post { callback(Result.success(count)) }
-            } catch (e: Exception) {
-                mainHandler.post { callback(Result.failure(e)) }
-            }
+                )
+            }.toLong()
         }
-    }
 
     // -------------------------------------------------------------------------
     // Delete
     // -------------------------------------------------------------------------
 
-    override fun delete(request: DeleteRequest, callback: (Result<Long>) -> Unit) {
-        scope.launch {
-            try {
-                val uri = Uri.parse(request.contentUri)
+    override fun delete(request: DeleteRequest, callback: (Result<Long>) -> Unit) =
+        launchHostCall(callback) {
+            val uri = Uri.parse(request.contentUri)
 
-                val count = contentResolver.delete(
+            withProvider(uri) {
+                it.delete(
                     uri,
                     request.selection,
                     request.selectionArgs?.filterNotNull()?.toTypedArray()
-                ).toLong()
-
-                mainHandler.post { callback(Result.success(count)) }
-            } catch (e: Exception) {
-                mainHandler.post { callback(Result.failure(e)) }
-            }
+                )
+            }.toLong()
         }
-    }
 
     // -------------------------------------------------------------------------
     // Batch
     // -------------------------------------------------------------------------
 
-    override fun applyBatch(request: BatchRequest, callback: (Result<List<BatchOperationResult?>>) -> Unit) {
-        scope.launch {
-            try {
-                val operations = request.operations
-                    .filterNotNull()
-                    .map { it.toContentProviderOperation() }
+    override fun applyBatch(request: BatchRequest, callback: (Result<List<BatchOperationResult?>>) -> Unit) =
+        launchHostCall(callback) {
+            val operations = request.operations
+                .filterNotNull()
+                .map { it.toContentProviderOperation() }
 
-                val results = contentResolver.applyBatch(request.authority, ArrayList(operations))
-                val batchResults = results.map { result ->
-                    BatchOperationResult(
-                        uri = result?.uri?.toString(),
-                        count = result?.count?.toLong()
-                    )
-                }
-
-                mainHandler.post { callback(Result.success(batchResults)) }
-            } catch (e: Exception) {
-                mainHandler.post { callback(Result.failure(e)) }
+            val results = withProvider(request.authority) {
+                it.applyBatch(ArrayList(operations))
+            }
+            results.map { result ->
+                BatchOperationResult(
+                    uri = result?.uri?.toString(),
+                    count = result?.count?.toLong()
+                )
             }
         }
-    }
 
     private fun BatchOperation.toContentProviderOperation(): android.content.ContentProviderOperation {
         val uri = Uri.parse(contentUri)
@@ -346,78 +323,32 @@ class QueryHostApiImpl(
     // Streaming
     // -------------------------------------------------------------------------
 
-    override fun openStream(contentUri: String, callback: (Result<StreamDescriptor>) -> Unit) {
-        scope.launch {
-            try {
-                val descriptor = streamManager.openStream(contentUri)
-                mainHandler.post { callback(Result.success(descriptor)) }
-            } catch (e: Exception) {
-                mainHandler.post { callback(Result.failure(e)) }
-            }
-        }
-    }
+    override fun openStream(contentUri: String, callback: (Result<StreamDescriptor>) -> Unit) =
+        launchHostCall(callback) { streamManager.openStream(contentUri) }
 
-    override fun extractToFile(contentUri: String, callback: (Result<String?>) -> Unit) {
-        scope.launch {
-            try {
-                val filePath = streamManager.extractToFile(contentUri)
-                mainHandler.post { callback(Result.success(filePath)) }
-            } catch (e: Exception) {
-                mainHandler.post { callback(Result.failure(e)) }
-            }
-        }
-    }
+    override fun extractToFile(contentUri: String, callback: (Result<String?>) -> Unit) =
+        launchHostCall(callback) { streamManager.extractToFile(contentUri) }
 
-    override fun closeStream(streamId: String, callback: (Result<Unit>) -> Unit) {
-        scope.launch {
-            try {
-                streamManager.closeStream(streamId)
-                mainHandler.post { callback(Result.success(Unit)) }
-            } catch (e: Exception) {
-                mainHandler.post { callback(Result.failure(e)) }
-            }
-        }
-    }
+    override fun closeStream(streamId: String, callback: (Result<Unit>) -> Unit) =
+        launchHostCall(callback) { streamManager.closeStream(streamId) }
 
     // -------------------------------------------------------------------------
     // Observers
     // -------------------------------------------------------------------------
 
-    override fun registerObserver(request: ObserverRequest, callback: (Result<String>) -> Unit) {
-        scope.launch {
-            try {
-                val observerId = observerRegistry.register(
-                    contentUri = request.contentUri,
-                    notifyForDescendants = request.notifyForDescendants
-                )
-                mainHandler.post { callback(Result.success(observerId)) }
-            } catch (e: Exception) {
-                mainHandler.post { callback(Result.failure(e)) }
-            }
+    override fun registerObserver(request: ObserverRequest, callback: (Result<String>) -> Unit) =
+        launchHostCall(callback) {
+            observerRegistry.register(
+                contentUri = request.contentUri,
+                notifyForDescendants = request.notifyForDescendants
+            )
         }
-    }
 
-    override fun unregisterObserver(observerId: String, callback: (Result<Unit>) -> Unit) {
-        scope.launch {
-            try {
-                observerRegistry.unregister(observerId)
-                mainHandler.post { callback(Result.success(Unit)) }
-            } catch (e: Exception) {
-                mainHandler.post { callback(Result.failure(e)) }
-            }
-        }
-    }
+    override fun unregisterObserver(observerId: String, callback: (Result<Unit>) -> Unit) =
+        launchHostCall(callback) { observerRegistry.unregister(observerId) }
 
-    override fun unregisterAllObservers(callback: (Result<Unit>) -> Unit) {
-        scope.launch {
-            try {
-                observerRegistry.unregisterAll()
-                mainHandler.post { callback(Result.success(Unit)) }
-            } catch (e: Exception) {
-                mainHandler.post { callback(Result.failure(e)) }
-            }
-        }
-    }
+    override fun unregisterAllObservers(callback: (Result<Unit>) -> Unit) =
+        launchHostCall(callback) { observerRegistry.unregisterAll() }
 
     // Non-callback version for internal use (plugin dispose)
     fun unregisterAllObservers() {
@@ -428,77 +359,48 @@ class QueryHostApiImpl(
     // Metadata
     // -------------------------------------------------------------------------
 
-    override fun getType(contentUri: String, callback: (Result<TypeResponse>) -> Unit) {
-        scope.launch {
-            try {
-                val uri = Uri.parse(contentUri)
-                val mimeType = contentResolver.getType(uri)
-                mainHandler.post { callback(Result.success(TypeResponse(mimeType = mimeType))) }
-            } catch (e: Exception) {
-                mainHandler.post { callback(Result.failure(e)) }
-            }
+    override fun getType(contentUri: String, callback: (Result<TypeResponse>) -> Unit) =
+        launchHostCall(callback) {
+            TypeResponse(mimeType = contentResolver.getType(Uri.parse(contentUri)))
         }
-    }
 
-    override fun canonicalize(contentUri: String, callback: (Result<String?>) -> Unit) {
-        scope.launch {
-            try {
-                val uri = Uri.parse(contentUri)
-                val result = contentResolver.canonicalize(uri)?.toString()
-                mainHandler.post { callback(Result.success(result)) }
-            } catch (e: Exception) {
-                mainHandler.post { callback(Result.failure(e)) }
-            }
+    override fun canonicalize(contentUri: String, callback: (Result<String?>) -> Unit) =
+        launchHostCall(callback) {
+            contentResolver.canonicalize(Uri.parse(contentUri))?.toString()
         }
-    }
 
-    override fun uncanonicalize(contentUri: String, callback: (Result<String?>) -> Unit) {
-        scope.launch {
-            try {
-                val uri = Uri.parse(contentUri)
-                val result = contentResolver.uncanonicalize(uri)?.toString()
-                mainHandler.post { callback(Result.success(result)) }
-            } catch (e: Exception) {
-                mainHandler.post { callback(Result.failure(e)) }
-            }
+    override fun uncanonicalize(contentUri: String, callback: (Result<String?>) -> Unit) =
+        launchHostCall(callback) {
+            contentResolver.uncanonicalize(Uri.parse(contentUri))?.toString()
         }
-    }
 
-    override fun call(request: ProviderCallRequest, callback: (Result<ProviderCallResponse>) -> Unit) {
-        scope.launch {
-            try {
-                val extras = request.extras?.let { map ->
-                    android.os.Bundle().apply {
-                        map.forEach { (key, value) ->
-                            when (value) {
-                                is String -> putString(key, value)
-                                is Long -> putLong(key, value)
-                                is Int -> putInt(key, value)
-                                is Double -> putDouble(key, value)
-                                is Boolean -> putBoolean(key, value)
-                            }
+    override fun call(request: ProviderCallRequest, callback: (Result<ProviderCallResponse>) -> Unit) =
+        launchHostCall(callback) {
+            val extras = request.extras?.let { map ->
+                android.os.Bundle().apply {
+                    map.forEach { (key, value) ->
+                        when (value) {
+                            is String -> putString(key, value)
+                            is Long -> putLong(key, value)
+                            is Int -> putInt(key, value)
+                            is Double -> putDouble(key, value)
+                            is Boolean -> putBoolean(key, value)
                         }
                     }
                 }
-
-                val result = contentResolver.call(
-                    request.authority,
-                    request.method,
-                    request.arg,
-                    extras
-                )
-
-                val resultMap = mutableMapOf<String?, Any?>()
-                result?.keySet()?.forEach { key ->
-                    resultMap[key] = result.get(key)
-                }
-
-                mainHandler.post { callback(Result.success(ProviderCallResponse(result = resultMap))) }
-            } catch (e: Exception) {
-                mainHandler.post { callback(Result.failure(e)) }
             }
+
+            val result = withProvider(request.authority) {
+                it.call(request.method, request.arg, extras)
+            }
+
+            val resultMap = mutableMapOf<String?, Any?>()
+            result?.keySet()?.forEach { key ->
+                resultMap[key] = result.get(key)
+            }
+
+            ProviderCallResponse(result = resultMap)
         }
-    }
 
     // -------------------------------------------------------------------------
     // Permissions
@@ -517,8 +419,8 @@ class QueryHostApiImpl(
             val granted = context.checkSelfPermission(permissionName) ==
                 android.content.pm.PackageManager.PERMISSION_GRANTED
             callback(Result.success(granted))
-        } catch (e: Exception) {
-            callback(Result.failure(e))
+        } catch (e: Throwable) {
+            callback(Result.failure(HostErrors.toFlutterError(e)))
         }
     }
 
@@ -534,6 +436,84 @@ class QueryHostApiImpl(
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
+
+    /**
+     * Purpose: Run one host call on the IO scope and reply to Dart exactly
+     * once: with its result, or with its [HostErrors] classification for any
+     * failure, so no failure skips the reply or reaches Dart as a Java class
+     * name (UNFY-300).
+     *
+     * @param callback the Pigeon reply callback of the call.
+     * @param body the blocking work; its return value is the reply.
+     * @return Nothing; the reply is posted to the main looper.
+     * @throws Nothing. Once [dispose] cancelled the scope the engine is
+     *   detached, and no reply is sent. A `CancellationException` the
+     *   blocking [body] raises is a failure like any other.
+     */
+    private fun <T> launchHostCall(callback: (Result<T>) -> Unit, body: () -> T) {
+        scope.launch {
+            val result = try {
+                Result.success(body())
+            } catch (e: Throwable) {
+                Result.failure(HostErrors.toFlutterError(e))
+            }
+            // Checked on the main thread, where dispose() runs, so a reply
+            // queued just before detach is dropped too.
+            mainHandler.post { if (scope.isActive) callback(result) }
+        }
+    }
+
+    /**
+     * Purpose: Run a write or provider call against the provider behind
+     * [uri], failing as [HostErrors.UNAVAILABLE] when none is installed, the
+     * same as a null cursor on the read paths. `ContentResolver`'s own write
+     * methods instead throw `IllegalArgumentException("Unknown URL")`, which
+     * would read as a malformed request.
+     *
+     * @param uri the content URI whose provider runs [operation].
+     * @param operation the provider work, given an unstable client.
+     * @return [operation]'s result.
+     * @throws QueryFlutterError with [HostErrors.UNAVAILABLE] when no
+     *   provider serves [uri]; whatever [operation] throws, after the client
+     *   is released.
+     */
+    private fun <T> withProvider(uri: Uri, operation: (ContentProviderClient) -> T): T {
+        val client = contentResolver.acquireUnstableContentProviderClient(uri)
+            ?: throw noProviderError("contentUri", uri.toString())
+        return client.use(operation)
+    }
+
+    /**
+     * Purpose: Run a batch or provider call against the provider registered
+     * for [authority], failing as [HostErrors.UNAVAILABLE] when none is.
+     *
+     * @param authority the provider authority.
+     * @param operation the provider work, given an unstable client.
+     * @return [operation]'s result.
+     * @throws QueryFlutterError with [HostErrors.UNAVAILABLE] when no
+     *   provider serves [authority]; whatever [operation] throws, after the
+     *   client is released.
+     */
+    private fun <T> withProvider(authority: String, operation: (ContentProviderClient) -> T): T {
+        val client = contentResolver.acquireUnstableContentProviderClient(authority)
+            ?: throw noProviderError("authority", authority)
+        return client.use(operation)
+    }
+
+    /**
+     * Purpose: Build the `unavailable` error for a provider that cannot be
+     * acquired.
+     *
+     * @param key the details key naming [target] (`contentUri` or `authority`).
+     * @param target the URI or authority no provider serves.
+     * @return the error, with details `{reason: noProvider, <key>: target}`.
+     * @throws Nothing.
+     */
+    private fun noProviderError(key: String, target: String) = QueryFlutterError(
+        HostErrors.UNAVAILABLE,
+        "simple_query: no content provider for $target",
+        mapOf("reason" to "noProvider", key to target),
+    )
 
     private fun cursorRowToMap(cursor: Cursor): Map<String?, Any?> {
         val map = mutableMapOf<String?, Any?>()
@@ -575,19 +555,12 @@ class QueryHostApiImpl(
     }
 
     /**
-     * Clean up all resources on plugin detach.
+     * Clean up all resources on plugin detach. Cancelling the scope first
+     * means no host call replies to the detached engine.
      */
     fun dispose() {
-        observerRegistry.unregisterAll()
-        streamManager.closeAll()
-    }
-
-    internal companion object {
-        /**
-         * Pigeon error code for a null resolver cursor. Matches the
-         * `unavailable` code the other platform bridges send for the same
-         * condition, so every Dart mapper reads one vocabulary.
-         */
-        const val NULL_CURSOR_ERROR_CODE = "unavailable"
+        scope.cancel()
+        observerRegistry.dispose()
+        streamManager.dispose()
     }
 }

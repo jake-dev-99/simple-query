@@ -35,6 +35,10 @@ class ObserverRegistry(
     private val contentResolver get() = context.contentResolver
     private val observers = ConcurrentHashMap<String, RegisteredObserver>()
 
+    /** Orders a registration's final step against [dispose]; never held across IPC. */
+    private val lifecycleLock = Any()
+    @Volatile private var disposed = false
+
     private data class RegisteredObserver(
         val observerId: String,
         val contentUri: String,
@@ -47,6 +51,8 @@ class ObserverRegistry(
      * @param contentUri The content URI to observe
      * @param notifyForDescendants If true, also observe changes to descendant URIs
      * @return The observer ID for later unregistration
+     * @throws IllegalStateException when the registry is disposed (plugin
+     *   detached), so no observer outlives [dispose] (UNFY-300).
      */
     fun register(contentUri: String, notifyForDescendants: Boolean): String {
         val observerId = UUID.randomUUID().toString()
@@ -94,13 +100,26 @@ class ObserverRegistry(
             }
         }
 
+        check(!disposed) { "simple_query: observer registry is disposed" }
         contentResolver.registerContentObserver(uri, notifyForDescendants, observer)
 
-        observers[observerId] = RegisteredObserver(
-            observerId = observerId,
-            contentUri = contentUri,
-            observer = observer,
-        )
+        // The binder registration above runs without the lock, so a
+        // concurrent dispose() never waits on it. Whichever comes second
+        // under the lock undoes the registration.
+        val accepted = synchronized(lifecycleLock) {
+            if (!disposed) {
+                observers[observerId] = RegisteredObserver(
+                    observerId = observerId,
+                    contentUri = contentUri,
+                    observer = observer,
+                )
+            }
+            !disposed
+        }
+        if (!accepted) {
+            contentResolver.unregisterContentObserver(observer)
+            throw IllegalStateException("simple_query: observer registry is disposed")
+        }
 
         return observerId
     }
@@ -115,12 +134,32 @@ class ObserverRegistry(
 
     /**
      * Unregister all observers.
-     * Called on Activity detach and plugin dispose to prevent leaks.
+     * Called on Activity detach to prevent leaks; observers may register again.
      */
     fun unregisterAll() {
         val ids = observers.keys.toList()
         for (id in ids) {
             unregister(id)
+        }
+    }
+
+    /**
+     * Purpose: Unregister every observer on plugin detach and refuse new ones.
+     *
+     * A registration in flight either recorded its observer first, and is
+     * unregistered here, or sees the registry disposed and undoes itself
+     * (UNFY-300). The unregistrations run outside [lifecycleLock].
+     *
+     * @return Nothing.
+     * @throws Nothing.
+     */
+    fun dispose() {
+        val registered = synchronized(lifecycleLock) {
+            disposed = true
+            observers.values.toList().also { observers.clear() }
+        }
+        for (entry in registered) {
+            contentResolver.unregisterContentObserver(entry.observer)
         }
     }
 
@@ -132,7 +171,10 @@ class ObserverRegistry(
         flags: Int?,
         selfChange: Boolean,
     ) {
-        // Already on main thread via mainHandler
+        // Already on main thread via mainHandler. A change queued before its
+        // observer was unregistered (or the registry disposed) has no Dart
+        // listener left to receive it.
+        if (!observers.containsKey(observerId)) return
         flutterApi.onContentChange(
             ContentChangeEvent(
                 observerId = observerId,
