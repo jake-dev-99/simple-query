@@ -122,6 +122,11 @@ class HttpTest(unittest.TestCase):
                 self.assertEqual(self.module.upload_deadline(message, self.clock.now()),
                                  1700000000.0 + delay)
 
+    def test_numeric_and_spelled_two_minute_quota_messages_pause_120_seconds(self):
+        for window in ['last 2 minutes','last two minutes','last 120 seconds']:
+            self.assertEqual(self.module.upload_deadline('rate limit has been reached (3 in the '+window+')',
+                                                       self.clock.now()),1700000120)
+
     def test_unrecognized_upload_quota_message_requires_attention(self):
         with self.assertRaisesRegex(self.module.Blocked, 'quota'):
             self.module.upload_deadline('rate limit has been reached (unknown window)', self.clock.now())

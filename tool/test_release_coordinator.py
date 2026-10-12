@@ -125,12 +125,17 @@ class CoordinatorTest(unittest.TestCase):
         self.trace = self.root / 'gate-trace.jsonl'
         flutter = self.root / 'fake-flutter'
         flutter.write_text('''#!/usr/bin/env python3
-import json, os, pathlib, sys
+import json, os, pathlib, sys, tarfile
 import yaml
 p=pathlib.Path.cwd(); spec=yaml.safe_load((p/'pubspec.yaml').read_text())
 with open(os.environ['GATE_TRACE'], 'a') as f:
  f.write(json.dumps({'name':spec['name'],'version':spec['version'],
   'linked':(p/'pubspec_overrides.yaml').exists(),'args':sys.argv[1:]})+'\\n')
+if sys.argv[1:4] == ['pub','publish','--to-archive']:
+ with tarfile.open(sys.argv[4], 'w:gz') as archive:
+  for file in p.rglob('*'):
+   if file.is_file(): archive.add(file, arcname=str(file.relative_to(p)))
+ sys.exit(0)
 if sys.argv[1:] not in [['pub','get','--no-example'], ['analyze','--no-fatal-warnings'],
                        ['test'], ['pub','publish','--dry-run']]: sys.exit(91)
 ''')
@@ -408,9 +413,98 @@ if sys.argv[1:] not in [['pub','get','--no-example'], ['analyze','--no-fatal-war
 
     def test_first_publication_requires_manual_package_creation(self):
         self.pub.metadata.pop('demo_ios')
-        self.assertEqual(self.cut(), 'blocked')
+        self.assertEqual(self.runner().run('cut',package='demo_ios'), 'blocked')
         self.assertIn('first manual', self.journal.load()['error'])
         self.assertEqual(self.journal.run_calls, [])
+
+    def test_modified_published_assets_block_dependents(self):
+        asset=self.root/'packages/android/assets/message.txt'
+        asset.parent.mkdir();asset.write_text('frozen asset')
+        self.fixture.commit('Add shipped asset');self.fixture.git('push','origin','main')
+        publish=self.pub.publish
+        def tampered(package,sha):
+            publish(package,sha)
+            receipt=self.pub.receipt(package['name'],package['version']);url=receipt['archive_url']
+            out=io.BytesIO()
+            with tarfile.open(fileobj=io.BytesIO(self.pub.archives[url])) as source:
+                with tarfile.open(fileobj=out,mode='w:gz') as target:
+                    for entry in source:
+                        payload=source.extractfile(entry).read()
+                        if entry.name=='assets/message.txt':payload=b'changed asset';entry.size=len(payload)
+                        target.addfile(entry,io.BytesIO(payload))
+            import hashlib
+            self.pub.archives[url]=out.getvalue()
+            receipt['archive_sha256']=hashlib.sha256(out.getvalue()).hexdigest()
+        self.pub.publish=tampered
+        self.assertEqual(self.cut(),'blocked')
+        self.assertNotIn('demo-v1.0.1',self.fixture.git('ls-remote','--tags','origin'))
+
+    def test_metadata_cooldown_preserves_completed_planning_reads(self):
+        read=self.pub.package
+        interface_reads=[]
+        paused=[False]
+        def limited(name):
+            if name=='demo_interface':interface_reads.append(name)
+            if name=='demo_android' and not paused[0]:
+                paused[0]=True
+                raise importlib.import_module('release_services').Deferred(self.clock.now()+3600,'Metadata quota')
+            return read(name)
+        self.pub.package=limited
+        self.assertEqual(self.cut(),'deferred')
+        self.clock.value+=3601
+        self.assertEqual(self.runner().run('resume',scheduled=True),'complete')
+        self.assertEqual(interface_reads,['demo_interface'])
+
+    def test_unpublished_unrelated_package_does_not_block_individual_cut(self):
+        self.pub.metadata.pop('demo_ios')
+        self.assertEqual(self.runner().run('cut',package='demo_android'),'complete')
+        self.assertEqual([p['name'] for p in self.journal.load()['packages']],['demo_android'])
+
+    def test_all_skips_unchanged_unpublished_package_present_at_repository_baseline(self):
+        self.fixture.packages['ghost']='packages/ghost'
+        self.fixture.package('ghost','packages/ghost',{})
+        file=self.root/'packages/demo/pubspec.yaml'
+        file.write_text(file.read_text().replace('version: 1.0.0','version: 1.0.2'))
+        self.fixture.commit('Previously released facade with unpublished unused package')
+        self.fixture.git('tag','demo-v1.0.2');self.fixture.git('push','origin','main','--tags')
+        self.pub.metadata['demo']['versions'].append({'version':'1.0.2'})
+        self.assertEqual(self.cut(),'complete')
+        self.assertNotIn('ghost',[p['name'] for p in self.journal.load()['packages']])
+
+    def test_cancelled_inflight_deploy_blocks_a_new_cut_without_replacing_journal(self):
+        self.journal.outcomes['demo_android']='running'
+        self.cut();self.runner().run('cancel');self.clock.value+=121
+        before=self.journal.load()
+        self.assertEqual(self.runner('12346').run('cut'),'blocked')
+        self.assertEqual(self.journal.load(),before)
+
+    def test_preview_after_cancellation_does_not_reconcile_by_writing_journal(self):
+        self.journal.outcomes['demo_android']='running'
+        self.cut();self.runner().run('cancel');self.clock.value+=121
+        before=self.journal.load()
+        self.journal.outcomes['demo_android']='success'
+        self.assertEqual(self.runner('12346').run('cut',dry_run=True),'preview')
+        self.assertEqual(self.journal.load(),before)
+
+    def test_new_cut_after_cancel_reconciles_completed_original_publication(self):
+        self.journal.outcomes['demo_android']='running'
+        self.cut();self.runner().run('cancel');self.clock.value+=121
+        self.journal.outcomes['demo_android']='success'
+        self.assertEqual(self.runner('12346').run('cut'),'complete')
+        self.assertEqual(self.journal.load()['batch_tag'],'sz-release-batch-12346')
+        self.assertEqual(len([v for v in self.pub.metadata['demo_android']['versions']
+                             if v['version']=='1.0.1']),1)
+        self.assertNotIn('demo-v1.0.1',self.fixture.git('ls-remote','--tags','origin'))
+
+    def test_latest_completed_batch_publications_count_toward_new_agent_budget(self):
+        self.assertEqual(self.cut(),'complete')
+        self.fixture.git('reset','--hard','origin/main')  # disposable test checkout only
+        (self.root/'packages/android/lib/plugin.dart').write_text('// next source change')
+        self.fixture.commit('Further Android work');self.fixture.git('push','origin','main')
+        self.journal.known_publications=[self.clock.now()-1]*198
+        self.assertEqual(self.runner('12346').run('cut'),'deferred')
+        self.assertIn('quota',self.journal.load()['error'])
+        self.assertNotIn('demo_android-v1.0.2',self.fixture.git('ls-remote','--tags','origin'))
 
     def test_new_cut_cannot_replace_an_incomplete_batch(self):
         self.journal.outcomes['demo_android'] = 'running'

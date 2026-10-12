@@ -13,13 +13,7 @@ from urllib.parse import urlparse
 
 import yaml
 
-from release_plan import owner
 from release_services import Blocked
-
-
-def source_file(relative):
-    return relative in ('pubspec.yaml', 'CHANGELOG.md', 'LICENSE', 'README.md') or relative.startswith(
-        ('lib/', 'android/', 'ios/', 'macos/', 'linux/', 'windows/'))
 
 
 def fingerprint(files):
@@ -27,6 +21,18 @@ def fingerprint(files):
     for name, data in sorted(files.items()):
         digest.update(name.encode() + b'\0' + hashlib.sha256(data).digest())
     return digest.hexdigest()
+
+
+def archive_fingerprint(raw):
+    files = {}
+    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+        for entry in archive:
+            if entry.isdir():
+                continue
+            if not entry.isfile() or entry.name in files:
+                raise Blocked('Published archive contains links or duplicate files')
+            files[entry.name] = archive.extractfile(entry).read()
+    return fingerprint(files)
 
 
 class Repository:
@@ -100,6 +106,13 @@ class Repository:
             raise Blocked('main advanced before the prepared release push; review a new source plan')
         self.git('push', 'origin', f'{plan["prepared_sha"]}:refs/heads/main')
 
+    def remote_tag_sha(self, name):
+        remote = self.git('ls-remote', 'origin', f'refs/tags/{name}', f'refs/tags/{name}^{{}}')
+        if not remote:
+            return None
+        refs = dict(line.split()[::-1] for line in remote.splitlines())
+        return refs.get(f'refs/tags/{name}^{{}}', refs[f'refs/tags/{name}'])
+
     def tag(self, name, sha, *, message=None):
         self.git('fetch', 'origin', 'main', '--tags')
         if self.git('merge-base', '--is-ancestor', sha, 'origin/main', check=False).returncode:
@@ -132,11 +145,19 @@ class Repository:
                 destination.write_text(contents)
             for file in root.rglob('pubspec_overrides.yaml'):
                 file.unlink()
+            # Pub inherits ignore rules from the git repository root. Retain
+            # that boundary for nested packages, with a clean disposable index.
+            subprocess.run(['git', 'init', '-q', str(root)], check=True, capture_output=True)
+            subprocess.run(['git', '-C', str(root), 'add', '--force', '--all'], check=True, capture_output=True)
+            subprocess.run(['git', '-C', str(root), '-c', 'user.name=Release validation',
+                            '-c', 'user.email=release-validation@example.invalid',
+                            'commit', '-q', '-m', 'Frozen release validation snapshot'],
+                           check=True, capture_output=True)
             yield root
 
     def validate(self, plan, package=None, *, linked=False):
         packages = [package] if package else plan['packages']
-        with self.snapshot(plan) as root:
+        with self.snapshot(plan) as root, tempfile.TemporaryDirectory(prefix='release-artifact-') as artifact_dir:
             if linked:
                 for current in packages:
                     links = {p['name']: {'path': str(root / p['path'])}
@@ -158,6 +179,10 @@ class Repository:
                     commands.append((directory, ['test']))
                 if not linked:
                     commands.append((directory, ['pub', 'publish', '--dry-run']))
+                    artifact = Path(artifact_dir) / (current['name'] + '.tar.gz')
+                    # SDK packaging applies the real .pubignore/.gitignore policy.
+                    # --to-archive writes locally and never initiates an upload.
+                    commands.append((directory, ['pub', 'publish', '--to-archive', str(artifact)]))
                 for command_dir, command in commands:
                     print(f'Validate {current["name"]} {current["version"]} ({"source graph" if linked else "hosted"}): {" ".join(command)}', flush=True)
                     result = subprocess.run([self.flutter, *command], cwd=command_dir, env=self.env,
@@ -169,6 +194,8 @@ class Repository:
                         if deadline:
                             raise Deferred(deadline, f'Validation quota for {current["name"]}')
                         raise Blocked(f'{current["name"]} validation failed:\n{output[-8000:]}')
+                if not linked:
+                    current['artifact_fingerprint'] = archive_fingerprint(artifact.read_bytes())
 
     def verify_receipt(self, plan, package, receipt, pub):
         url = receipt.get('archive_url', '')
@@ -178,17 +205,9 @@ class Repository:
         raw = pub.get(url, binary=True)
         if raw is None or hashlib.sha256(raw).hexdigest() != receipt.get('archive_sha256'):
             raise Blocked('Published artifact archive checksum is missing or different')
-        prefix = '' if package['path'] == '.' else package['path'] + '/'
-        expected = {}
-        for file in self.git('ls-tree', '-r', '--name-only', plan['prepared_sha'], '--', package['path']).splitlines():
-            relative = file.removeprefix(prefix)
-            if owner(file, plan['package_paths']) == package['name'] and source_file(relative):
-                expected[relative] = subprocess.check_output(
-                    ['git', 'show', f'{plan["prepared_sha"]}:{file}'], cwd=self.root)
-        actual = {}
-        with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
-            for entry in archive:
-                if entry.isfile() and source_file(entry.name):
-                    actual[entry.name] = archive.extractfile(entry).read()
-        if fingerprint(actual) != fingerprint(expected):
+        expected = package.get('artifact_fingerprint')
+        if not expected:
+            self.validate(plan, package, linked=False)
+            expected = package['artifact_fingerprint']
+        if archive_fingerprint(raw) != expected:
             raise Blocked(f'Published artifact for {package["name"]} does not match frozen source')

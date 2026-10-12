@@ -57,6 +57,43 @@ class Coordinator:
                 raise Blocked('Journal packages are not in dependency order')
             seen.add(package['name'])
 
+    def reconcile_cancelled(self, plan, *, dry_run=False):
+        if not plan.get('prepared_sha'):
+            return
+        if self.now() < plan['not_before']:
+            raise Blocked('Cancelled batch cooldown is still active; wait before authorizing another cut')
+        for package in plan['packages']:
+            if package['state'] in ('published', 'aborted'):
+                continue
+            tagged = self.repo.remote_tag_sha(package['tag'])
+            if tagged is None:
+                continue
+            if tagged != plan['prepared_sha']:
+                raise Blocked('Cancelled package tag differs from frozen source; inspect before a new cut')
+            run = self.journal.run(package, plan['prepared_sha'])
+            if not run or run['status'] != 'completed':
+                raise Blocked('Cancelled batch still has an in-flight Deploy; a new cut cannot replace it')
+            receipt = self.pub.receipt(package['name'], package['version'])
+            if receipt:
+                self.repo.verify_receipt(plan, package, receipt, self.pub)
+                package.update(state='published', published_at=receipt.get('published'))
+                if not dry_run:
+                    self.save(plan)
+                continue
+            if run['conclusion'] == 'success':
+                raise Blocked('Cancelled Deploy succeeded; wait for its exact hosted receipt before a new cut')
+            until = package.get('cancel_check_after')
+            if until is None:
+                until = upload_deadline(self.journal.logs(run['id']), self.now()) or self.pub.next_check(package['name'])
+                package['cancel_check_after'] = until
+                if not dry_run:
+                    self.save(plan)
+            if self.now() < until:
+                raise Blocked('Cancelled failed Deploy needs a final hosted/quota reconciliation after its cooldown')
+            package['state'] = 'aborted'
+            if not dry_run:
+                self.save(plan)
+
     def wait(self, until, reason):
         if until > self.deadline:
             raise Deferred(until, reason)
@@ -78,6 +115,12 @@ class Coordinator:
         if operation == 'cut' and plan and plan['status'] not in ('complete', 'cancelled'):
             print('An incomplete batch already exists; resume or cancel that batch.', flush=True)
             return 'blocked'
+        if operation == 'cut' and plan and plan['status'] == 'cancelled':
+            try:
+                self.reconcile_cancelled(plan, dry_run=dry_run)
+            except (Blocked, Deferred) as error:
+                print(f'New cut blocked: {error}', flush=True)
+                return 'blocked'
         if operation == 'cancel':
             if not plan:
                 return 'noop'
@@ -97,6 +140,10 @@ class Coordinator:
                 print(json.dumps(plan, indent=2), flush=True)
                 return 'preview'
         else:
+            if plan:
+                previous = publication_times({'versions': [{'published': p['published_at']}
+                    for p in plan['packages'] if p.get('published_at')]})
+                self.journal.known_publications = getattr(self.journal, 'known_publications', []) + previous
             plan = {'schema': 1, 'source_sha': self.repo.source_sha(), 'prepared_sha': None,
                     'status': 'planning', 'phase': 'planning', 'not_before': 0,
                     'error': None, 'package_paths': self.packages, 'packages': [], 'files': {},
@@ -107,15 +154,25 @@ class Coordinator:
                 self.journal.create(plan)
         try:
             if plan['phase'] == 'planning':
-                published = {}
+                published = dict(plan.get('planning_metadata', {}))
+                refresh_missing = operation == 'resume' and plan['status'] == 'blocked'
                 for name in self.packages:
+                    if name in published and (published[name] is not None or not refresh_missing):
+                        continue
                     metadata = self.pub.package(name)
-                    if metadata is None:
-                        raise Blocked(f'{name} needs its first manual pub.dev publication before automated cuts')
-                    published[name] = metadata
+                    published[name] = None if metadata is None else {
+                        'versions': [{'version': item['version']} for item in metadata.get('versions', [])],
+                        'latest': metadata.get('latest')}
+                    plan.setdefault('planning_metadata', {})[name] = published[name]
+                    if not dry_run:
+                        self.save(plan)  # metadata quotas must not restart reads from package one
                 candidate = build_plan(self.repo.root, self.packages, plan['target'], plan['bump'],
                                        published, plan['source_sha'])
+                for selected in candidate['packages']:
+                    if published[selected['name']] is None:
+                        raise Blocked(f'{selected["name"]} needs its first manual pub.dev publication before automated cuts')
                 plan.update(candidate, status='planned', phase='preflight')
+                plan.pop('planning_metadata', None)
                 print('Release plan:\n' + json.dumps(plan['packages'], indent=2), flush=True)
                 if dry_run:
                     self.repo.validate(plan, linked=True)
@@ -162,6 +219,7 @@ class Coordinator:
                             if self.pub.receipt(dep, wanted) is None:
                                 raise Deferred(self.pub.next_check(dep), f'Waiting for {dep} {wanted}')
                         self.repo.validate(plan, current, linked=False)
+                        self.save(plan)  # exact publish contents checkpoint precedes tag push
                         self.repo.tag(current['tag'], plan['prepared_sha'])
                         current['state'] = 'tagged'
                         self.save(plan)

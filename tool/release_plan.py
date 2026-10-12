@@ -126,20 +126,33 @@ def build_plan(root, packages, target, bump, published, source_sha):
 
     for name in sorted(packages):
         visit(name)
-    baselines, reasons = {}, {}
+    baselines, reasons, verified = {}, {}, []
     for name in packages:
-        hosted_versions = {v['version'] for v in published[name].get('versions', [])}
+        hosted_versions = {v['version'] for v in (published.get(name) or {}).get('versions', [])}
         tags = git(root, 'tag', '--merged', source_sha, '--list', name + '-v*').splitlines()
         tags = [tag for tag in tags if tag.removeprefix(name + '-v') in hosted_versions]
-        baseline = max(tags, key=lambda tag: version(tag.removeprefix(name + '-v'))) if tags else None
-        baselines[name] = baseline
-        if target == 'all':
-            if baseline is None:
-                reasons[name] = 'source: no successfully published tag baseline'
-            else:
-                files = git(root, 'diff', '--name-only', baseline, source_sha).splitlines()
-                if any(owner(file, packages) == name and release_file(file) for file in files):
-                    reasons[name] = 'source: changed since ' + baseline
+        baselines[name] = max(tags, key=lambda tag: version(tag.removeprefix(name + '-v'))) if tags else None
+        verified.extend(tags)
+    commits = {git(root, 'rev-parse', tag + '^{commit}') for tag in verified}
+    watermark = next((sha for sha in git(root, 'rev-list', source_sha).splitlines() if sha in commits), None)
+    for name in packages:
+        if target != 'all':
+            continue
+        baseline = baselines[name]
+        metadata = published.get(name)
+        if baseline is None and metadata:
+            hosted_spec = (metadata.get('latest') or {}).get('pubspec')
+            if hosted_spec and hosted_spec != specs[name]:
+                reasons[name] = 'source: manifest differs from hosted version without a matching tag'
+                continue
+            raise ValueError(f'{name} has no verified package baseline; attention required before all selection')
+        if baseline is None:
+            if watermark is None:
+                raise ValueError(f'{name} needs its first manual publication and a verified repository baseline')
+            baseline = watermark
+        files = git(root, 'diff', '--name-only', baseline, source_sha).splitlines()
+        if any(owner(file, packages) == name and release_file(file) for file in files):
+            reasons[name] = 'source: changed since ' + baseline
     if target != 'all':
         if target not in packages:
             raise ValueError(f'Unknown package: {target}')

@@ -145,6 +145,23 @@ class PlannerTest(unittest.TestCase):
         result = self.plan(package='demo_android')
         self.assertEqual([p['name'] for p in result['packages']], ['demo_android'])
 
+    def test_missing_verified_tag_requires_evidence_instead_of_inferred_change(self):
+        self.git('tag','-d','demo_ios-v1.0.0')
+        import yaml
+        self.published['demo_ios']['latest']={'version':'1.0.0','pubspec':yaml.safe_load(
+            (self.root/'packages/ios/pubspec.yaml').read_text())}
+        with self.assertRaisesRegex(ValueError,'baseline|attention'):
+            self.plan()
+
+    def test_known_hosted_manifest_difference_proves_change_without_a_tag(self):
+        self.git('tag','-d','demo_ios-v1.0.0')
+        import yaml
+        file=self.root/'packages/ios/pubspec.yaml'
+        self.published['demo_ios']['latest']={'version':'1.0.0','pubspec':yaml.safe_load(file.read_text())}
+        file.write_text(file.read_text().replace('version: 1.0.0','version: 1.0.1'))
+        self.commit('Owned manifest change')
+        self.assertEqual([p['name'] for p in self.plan()['packages']],['demo_ios','demo'])
+
     def test_invalid_constraint_is_reported_without_mutating_checkout(self):
         file = self.root / 'packages/android/pubspec.yaml'
         file.write_text(file.read_text().replace('^1.0.0', 'bad constraint'))

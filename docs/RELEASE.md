@@ -12,8 +12,13 @@ one frozen batch; package tag pushes run **Deploy**, which publishes with OIDC.
    and dependency order, and to validate the candidate source graph.
 3. `all` selects packages with owned release changes since their last tag whose
    version is also present on pub.dev, plus dependents needing raised floors.
-   Unchanged unrelated packages are skipped. Root facade ownership excludes nested
-   platforms and release tooling. Individual package cuts remain available.
+   Unchanged unrelated packages are skipped. An unpublished package without a
+   package tag is compared with the repository’s last verified release watermark;
+   first publication is required only if that package is selected. Root facade
+   ownership excludes nested platforms and release tooling.
+   For an existing package with no matching historical tag, a different hosted
+   manifest proves an owned change; otherwise `all` requires attention to establish
+   a verified baseline instead of guessing. Individual cuts remain available.
 4. The chosen increment applies to every selected package's current source version;
    versions already edited in a PR also receive that increment. The planner raises
    internal dependency floors, preserves authored `Unreleased` notes, and refuses
@@ -26,11 +31,13 @@ one frozen batch; package tag pushes run **Deploy**, which publishes with OIDC.
 6. Before each package tag, clean hosted resolution (including its bundled example),
    analysis, tests when present, and `flutter pub publish --dry-run` must pass.
    Only then is that tag pushed. The coordinator observes its original tag-push
-   Deploy run and verifies the exact hosted version, archive checksum, and frozen
-   source contents before advancing to a dependent package. Deploy remains the
-   uploader; the coordinator never uploads directly.
+   Deploy run and verifies the exact hosted version, archive checksum, and
+   complete frozen package contents before advancing to a dependent package. The expected
+   file set comes from pub’s local `--to-archive` packaging mode, including assets
+   and examples; this mode writes a local archive and performs no upload.
+   Deploy remains the uploader; the coordinator never uploads directly.
 
-A dependency within the same batch may start unpublished: its package is published
+A new dependency version within the same batch may start unpublished: its package is published
 and confirmed first. A repository's `all` cannot release another repository. Missing
 external versions stop validation and require completing that prerequisite first.
 
@@ -63,7 +70,8 @@ To continue a blocked batch after fixing its external prerequisite, dispatch
 adopt new source fixes. A new cut is rejected while another batch is incomplete.
 `operation=cancel` stops remaining work; it cannot stop an already running Deploy
 or undo a published package. A cancelled batch requires inspecting any in-flight
-Deploy before authorizing another cut. Dry runs never change the journal.
+Deploy before authorizing another cut. The coordinator refuses a new cut while
+   cancelled Deploy runs remain active or their publication/quota state is unresolved. Dry runs never change the journal.
 
 Never delete, move, or recreate package tags to recover. Prefer batch resume or
 GitHub's **Re-run failed jobs** on the original tag-push Deploy run. A new manual

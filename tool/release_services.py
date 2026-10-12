@@ -40,7 +40,8 @@ def upload_deadline(message, now):
     lowered = message.lower()
     if 'rate limit' not in lowered and 'ratelimit' not in lowered and 'too many requests' not in lowered:
         return None
-    for window, seconds in [('last day', 86400), ('last hour', 3600), ('last few minutes', 120)]:
+    for window, seconds in [('last day', 86400), ('last hour', 3600), ('last few minutes', 120),
+                            ('last 2 minutes', 120), ('last two minutes', 120), ('last 120 seconds', 120)]:
         if window in lowered:
             return now + seconds
     raise Blocked('Unknown upload quota window: pause for attention; no speculative retry')
