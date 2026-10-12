@@ -136,6 +136,9 @@ def load_specs(root, packages, source_sha):
         spec = yaml.safe_load(text)
         if spec.get('name') != name or spec.get('publish_to') == 'none':
             raise ValueError(f'Not the configured publishable package: {name}')
+        # The coordinator verifies receipts on pub.dev only.
+        if spec.get('publish_to') not in (None, 'https://pub.dev'):
+            raise ValueError(f'{name} publishes outside pub.dev (publish_to: {spec["publish_to"]})')
         version(spec['version'])
         texts[name], specs[name] = text, spec
         graph[name] = {}

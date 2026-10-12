@@ -143,6 +143,10 @@ class Repository:
                 destination = root / file
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_text(contents)
+            # Tracked development overrides are removed, as Deploy does, so every
+            # dependency must resolve from hosted packages; manifest
+            # dependency_overrides and local/git sources are rejected by
+            # validate_sources.
             for file in root.rglob('pubspec_overrides.yaml'):
                 file.unlink()
             # Pub inherits ignore rules from the git repository root. Retain

@@ -171,6 +171,13 @@ class PlannerTest(unittest.TestCase):
             self.plan()
         self.assertEqual(file.read_text(), before)
 
+    def test_package_publishing_to_another_registry_is_rejected(self):
+        file = self.root / 'packages/android/pubspec.yaml'
+        file.write_text(file.read_text() + 'publish_to: https://packages.example.invalid\n')
+        self.commit('Alternative registry')
+        with self.assertRaisesRegex(ValueError, 'outside pub.dev'):
+            self.plan()
+
 
 if __name__ == '__main__':
     unittest.main()
