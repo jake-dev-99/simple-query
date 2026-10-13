@@ -87,7 +87,7 @@ jobs:
         # files declare. sdkmanager is not on PATH, so call it by absolute
         # path. A bounded `printf` replaces `yes |`, which exits 141 (SIGPIPE)
         # as soon as pipefail is enabled.
-        run: printf 'y\n%.0s' $(seq 50) | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses
+        run: printf 'y\n%.0s' {1..50} | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses
 
       - name: Link workspace dependencies
         # Writes example/pubspec_overrides.yaml so the example builds this
