@@ -1,0 +1,129 @@
+name: Verify (native)
+
+# Native Kotlin compile + JVM (Robolectric) unit tests for
+# `packages/simple_query_android/android/` — the ContentProvider read layer
+# that the Dart-only `verify.yml` (`flutter test`) never compiles or touches.
+#
+# WHY THIS EXISTS (UNFY-198). A Kotlin or `build.gradle.kts` change could
+# previously reach `main` with ZERO Kotlin compiled or tested. Same hole as
+# UNFY-162 in simple-sms; this ports simple-sms's `verify-native.yml`.
+#
+# COST CONTROL. Path-gated to the native side, the example app's Android
+# project, the manifests that decide which `simple_query_android` the
+# example builds, and this workflow, so Dart-only and docs PRs skip it.
+#
+# A bare `:simple_query_android` Gradle invocation can't configure on its
+# own: the plugin module resolves only via Flutter's plugin loader in the
+# *app's* settings. So `flutter build apk` injects the gitignored gradlew
+# wrapper + `local.properties` and compiles the native side, then the unit
+# tests run against that already-configured build.
+#
+# SDK PROVISIONING (UNFY-188-style single source). The workflow pins no SDK,
+# build-tools or NDK version. It accepts the SDK licenses and lets the
+# Android Gradle Plugin install exactly what the build files declare
+# (`compileSdk`, its default build-tools, `flutter.ndkVersion`), so a bump
+# there needs no workflow edit.
+#
+# External GitHub Actions are pinned to a full commit SHA (not a floating
+# tag) for supply-chain safety, with a human-readable version comment — same
+# convention as verify.yml / deploy.yml.
+
+on:
+  pull_request:
+    branches: [main]
+    paths: &native-paths
+      - 'packages/simple_query_android/android/**'
+      - 'example/android/**'
+      # The plugin wiring (`flutter.plugin` platforms, `pluginClass`,
+      # `default_package`) and the dependencies that shape the Android build.
+      - 'packages/simple_query_android/pubspec.yaml'
+      - 'packages/simple_query/pubspec.yaml'
+      - 'example/pubspec.yaml'
+      # Melos writes example/pubspec_overrides.yaml, which makes the example
+      # build this checkout's simple_query_android.
+      - 'melos.yaml'
+      - 'pubspec.yaml'
+      - '.github/workflows/verify-native.yml'
+  # Like verify.yml, gate commits that reach main (including the "Cut
+  # Release" bot's), but only those touching the paths above.
+  push:
+    branches: [main]
+    paths: *native-paths
+  # Manual override for re-running the native gate against a specific ref.
+  workflow_dispatch:
+
+jobs:
+  native-unit-tests:
+    name: Native build + unit tests
+    runs-on: ubuntu-latest
+    # Bounds a stalled SDK download or a wedged Gradle/Robolectric run.
+    timeout-minutes: 30
+    permissions:
+      contents: read  # checkout only; least-privilege (zizmor)
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false  # no later step does authenticated git ops (zizmor artipacked)
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+
+      - name: Set up JDK 21 (Temurin)
+        # Provision JDK 21 explicitly rather than leaning on the runner's
+        # preinstalled one. Matches simple_query_android's
+        # android/build.gradle.kts (VERSION_21).
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.8.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          # Caches ~/.gradle downloads only (UNFY-190-style); task outputs
+          # are not cached, so the compile + unit tests still run fresh.
+          cache: gradle
+
+      - name: Accept Android SDK licenses
+        # Lets the Android Gradle Plugin install the SDK packages the build
+        # files declare. sdkmanager is not on PATH, so call it by absolute
+        # path. A bounded `printf` replaces `yes |`, which exits 141 (SIGPIPE)
+        # as soon as pipefail is enabled.
+        run: printf 'y\n%.0s' {1..50} | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses
+
+      - name: Link workspace dependencies
+        # Writes example/pubspec_overrides.yaml so the example builds this
+        # checkout's simple_query_android, not a hosted release.
+        run: dart run melos bootstrap
+
+      - name: Compile native side (debug APK)
+        working-directory: example
+        # Also injects the gradlew wrapper + local.properties used below,
+        # and leaves a warm Gradle daemon for the test step to reuse.
+        run: flutter build apk --debug
+
+      - name: Assert the example builds the workspace plugin
+        working-directory: example
+        # Fail loudly if the example resolved simple_query_android anywhere
+        # else; the native tests would otherwise exercise the wrong code.
+        # Reads the file Flutter's Gradle plugin loader used for module paths
+        # in the APK build above.
+        run: |
+          set -euo pipefail
+          plugin_path="$(jq -r '.plugins.android[] | select(.name == "simple_query_android") | .path' .flutter-plugins-dependencies)"
+          expected="$(realpath ../packages/simple_query_android)"
+          if [ -z "$plugin_path" ] || [ "$(realpath -m "$plugin_path")" != "$expected" ]; then
+            echo "::error::example resolved simple_query_android from '$plugin_path', not $expected"
+            exit 1
+          fi
+
+      - name: Run native JVM unit tests
+        working-directory: example/android
+        # No --no-daemon: reuse the daemon the APK build left configured.
+        # --stacktrace: full trace on failure (fail-loud stance).
+        run: ./gradlew :simple_query_android:testDebugUnitTest --console=plain --stacktrace
+
+      - name: Stop Gradle daemons before the cache save
+        # setup-java's post step saves ~/.gradle after the job; a live daemon
+        # could still hold lock files there.
+        if: always()
+        working-directory: example/android
+        run: if [ -x gradlew ]; then ./gradlew --stop; fi

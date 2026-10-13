@@ -46,6 +46,21 @@ flutter test
 
 See `melos.yaml` for the workspace scripts.
 
+**When you touch `packages/simple_query_android/android/` (Kotlin), also run
+the native gate.** `flutter test` never compiles or tests that Kotlin. The
+native unit tests run through the *example app's* Gradle (a bare
+`:simple_query_android` invocation can't configure on its own), so build once
+to inject the wrapper + `local.properties`, then test (after `melos bootstrap`,
+so the example builds the workspace plugin):
+
+```sh
+(cd example && flutter build apk --debug)
+(cd example/android && ./gradlew :simple_query_android:testDebugUnitTest --console=plain)
+```
+
+CI runs the same steps in the path-gated `.github/workflows/verify-native.yml`
+on every PR that touches the native side (UNFY-198).
+
 ## Conventions that have teeth
 
 - **The platform-interface contract is versioned.** A breaking change to
