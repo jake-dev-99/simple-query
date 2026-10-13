@@ -85,8 +85,8 @@ jobs:
       - name: Accept Android SDK licenses
         # Lets the Android Gradle Plugin install the SDK packages the build
         # files declare. sdkmanager is not on PATH, so call it by absolute
-        # path. A bounded `printf` replaces `yes |`, which dies by SIGPIPE
-        # (141) under the runner's pipefail shell.
+        # path. A bounded `printf` replaces `yes |`, which exits 141 (SIGPIPE)
+        # as soon as pipefail is enabled.
         run: printf 'y\n%.0s' $(seq 50) | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses
 
       - name: Link workspace dependencies
