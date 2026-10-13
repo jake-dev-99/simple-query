@@ -498,6 +498,22 @@ if sys.argv[1:] not in [['pub','get','--no-example'], ['analyze','--no-fatal-war
     def test_validation_disables_sdk_http_quota_retries(self):
         self.assertEqual(self.repo.env.get('PUB_MAX_HTTP_RETRIES'), '1')
 
+    def test_a_hung_validation_command_blocks_instead_of_hanging_the_runner(self):
+        slow = self.root / 'slow-flutter'
+        slow.write_text('#!/bin/sh\nsleep 5\n')
+        slow.chmod(0o755)
+        services = importlib.import_module('release_repository')
+        repo = services.Repository(self.root, flutter=str(slow), validation_timeout=0.2)
+        with self.assertRaisesRegex(services.Blocked, 'demo validation timed out after 0.2s: analyze'):
+            repo.run_flutter(['analyze', '--no-fatal-warnings'], self.root, 'demo')
+
+    def test_packaging_is_checked_before_the_release_commit_lands(self):
+        self.assertEqual(self.cut(), 'complete')
+        gates = [json.loads(line) for line in self.trace.read_text().splitlines()]
+        linked = [gate['name'] for gate in gates
+                  if gate['linked'] and gate['args'] == ['pub', 'publish', '--dry-run']]
+        self.assertEqual(linked, ['demo_android', 'demo'])
+
     def test_modified_published_assets_block_dependents(self):
         asset=self.root/'packages/android/assets/message.txt'
         asset.parent.mkdir();asset.write_text('frozen asset')

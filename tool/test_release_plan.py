@@ -2,6 +2,7 @@
 import importlib
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -177,6 +178,32 @@ class PlannerTest(unittest.TestCase):
         self.commit('Alternative registry')
         with self.assertRaisesRegex(ValueError, 'outside pub.dev'):
             self.plan()
+
+    def test_root_package_notes_leave_out_other_packages_and_release_tooling(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root)
+        self.packages = {'demo': '.', 'demo_nested': 'packages/nested'}
+        self.git('init', '-b', 'main')
+        self.git('config', 'user.email', 'fixture@example.invalid')
+        self.git('config', 'user.name', 'Release fixture')
+        self.package('demo_nested', 'packages/nested', {})
+        self.package('demo', '.', {'demo_nested': '^1.0.0'})
+        self.commit('Baseline')
+        for name in self.packages:
+            self.git('tag', name + '-v1.0.0')
+        self.published = {name: {'name': name, 'versions': [{'version': '1.0.0'}]}
+                          for name in self.packages}
+        (self.root / 'packages/nested/lib/plugin.dart').write_text('// nested\n')
+        self.commit('Change nested')
+        (self.root / 'tool').mkdir()
+        (self.root / 'tool/release.py').write_text('# tooling\n')
+        self.commit('Change release tooling')
+        (self.root / 'lib/plugin.dart').write_text('// root behavior\n')
+        self.commit('Change root')
+        notes = self.plan('demo')['files']['CHANGELOG.md']
+        self.assertIn('- Change root', notes)
+        self.assertNotIn('Change nested', notes)
+        self.assertNotIn('Change release tooling', notes)
 
 
 if __name__ == '__main__':

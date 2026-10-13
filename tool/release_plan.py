@@ -195,6 +195,18 @@ def update_floors(packages, specs, graph, order, reasons, target, bump):
     return floor_updates, candidates
 
 
+def note_pathspec(path, packages):
+    """Paths whose commits are this package's release notes.
+
+    A root package ('.') owns the repository, so the other packages and the
+    release machinery are carved out of its history.
+    """
+    if path != '.':
+        return [path]
+    others = sorted(p for p in packages.values() if p != '.')
+    return ['.', *(f':(exclude){p}' for p in [*others, '.github', 'tool'])]
+
+
 def build_plan(root, packages, target, bump, published, source_sha):
     root = Path(root)
     packages = {name: str(Path(path)) for name, path in packages.items()}
@@ -211,7 +223,7 @@ def build_plan(root, packages, target, bump, published, source_sha):
         prefix = '' if path == '.' else path + '/'
         notes = git(root, 'log', '--pretty=format:- %s',
                     f'{baselines[name]}..{source_sha}' if baselines[name] else source_sha,
-                    '--', path).splitlines()[:50]
+                    '--', *note_pathspec(path, packages)).splitlines()[:50]
         for (_, dep), value in sorted(floor_updates[name].items()):
             notes.append(f'- Require {dep} ^{value}.')
         if not notes:

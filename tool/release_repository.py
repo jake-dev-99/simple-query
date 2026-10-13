@@ -36,9 +36,10 @@ def archive_fingerprint(raw):
 
 
 class Repository:
-    def __init__(self, root, *, flutter='flutter', env=None):
+    def __init__(self, root, *, flutter='flutter', env=None, validation_timeout=1200):
         self.root = Path(root).resolve()
         self.flutter = flutter
+        self.validation_timeout = validation_timeout
         self.env = {**os.environ, **(env or {}), 'PUB_MAX_HTTP_RETRIES': '1'}
 
     def git(self, *args, input=None, env=None, check=True):
@@ -216,16 +217,18 @@ class Repository:
                 commands.append((directory, ['analyze', '--no-fatal-warnings']))
                 if (directory / 'test').is_dir():
                     commands.append((directory, ['test']))
+                # Packaging problems (license, changelog, size, pubspec fields)
+                # do not depend on hosted dependencies: find them before the
+                # release commit lands on main.
+                commands.append((directory, ['pub', 'publish', '--dry-run']))
                 if not linked:
-                    commands.append((directory, ['pub', 'publish', '--dry-run']))
                     artifact = Path(artifact_dir) / (current['name'] + '.tar.gz')
                     # SDK packaging applies the real .pubignore/.gitignore policy.
                     # --to-archive writes locally and never initiates an upload.
                     commands.append((directory, ['pub', 'publish', '--to-archive', str(artifact)]))
                 for command_dir, command in commands:
                     print(f'Validate {current["name"]} {current["version"]} ({"source graph" if linked else "hosted"}): {" ".join(command)}', flush=True)
-                    result = subprocess.run([self.flutter, *command], cwd=command_dir, env=self.env,
-                                            text=True, capture_output=True)
+                    result = self.run_flutter(command, command_dir, current['name'])
                     if result.returncode:
                         output = result.stdout + result.stderr
                         from release_services import Deferred, upload_deadline
@@ -235,6 +238,15 @@ class Repository:
                         raise Blocked(f'{current["name"]} validation failed:\n{output[-8000:]}')
                 if not linked:
                     current['artifact_fingerprint'] = archive_fingerprint(artifact.read_bytes())
+
+    def run_flutter(self, command, cwd, name):
+        """Run one validation command; a hung SDK blocks the batch for attention."""
+        try:
+            return subprocess.run([self.flutter, *command], cwd=cwd, env=self.env, text=True,
+                                  capture_output=True, timeout=self.validation_timeout)
+        except subprocess.TimeoutExpired as error:
+            raise Blocked(f'{name} validation timed out after {self.validation_timeout}s: '
+                          f'{" ".join(command)}') from error
 
     def verify_receipt(self, plan, package, receipt, pub):
         url = receipt.get('archive_url', '')
