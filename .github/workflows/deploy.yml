@@ -25,15 +25,9 @@ on:
       - 'simple_query_linux-v*'
       - 'simple_query_windows-v*'
       - 'simple_query_shared-v*'
-  # Manual re-fire for an existing tag — e.g. transient pub.dev
-  # outage swallowed the original tag-push run, or an OIDC config
-  # was fixed and the publish needs to be retried against the same
-  # tag. The `tag` input must be an existing tag name (e.g.
-  # `simple_query_android-v0.2.1`); the resolve step keys deploys
-  # off that exact value.
-  #
-  # Dispatch a retry on the existing tag ref so the OIDC ref claim matches
-  # pub.dev's tag pattern. Keep the original tag and package version.
+  # Manual dispatch remains for inspection/validation. Pub.dev automated upload
+  # requires the original tag-push event: recover through Cut Release resume or
+  # Re-run failed jobs on that original run. Never move/delete a package tag.
   workflow_dispatch:
     inputs:
       tag:
@@ -91,6 +85,9 @@ jobs:
           echo "::notice::Resolved deploy tag: $tag"
 
   publish:
+    # A 429 reaches the durable coordinator immediately; never retry inside pub.
+    env:
+      PUB_MAX_HTTP_RETRIES: '1'
     needs: resolve-tag
     permissions:
       id-token: write
@@ -156,7 +153,7 @@ jobs:
           RESOLVED_TAG: ${{ needs.resolve-tag.outputs.tag }}
           PACKAGE_NAME: ${{ matrix.package.name }}
         run: |
-          expected="${RESOLVED_TAG#${PACKAGE_NAME}-v}"
+          expected="${RESOLVED_TAG#"${PACKAGE_NAME}-v"}"
           actual="$(grep '^version:' pubspec.yaml | sed 's/version:[[:space:]]*//')"
           if [ "$expected" != "$actual" ]; then
             echo "::error::Tag ${RESOLVED_TAG} does not match pubspec version ${actual} (expected ${expected})"
@@ -173,7 +170,15 @@ jobs:
       - name: Publish
         # Flutter supplies FLUTTER_ROOT for pub's SDK validation.
         # setup-dart has registered the temporary OIDC credential.
+        # Only the original tag-push event uploads; see workflow_dispatch above.
         timeout-minutes: 2
-        if: startsWith(needs.resolve-tag.outputs.tag, format('{0}-v', matrix.package.name))
+        if: github.event_name == 'push' && startsWith(needs.resolve-tag.outputs.tag, format('{0}-v', matrix.package.name))
         working-directory: ${{ matrix.package.path }}
         run: flutter pub publish --force
+
+      - name: Validate publish (dry run)
+        # Manual dispatch inspects the tag without uploading.
+        timeout-minutes: 2
+        if: github.event_name != 'push' && startsWith(needs.resolve-tag.outputs.tag, format('{0}-v', matrix.package.name))
+        working-directory: ${{ matrix.package.path }}
+        run: flutter pub publish --dry-run

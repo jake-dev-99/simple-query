@@ -1,25 +1,22 @@
 name: Cut Release
 
-# Manual workflow that bumps a package's pubspec version, generates a
-# CHANGELOG entry from git log since the last tag for that package,
-# commits the bump + entry, tags the commit, and pushes both. The tag
-# push triggers the "Deploy" workflow which runs the canonical pub.dev OIDC
-# publish flow.
-#
-# Replaces the old `auto-tag.yml` (which fired on every main merge and
-# was the root cause of orphan-tag drift). Tags only exist now when a
-# human deliberately invokes this workflow.
-#
-# Choose `package = all` to cut a coordinated release that bumps every
-# package in this repo to the same patch / minor / major increment in
-# a single commit + tag set.
-
+# A manual cut authorizes one immutable batch. Scheduled runs only resume it.
+# Publication remains in the original tag-push Deploy workflow for pub.dev OIDC.
 on:
+  schedule:
+    - cron: '7 * * * *'
   workflow_dispatch:
     inputs:
-      package:
-        description: 'Package to release (or `all` for coordinated bump)'
+      operation:
+        description: 'Cut a new batch, resume an existing batch, or cancel remaining work'
         required: true
+        default: cut
+        type: choice
+        options: [cut, resume, cancel]
+      package:
+        description: 'all selects changed packages and affected dependents'
+        required: true
+        default: all
         type: choice
         options:
           - all
@@ -32,36 +29,32 @@ on:
           - simple_query_windows
           - simple_query_shared
       bump:
-        description: 'Semver bump'
+        description: 'Apply this increment to each selected package'
         required: true
         default: patch
         type: choice
-        options:
-          - patch
-          - minor
-          - major
+        options: [patch, minor, major]
       dry_run:
-        description: 'Compute next version + CHANGELOG without pushing'
-        required: false
+        description: 'Preview and validate without writing release state or pushing'
         default: false
         type: boolean
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
-  group: release-${{ github.workflow }}
+  group: release-batch-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
   cut-release:
-    name: Cut release
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 50
     steps:
       - name: Generate app token
         id: app-token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
         with:
           app-id: ${{ vars.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -78,164 +71,31 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           channel: stable
 
-      - name: Cut release
+      - name: Install release tooling
+        run: python3 -m pip install -r tool/release-requirements.txt
+
+      - name: Coordinate batch release
         env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          OPERATION: ${{ inputs.operation }}
           PACKAGE: ${{ inputs.package }}
           BUMP: ${{ inputs.bump }}
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
-
-          declare -A pkgs=(
-            [simple_query]="packages/simple_query"
-            [simple_query_platform_interface]="packages/simple_query_platform_interface"
-            [simple_query_android]="packages/simple_query_android"
-            [simple_query_ios]="packages/simple_query_ios"
-            [simple_query_macos]="packages/simple_query_macos"
-            [simple_query_linux]="packages/simple_query_linux"
-            [simple_query_windows]="packages/simple_query_windows"
-            [simple_query_shared]="packages/simple_query_shared"
-          )
-
-          if [ "$PACKAGE" = "all" ]; then
-            targets=("${!pkgs[@]}")
+          if [ "$EVENT_NAME" = "schedule" ]; then
+            args=(--operation resume --scheduled)
           else
-            if [ -z "${pkgs[$PACKAGE]+_}" ]; then
-              echo "::error::Unknown package: $PACKAGE"
-              exit 1
-            fi
-            targets=("$PACKAGE")
+            args=(--operation "${OPERATION:-cut}" --package "${PACKAGE:-all}" --bump "${BUMP:-patch}")
+            if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
           fi
-
-          bump_version() {
-            local v="$1" mode="$2"
-            local base="${v%%-*}"
-            IFS='.' read -r major minor patch <<< "$base"
-            case "$mode" in
-              major) major=$((major + 1)); minor=0; patch=0 ;;
-              minor) minor=$((minor + 1)); patch=0 ;;
-              patch) patch=$((patch + 1)) ;;
-              *) echo "::error::unknown bump: $mode"; exit 1 ;;
-            esac
-            echo "${major}.${minor}.${patch}"
-          }
-
-          new_tags=()
-          summary=""
-
-          validation_dir=""
-          trap 'if [ -n "$validation_dir" ]; then rm -rf -- "$validation_dir"; fi' EXIT
-
-          for pkg in "${targets[@]}"; do
-            dir="${pkgs[$pkg]}"
-            pubspec="${dir}/pubspec.yaml"
-            changelog="${dir}/CHANGELOG.md"
-
-            current="$(grep '^version:' "$pubspec" | sed 's/version:[[:space:]]*//' | tr -d '\r')"
-            next="$(bump_version "$current" "$BUMP")"
-            tag="${pkg}-v${next}"
-
-            # Workspace links do not prove the published dependency graph.
-            # Validate a separate package copy, leaving checkout overrides intact.
-            validation_dir="$(mktemp -d)"
-            cp -R "$dir/." "$validation_dir/"
-            find "$validation_dir" -name pubspec_overrides.yaml -type f -delete
-            (
-              cd "$validation_dir"
-              flutter pub get --no-example
-              flutter analyze --no-fatal-warnings
-            )
-            rm -rf -- "$validation_dir"
-            validation_dir=""
-
-            prev_tag="$(git tag --merged HEAD --list "${pkg}-v*" | sort -V | tail -1 || true)"
-
-            if [ -n "$prev_tag" ]; then
-              entries="$(git log "${prev_tag}..HEAD" --pretty=format:'- %s' -- "$dir" 2>/dev/null || true)"
-              range_label="${prev_tag}..HEAD"
-            else
-              entries="$(git log HEAD --pretty=format:'- %s' -- "$dir" 2>/dev/null | head -50 || true)"
-              range_label="initial release (last 50 commits in $dir)"
-            fi
-            [ -z "$entries" ] && entries="- (no commits in $dir since ${prev_tag:-repo init})"
-
-            # Build the CHANGELOG entry and per-package summary via
-            # printf rather than multi-line bash literals — a literal
-            # with an unindented line (e.g. the trailing `"` at column
-            # 1) breaks the YAML `run: |` block-scalar indent contract
-            # and the whole workflow fails to parse before it can run.
-            entry_block=$(printf '## %s\n\n%s\n' "$next" "$entries")
-
-            summary+="$(printf '\n=== %s ===\n  current:  %s\n  next:     %s\n  tag:      %s\n  range:    %s\n%s\n' \
-              "$pkg" "$current" "$next" "$tag" "$range_label" "$entries")"
-
-            if [ "$DRY_RUN" = "true" ]; then
-              continue
-            fi
-
-            sed -i -E "s/^version:[[:space:]]*.*$/version: ${next}/" "$pubspec"
-            git add "$pubspec"
-
-            if [ -f "$changelog" ]; then
-              { printf '%s\n' "$entry_block"; cat "$changelog"; } > "${changelog}.new"
-              mv "${changelog}.new" "$changelog"
-            else
-              printf '%s\n' "$entry_block" > "$changelog"
-            fi
-            git add "$changelog"
-
-            new_tags+=("$tag")
-          done
-
-          echo "==================== Release plan ===================="
-          echo "$summary"
-          echo "======================================================"
-
-          if [ "$DRY_RUN" = "true" ]; then
-            echo "::notice::Dry run — no commits, no tags, no push."
-            exit 0
-          fi
-
-          # Defensive: if no staged changes, something went wrong upstream
-          # (file write failed, packages already at the bumped version, etc.).
-          # Aborting before tag creation prevents tags pointing at a stale
-          # commit that has nothing to do with the release.
-          if git diff --cached --quiet; then
-            echo "::error::No staged changes after bump — release.yml ran but no version updates were applied. Aborting before tag creation."
-            exit 1
-          fi
-
-          if [ ${#new_tags[@]} -eq 1 ]; then
-            git commit -m "chore(release): cut ${new_tags[0]}"
-          else
-            git commit -m "chore(release): cut ${#new_tags[@]} tags ($BUMP bump)"
-          fi
-
-          for tag in "${new_tags[@]}"; do
-            if git rev-parse "$tag" >/dev/null 2>&1; then
-              echo "::error::tag $tag already exists locally — abort"
-              exit 1
-            fi
-            if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
-              echo "::error::tag $tag already exists on origin — abort"
-              exit 1
-            fi
-            git tag -a "$tag" -m "Release $tag"
-          done
-
-          # Push commit first, then each tag individually. Separate
-          # pushes are required so that each tag push fires a distinct
-          # `push` webhook event — the Deploy workflow's `on: push:
-          # tags:` trigger keys off those events. App-token pushes
-          # (unlike GITHUB_TOKEN) DO trigger downstream workflows.
-          git push origin HEAD:main
-
-          for tag in "${new_tags[@]}"; do
-            git push origin "$tag"
-          done
-
-          echo "::notice::Pushed commit + ${#new_tags[@]} tag(s). The Deploy workflow will fire per tag."
+          python3 tool/release_coordinator.py "${args[@]}"

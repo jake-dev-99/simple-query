@@ -76,7 +76,7 @@ Capability behavior is explicitly platform- and domain-gated. Check capabilities
 | Migration from raw ContentProvider / native APIs | [docs/MIGRATION.md](docs/MIGRATION.md) |
 | Platform support matrix | [docs/PLATFORM_SUPPORT_MATRIX.md](docs/PLATFORM_SUPPORT_MATRIX.md) |
 | Platform extensions (index) | [docs/EXTENSIONS.md](docs/EXTENSIONS.md) |
-| Release process | [docs/RELEASE.md](docs/RELEASE.md) |
+| Release process | [UNFY-345 in Linear](https://linear.app/simple-zen/issue/UNFY-345/repair-plugin-dependency-floors-and-telephony-release-example) |
 
 ## Development
 
