@@ -44,8 +44,8 @@ on:
       - 'melos.yaml'
       - 'pubspec.yaml'
       - '.github/workflows/verify-native.yml'
-  # Same reason as verify.yml: any commit that reaches main (including the
-  # "Cut Release" bot's) has been through the native gate.
+  # Same reason as verify.yml: a commit that reaches main (including the
+  # "Cut Release" bot's) and touches these paths runs the native gate.
   push:
     branches: [main]
     paths: *native-paths
@@ -98,21 +98,24 @@ jobs:
         working-directory: example
         # Fail loudly if the example resolved simple_query_android anywhere
         # else; the native tests would otherwise exercise the wrong code.
+        # Reads the file Flutter's Gradle plugin loader uses for module paths.
         run: |
           set -euo pipefail
-          root_uri="$(jq -r '.packages[] | select(.name == "simple_query_android") | .rootUri' .dart_tool/package_config.json)"
-          if [ "$root_uri" != "../../packages/simple_query_android" ]; then
-            echo "::error::example resolved simple_query_android from '$root_uri', not the workspace"
+          plugin_path="$(jq -r '.plugins.android[] | select(.name == "simple_query_android") | .path' .flutter-plugins-dependencies)"
+          expected="$(realpath ../packages/simple_query_android)"
+          if [ -z "$plugin_path" ] || [ "$(realpath -m "$plugin_path")" != "$expected" ]; then
+            echo "::error::example resolved simple_query_android from '$plugin_path', not $expected"
             exit 1
           fi
 
       - name: Compile native side (debug APK)
         working-directory: example
-        # Also injects the gradlew wrapper + local.properties used below.
+        # Also injects the gradlew wrapper + local.properties used below,
+        # and leaves a warm Gradle daemon for the test step to reuse.
         run: flutter build apk --debug
 
       - name: Run native JVM unit tests
         working-directory: example/android
-        # --no-daemon: throwaway CI runner, a persistent Gradle daemon buys
-        # nothing. --stacktrace: full trace on failure (fail-loud stance).
-        run: ./gradlew :simple_query_android:testDebugUnitTest --console=plain --no-daemon --stacktrace
+        # No --no-daemon: reuse the daemon the APK build left configured.
+        # --stacktrace: full trace on failure (fail-loud stance).
+        run: ./gradlew :simple_query_android:testDebugUnitTest --console=plain --stacktrace
