@@ -44,8 +44,8 @@ on:
       - 'melos.yaml'
       - 'pubspec.yaml'
       - '.github/workflows/verify-native.yml'
-  # Same reason as verify.yml: a commit that reaches main (including the
-  # "Cut Release" bot's) and touches these paths runs the native gate.
+  # Like verify.yml, gate commits that reach main (including the "Cut
+  # Release" bot's), but only those touching the paths above.
   push:
     branches: [main]
     paths: *native-paths
@@ -94,11 +94,18 @@ jobs:
         # checkout's simple_query_android, not a hosted release.
         run: dart run melos bootstrap
 
+      - name: Compile native side (debug APK)
+        working-directory: example
+        # Also injects the gradlew wrapper + local.properties used below,
+        # and leaves a warm Gradle daemon for the test step to reuse.
+        run: flutter build apk --debug
+
       - name: Assert the example builds the workspace plugin
         working-directory: example
         # Fail loudly if the example resolved simple_query_android anywhere
         # else; the native tests would otherwise exercise the wrong code.
-        # Reads the file Flutter's Gradle plugin loader uses for module paths.
+        # Reads the file Flutter's Gradle plugin loader used for module paths
+        # in the APK build above.
         run: |
           set -euo pipefail
           plugin_path="$(jq -r '.plugins.android[] | select(.name == "simple_query_android") | .path' .flutter-plugins-dependencies)"
@@ -108,14 +115,15 @@ jobs:
             exit 1
           fi
 
-      - name: Compile native side (debug APK)
-        working-directory: example
-        # Also injects the gradlew wrapper + local.properties used below,
-        # and leaves a warm Gradle daemon for the test step to reuse.
-        run: flutter build apk --debug
-
       - name: Run native JVM unit tests
         working-directory: example/android
         # No --no-daemon: reuse the daemon the APK build left configured.
         # --stacktrace: full trace on failure (fail-loud stance).
         run: ./gradlew :simple_query_android:testDebugUnitTest --console=plain --stacktrace
+
+      - name: Stop Gradle daemons before the cache save
+        # setup-java's post step saves ~/.gradle after the job; a live daemon
+        # could still hold lock files there.
+        if: always()
+        working-directory: example/android
+        run: if [ -x gradlew ]; then ./gradlew --stop; fi
