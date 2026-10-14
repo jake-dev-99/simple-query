@@ -347,6 +347,31 @@ if sys.argv[1:] not in [['pub','get','--no-example'], ['analyze','--no-fatal-war
         with self.assertRaisesRegex(Blocked, 'intent'):
             self.repo.intent_sdk(plan)
 
+    # Purpose: Recover a checkpointed prepared commit that never reached remote main.
+    # /**
+    #  * @param self The real-git batch interrupted immediately before source push.
+    #  * @returns None; asserts a fresh runner recreates the exact commit without remote writes.
+    #  * @throws AssertionError if checkpoint recovery blocks or changes the frozen SHA.
+    #  */
+    def test_missing_prepared_commit_recreates_exact_source_before_sdk_selection(self):
+        from unittest.mock import Mock
+        self.repo.push_prepared = Mock(side_effect=RuntimeError('stopped before push'))
+        with self.assertRaisesRegex(RuntimeError, 'stopped before push'):
+            self.cut()
+        plan = self.journal.load()
+        prepared = plan['prepared_sha']
+        fresh_root = self.root.parent / (self.root.name + '-fresh')
+        subprocess.run(['git', 'clone', str(self.remote), str(fresh_root)], check=True, capture_output=True)
+        self.addCleanup(__import__('shutil').rmtree, fresh_root)
+        services = importlib.import_module('release_repository')
+        fresh = services.Repository(fresh_root, flutter=self.repo.flutter, env=self.repo.env)
+        self.assertNotEqual(fresh.git('cat-file', '-e', prepared + '^{commit}', check=False).returncode, 0)
+        identity = fresh.prepared_sdk(plan)
+        self.assertEqual(identity, plan['packaging_sdk'])
+        self.assertEqual(fresh.git('rev-parse', prepared + '^{commit}'), prepared)
+        self.assertEqual(fresh.git('rev-parse', 'origin/main'), plan['source_sha'])
+        self.assertEqual(plan['prepared_sha'], prepared)
+
     def test_batch_validates_and_publishes_in_dependency_order(self):
         self.assertEqual(self.cut(), 'complete')
         plan = self.journal.load()

@@ -286,5 +286,43 @@ class ToolchainTest(unittest.TestCase):
             self.module.resolve_batch_sdk({'plan': self.plan, 'journal': self.journal,
                                            'repository': self.repository, 'catalog': self.catalog})
 
+    # Purpose: Preserve original SDK identity when inspecting an immutable historical tag.
+    # /**
+    #  * @param self The selected tag with a committed pin or original Deploy proof.
+    #  * @returns None; asserts inspection ignores newer stable and rejects a wrong checkout.
+    #  * @throws AssertionError if inspection substitutes current SDK or another source.
+    #  */
+    def test_historical_inspection_uses_tag_sdk_or_original_deploy(self):
+        self.repository.git.return_value = 'e' * 40
+        self.repository.prepared_sdk.return_value = self.original
+        context = {'repository': self.repository, 'tag': 'demo-v1.0.1',
+                   'journal': self.journal, 'catalog': self.catalog}
+        self.assertEqual(self.module.inspection_sdk(context), self.original)
+        self.journal.run.assert_not_called()
+        self.repository.prepared_sdk.return_value = None
+        self.assertEqual(self.module.inspection_sdk(context), self.original)
+        self.repository.git.side_effect = ['d' * 40, 'e' * 40]
+        with self.assertRaisesRegex(Blocked, 'tag'):
+            self.module.inspection_sdk(context)
+
+    # Purpose: Exercise the workflow entry point when stable has advanced after a tag.
+    # /**
+    #  * @param self The pinned tag and newer official-stable catalog fixture.
+    #  * @returns None; asserts main emits the original SDK setup version.
+    #  * @throws AssertionError if manual inspection selects moving stable.
+    #  */
+    def test_inspect_main_emits_original_tag_sdk(self):
+        self.repository.git.return_value = 'e' * 40
+        self.repository.prepared_sdk.return_value = self.original
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder) / 'output'
+            environment = {'GITHUB_OUTPUT': str(output), 'GITHUB_ENV': str(Path(folder) / 'env'),
+                           'GITHUB_REPOSITORY': 'owner/repo', 'GH_TOKEN': 'fixture', 'INSPECT_TAG': 'demo-v1.0.1'}
+            with patch.dict(os.environ, environment, clear=True), patch.object(sys, 'argv', ['release_toolchain.py', '--inspect']), patch.object(self.module, 'PubClient') as pub:
+                pub.return_value.get.return_value = self.catalog
+                with patch('release_repository.Repository', return_value=self.repository), patch('release_github.GitHubClient', return_value=self.journal):
+                    self.module.main()
+            self.assertEqual(output.read_text(), 'current_version=3.47.7\nbatch_version=3.47.7\n')
+
 if __name__ == '__main__':
     unittest.main()

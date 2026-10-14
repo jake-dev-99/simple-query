@@ -192,6 +192,27 @@ def resolve_workflow_sdk(context):
     return {'current': current, 'batch': batch or current, 'context': batch_context}
 
 
+# Purpose: Inspect immutable tags with their original committed or proven packaging SDK.
+# /**
+#  * @param context The selected tag, checked-out repository, original runs and catalog.
+#  * @returns The SDK bound to that exact tag commit, including historical pre-pin source.
+#  * @throws Blocked when the checkout or original packaging evidence cannot be proven.
+#  */
+def inspection_sdk(context):
+    repository = context['repository']
+    sha = repository.git('rev-parse', 'HEAD')
+    tagged = repository.git('rev-parse', 'refs/tags/' + context['tag'] + '^{commit}')
+    if sha != tagged:
+        raise Blocked('Inspection checkout differs from selected tag')
+    identity = repository.prepared_sdk({'prepared_sha': sha})
+    if identity is None:
+        plan = {'prepared_sha': sha, 'packages': [{'tag': context['tag']}]}
+        identity = sdk_from_original_deploy({**context, 'plan': plan})
+    if released_sdk(context['catalog'], identity['version']) != identity:
+        raise Blocked('Inspection SDK differs from its official stable release')
+    return identity
+
+
 # Purpose: Configure exact SDK setup without mutating journals or release tags.
 # /**
 #  * @param None Workflow metadata comes from the existing trusted environment.
@@ -221,7 +242,11 @@ def main():
     pub = PubClient()
     catalog = pub.get(SDK_CATALOG)
     if args.inspect:
-        identity = released_sdk(catalog)
+        from release_github import GitHubClient
+        from release_repository import Repository
+        identity = inspection_sdk({'repository': Repository(root), 'tag': os.environ['INSPECT_TAG'],
+                                   'journal': GitHubClient(os.environ['GITHUB_REPOSITORY'], os.environ['GH_TOKEN']),
+                                   'catalog': catalog})
         selection = {'current': identity, 'batch': identity, 'context': {}}
     elif args.deploy:
         identity = decode_sdk((root / SDK_FILE).read_text())

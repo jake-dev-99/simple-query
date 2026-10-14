@@ -234,17 +234,22 @@ class Repository:
         except (ValueError, KeyError, TypeError) as error:
             raise Blocked('Immutable SDK intent is missing or malformed') from error
 
-    # Purpose: Read SDK evidence from the committed preparation rather than its journal.
+    # Purpose: Read committed SDK evidence, recreating an interrupted local checkpoint exactly.
     # /**
     #  * @param self The repository containing immutable prepared commits.
     #  * @param plan The source-bound release plan with an optional prepared SHA.
     #  * @returns The committed SDK identity, or None for pre-pin historical source.
-    #  * @throws Blocked when an existing committed SDK pin is malformed.
+    #  * @throws Blocked when source recreation differs from its SHA/intent or the pin is malformed.
     #  */
     def prepared_sdk(self, plan):
-        from release_toolchain import SDK_FILE, decode_sdk
+        from release_toolchain import SDK_FILE, decode_sdk, validate_sdk
         if not plan.get('prepared_sha'):
             return None
+        missing = self.git('cat-file', '-e', plan['prepared_sha'] + '^{commit}', check=False)
+        if missing.returncode:
+            if self.intent_sdk(plan) != validate_sdk(plan.get('packaging_sdk')):
+                raise Blocked('Missing prepared commit SDK differs from immutable intent')
+            self.prepare(plan)  # verifies recreated SHA before any source/SDK use
         pin = self.git('show', plan['prepared_sha'] + ':' + SDK_FILE, check=False)
         return decode_sdk(pin.stdout) if pin.returncode == 0 else None
 

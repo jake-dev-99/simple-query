@@ -118,12 +118,13 @@ class WorkflowTest(unittest.TestCase):
         missing = subprocess.run(['git', '-C', str(source), 'cat-file', '-e', invocation], capture_output=True)
         self.assertNotEqual(missing.returncode, 0)
         self.env.update(INPUT_EVENT_NAME='workflow_dispatch', GITHUB_SHA=invocation,
-                        RUNNER_TEMP=str(self.root), GITHUB_WORKSPACE=str(source),
+                        RUNNER_TEMP=str(self.root), GITHUB_WORKSPACE=str(source.parent),
                         GITHUB_ENV=str(self.root / 'env'))
         self.fake('python3', '#!/usr/bin/env bash\nif [ "$1" = "-m" ]; then exit 0; fi\ntest -f "$1" || exit 91\nprintf "%s\n" "$@"\n')
         result = self.step('deploy.yml', 'Select committed packaging SDK', source)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('--inspect', result.stdout.splitlines())
+        self.assertEqual(Path(result.stdout.splitlines()[-1]).resolve(), source.resolve())
         self.assertFalse((source / 'tool/release_toolchain.py').exists())
         self.assertEqual(subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip(), old)
 
