@@ -220,7 +220,11 @@ class Repository:
     def expected_sdk(self, plan):
         from release_toolchain import SDK_FILE, decode_sdk, validate_sdk
         if 'packaging_sdk' in plan:
-            return validate_sdk(plan['packaging_sdk'])
+            identity = validate_sdk(plan['packaging_sdk'])
+            pin = plan.get('files', {}).get(SDK_FILE)
+            if pin is not None and decode_sdk(pin) != identity:
+                raise Blocked('Frozen SDK file differs from batch metadata')
+            return identity
         context = json.loads(self.env.get('RELEASE_BATCH_SDK_CONTEXT', '{}'))
         if context:
             keys = ['batch_tag', 'source_sha', 'prepared_sha']

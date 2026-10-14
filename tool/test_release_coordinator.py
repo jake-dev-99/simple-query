@@ -272,9 +272,23 @@ if sys.argv[1:] not in [['pub','get','--no-example'], ['analyze','--no-fatal-war
         plan['packaging_sdk']['revision'] = 'b' * 40
         from release_services import Blocked
         before = self.trace.read_text()
-        with self.assertRaisesRegex(Blocked, 'Installed SDK'):
+        with self.assertRaisesRegex(Blocked, 'SDK'):
             self.repo.frozen_archive_fingerprint(plan, plan['packages'][-1])
         self.assertEqual(self.trace.read_text(), before)
+
+    # Purpose: Reject journal SDK drift on every direct receipt-recovery path.
+    # /**
+    #  * @param self The source-pinned release fixture and mutable journal identity.
+    #  * @returns None; asserts the prepared SDK pin remains authoritative.
+    #  * @throws AssertionError if divergent journal metadata overrides frozen source.
+    #  */
+    def test_receipt_sdk_metadata_cannot_override_frozen_source_pin(self):
+        self.assertEqual(self.cut(), 'complete')
+        plan = self.journal.load()
+        plan['packaging_sdk']['revision'] = 'b' * 40
+        from release_services import Blocked
+        with self.assertRaisesRegex(Blocked, 'Frozen SDK'):
+            self.repo.expected_sdk(plan)
 
     # Purpose: Reconcile a prior batch while retaining a newer SDK for a fresh cut.
     # /**
