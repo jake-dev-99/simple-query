@@ -40,6 +40,8 @@ class Repository:
         self.root = Path(root).resolve()
         self.flutter = flutter
         self.validation_timeout = validation_timeout
+        self._sdk_identities = {}
+        self._packaging_flutter = flutter
         self.env = {**os.environ, **(env or {}), 'PUB_MAX_HTTP_RETRIES': '1'}
 
     def git(self, *args, input=None, env=None, check=True):
@@ -193,9 +195,94 @@ class Repository:
                             continue
                     raise Blocked(f'{name} external dependency must resolve from pub.dev or a supported SDK')
 
+    # Purpose: Verify the actual SDK instead of trusting a mutable channel label.
+    # /**
+    #  * @param self The repository with explicitly configured SDK executables.
+    #  * @param binary The exact executable, or the current workflow SDK.
+    #  * @returns The installed stable version and full framework revision.
+    #  * @throws Blocked for an unusable, malformed or experimental SDK.
+    #  */
+    def installed_sdk(self, binary=None):
+        from release_toolchain import inspect_sdk
+        executable = binary or self.flutter
+        if executable not in self._sdk_identities:
+            self._sdk_identities[executable] = inspect_sdk({'binary': executable,
+                                                         'directory': self.root, 'env': self.env})
+        return self._sdk_identities[executable]
+
+    # Purpose: Verify the SDK authorization made before the mutable journal exists.
+    # /**
+    #  * @param self The repository with its fetched immutable intent tags.
+    #  * @param plan The expected batch identifier and frozen source commit.
+    #  * @returns The exact SDK identity recorded in the original intent tag.
+    #  * @throws Blocked when intent metadata or its source identity cannot be proven.
+    #  */
+    def intent_sdk(self, plan):
+        from release_toolchain import validate_sdk
+        tag = plan['batch_tag']
+        raw = self.git('for-each-ref', '--format=%(contents)', 'refs/tags/' + tag)
+        try:
+            intent = json.loads(raw)
+            if not isinstance(intent, dict):
+                raise Blocked('Immutable SDK intent must be a JSON object')
+            tagged = self.git('rev-parse', tag + '^{commit}')
+            if (intent.get('batch_tag') != tag or intent.get('source_sha') != plan['source_sha']
+                    or tagged != plan['source_sha']):
+                raise Blocked('SDK intent tag differs from frozen source identity')
+            return validate_sdk(intent['packaging_sdk'])
+        except (ValueError, KeyError, TypeError) as error:
+            raise Blocked('Immutable SDK intent is missing or malformed') from error
+
+    # Purpose: Bind historic recovery and local preflight to explicit source evidence.
+    # /**
+    #  * @param self The repository and trusted workflow SDK context.
+    #  * @param plan The exact frozen source, prepared SHA and release files.
+    #  * @returns The recorded or independently source-bound SDK identity.
+    #  * @throws Blocked if no matching SDK provenance is available.
+    #  */
+    def expected_sdk(self, plan):
+        from release_toolchain import SDK_FILE, decode_sdk, validate_sdk
+        if 'packaging_sdk' in plan:
+            identity = validate_sdk(plan['packaging_sdk'])
+            pin = plan.get('files', {}).get(SDK_FILE)
+            if pin is not None and decode_sdk(pin) != identity:
+                raise Blocked('Frozen SDK file differs from batch metadata')
+            return identity
+        context = json.loads(self.env.get('RELEASE_BATCH_SDK_CONTEXT', '{}'))
+        if context:
+            keys = ['batch_tag', 'source_sha', 'prepared_sha']
+            if any(context.get(key) != plan.get(key) for key in keys):
+                raise Blocked('Workflow SDK proof belongs to another frozen batch')
+            return validate_sdk(context['sdk'])
+        pin = self.git('show', plan['source_sha'] + ':' + SDK_FILE, check=False)
+        if pin.returncode == 0:
+            return decode_sdk(pin.stdout)
+        raise Blocked('Frozen batch has no packaging SDK proof; resolve original Deploy evidence first')
+
+    # Purpose: Select only a binary matching the frozen SDK, including prior batches.
+    # /**
+    #  * @param self The repository with current and optional prior-batch SDK paths.
+    #  * @param plan The source-bound release identity.
+    #  * @returns The executable with exactly the expected version and revision.
+    #  * @throws Blocked when configured SDKs cannot reproduce the frozen identity.
+    #  */
+    def sdk_flutter(self, plan):
+        expected = self.expected_sdk(plan)
+        executables = [self.flutter]
+        batch_binary = self.env.get('RELEASE_BATCH_FLUTTER')
+        if batch_binary and batch_binary not in executables:
+            executables.append(batch_binary)
+        for executable in executables:
+            if self.installed_sdk(executable) == expected:
+                self._packaging_flutter = executable
+                plan['packaging_sdk'] = expected
+                return executable
+        raise Blocked('Installed SDK does not match frozen packaging version and revision')
+
     def validate(self, plan, package=None, *, linked=False):
+        self.sdk_flutter(plan)
         packages = [package] if package else plan['packages']
-        with self.snapshot(plan) as root, tempfile.TemporaryDirectory(prefix='release-artifact-') as artifact_dir:
+        with self.snapshot(plan) as root:
             for current in packages:
                 self.validate_sources(root, root / current['path'], plan)
             if linked:
@@ -221,28 +308,61 @@ class Repository:
                 # do not depend on hosted dependencies: find them before the
                 # release commit lands on main.
                 commands.append((directory, ['pub', 'publish', '--dry-run']))
-                if not linked:
-                    artifact = Path(artifact_dir) / (current['name'] + '.tar.gz')
-                    # SDK packaging applies the real .pubignore/.gitignore policy.
-                    # --to-archive writes locally and never initiates an upload.
-                    commands.append((directory, ['pub', 'publish', '--to-archive', str(artifact)]))
                 for command_dir, command in commands:
                     print(f'Validate {current["name"]} {current["version"]} ({"source graph" if linked else "hosted"}): {" ".join(command)}', flush=True)
-                    result = self.run_flutter(command, command_dir, current['name'])
-                    if result.returncode:
-                        output = result.stdout + result.stderr
-                        from release_services import Deferred, upload_deadline
-                        deadline = upload_deadline(output, __import__('time').time())
-                        if deadline:
-                            raise Deferred(deadline, f'Validation quota for {current["name"]}')
-                        raise Blocked(f'{current["name"]} validation failed:\n{output[-8000:]}')
+                    self.run_checked_flutter({'command': command, 'cwd': command_dir,
+                                              'name': current['name']})
                 if not linked:
-                    current['artifact_fingerprint'] = archive_fingerprint(artifact.read_bytes())
+                    current['artifact_fingerprint'] = self.frozen_archive_fingerprint(plan, current)
+
+    # Purpose: Stop validation and packaging on an SDK failure or quota response.
+    # /**
+    #  * @param self The repository and its configured stable Flutter process.
+    #  * @param options Named command arguments, working directory and package name.
+    #  * @returns None after a successful SDK command.
+    #  * @throws Blocked on validation failure, or Deferred on a quota cooldown.
+    #  */
+    def run_checked_flutter(self, options):
+        command = options['command']
+        cwd = options['cwd']
+        name = options['name']
+        result = self.run_flutter(command, cwd, name)
+        if result.returncode:
+            output = result.stdout + result.stderr
+            from release_services import Deferred, upload_deadline
+            deadline = upload_deadline(output, __import__('time').time())
+            if deadline:
+                raise Deferred(deadline, f'Validation quota for {name}')
+            raise Blocked(f'{name} validation failed:\n{output[-8000:]}')
+
+    # Purpose: Derive complete SDK archive evidence from untouched frozen source.
+    # /**
+    #  * @param self The repository with the configured stable Flutter SDK.
+    #  * @param plan The immutable source SHA and frozen release manifest files.
+    #  * @param package The selected package name, path, and release version.
+    #  * @returns The fingerprint of every file packaged by the SDK.
+    #  * @throws Blocked on invalid sources or SDK failure; Deferred on quotas.
+    #  */
+    def frozen_archive_fingerprint(self, plan, package):
+        # Example resolution and tests may generate files in their own sandbox.
+        # Package a separate clean snapshot using the same preparation as Deploy.
+        self.sdk_flutter(plan)
+        with self.snapshot(plan) as root, tempfile.TemporaryDirectory(prefix='release-artifact-') as temp:
+            directory = root / package['path']
+            self.validate_sources(root, directory, plan)
+            artifact = Path(temp) / (package['name'] + '.tar.gz')
+            for command in [['pub', 'get', '--no-example'],
+                            ['pub', 'publish', '--to-archive', str(artifact)]]:
+                print(f'Archive {package["name"]} {package["version"]} (frozen source): '
+                      f'{" ".join(command)}', flush=True)
+                self.run_checked_flutter({'command': command, 'cwd': directory,
+                                          'name': package['name']})
+            return archive_fingerprint(artifact.read_bytes())
 
     def run_flutter(self, command, cwd, name):
         """Run one validation command; a hung SDK blocks the batch for attention."""
         try:
-            return subprocess.run([self.flutter, *command], cwd=cwd, env=self.env, text=True,
+            return subprocess.run([self._packaging_flutter, *command], cwd=cwd, env=self.env, text=True,
                                   capture_output=True, timeout=self.validation_timeout)
         except subprocess.TimeoutExpired as error:
             raise Blocked(f'{name} validation timed out after {self.validation_timeout}s: '
@@ -256,9 +376,12 @@ class Repository:
         raw = pub.get(url, binary=True)
         if raw is None or hashlib.sha256(raw).hexdigest() != receipt.get('archive_sha256'):
             raise Blocked('Published artifact archive checksum is missing or different')
-        expected = package.get('artifact_fingerprint')
-        if not expected:
+        if not package.get('artifact_fingerprint'):
             self.validate(plan, package, linked=False)
             expected = package['artifact_fingerprint']
+        else:
+            expected = self.frozen_archive_fingerprint(plan, package)
         if archive_fingerprint(raw) != expected:
             raise Blocked(f'Published artifact for {package["name"]} does not match frozen source')
+        # This is derived evidence, never the authority for frozen source identity.
+        package['artifact_fingerprint'] = expected

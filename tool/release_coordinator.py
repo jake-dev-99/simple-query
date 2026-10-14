@@ -49,6 +49,11 @@ class Coordinator:
                         for name in (manifest.get(section) or {}) if name in records}
             if package['prerequisites'] != expected:
                 raise Blocked('Journal prerequisites differ from frozen dependency graph')
+        from release_toolchain import SDK_FILE, validate_sdk
+        if SDK_FILE in plan['files']:
+            allowed.add(SDK_FILE)
+            if validate_sdk(json.loads(plan['files'][SDK_FILE])) != validate_sdk(plan.get('packaging_sdk')):
+                raise Blocked('Frozen SDK file differs from the batch identity')
         if set(plan['files']) != allowed:
             raise Blocked('Journal contains files outside the selected release manifests/changelogs')
         seen = set()
@@ -183,7 +188,11 @@ class Coordinator:
             previous = publication_times({'versions': [{'published': p['published_at']}
                 for p in plan['packages'] if p.get('published_at')]})
             self.journal.known_publications = getattr(self.journal, 'known_publications', []) + previous
-        plan = {'schema': 1, 'source_sha': self.repo.source_sha(), 'prepared_sha': None,
+        sdk = self.repo.installed_sdk()
+        expected_sdk = self.repo.env.get('RELEASE_CURRENT_SDK')
+        if expected_sdk and json.loads(expected_sdk) != sdk:
+            raise Blocked('Current installed SDK differs from the selected official stable release')
+        plan = {'schema': 1, 'packaging_sdk': sdk, 'source_sha': self.repo.source_sha(), 'prepared_sha': None,
                 'status': 'planning', 'phase': 'planning', 'not_before': 0,
                 'error': None, 'package_paths': self.packages, 'packages': [], 'files': {},
                 'target': package, 'bump': bump, 'created_at': self.now(),
@@ -213,6 +222,8 @@ class Coordinator:
             for selected in candidate['packages']:
                 if published[selected['name']] is None:
                     raise Blocked(f'{selected["name"]} needs its first manual pub.dev publication before automated cuts')
+            from release_toolchain import SDK_FILE
+            candidate['files'][SDK_FILE] = json.dumps(plan['packaging_sdk'], indent=2) + '\n'
             plan.update(candidate, status='planned', phase='preflight')
             plan.pop('planning_metadata', None)
             print('Release plan:\n' + json.dumps(plan['packages'], indent=2), flush=True)
