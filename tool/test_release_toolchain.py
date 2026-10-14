@@ -181,6 +181,22 @@ class ToolchainTest(unittest.TestCase):
                                                    'catalog': self.catalog, 'operation': 'cut'})
         self.assertEqual(result['batch'], self.original)
 
+    # Purpose: Inspect every cancelled package before choosing a recovery SDK.
+    # /**
+    #  * @param self The multi-package batch with one matching and one wrong tag.
+    #  * @returns None; asserts an earlier valid tag cannot mask later source drift.
+    #  * @throws AssertionError if tag inspection returns before checking the batch.
+    #  */
+    def test_later_cancelled_package_tag_mismatch_is_not_masked(self):
+        self.plan['status'] = 'cancelled'
+        self.plan['packages'].append({'name': 'second', 'tag': 'second-v1.0.1',
+                                       'state': 'pending', 'run_id': None})
+        repository = Mock()
+        repository.remote_tag_sha.side_effect = ['e' * 40, 'f' * 40]
+        with self.assertRaisesRegex(Blocked, 'Cancelled package tag'):
+            self.module.needs_batch_sdk({'plan': self.plan, 'repository': repository,
+                                         'operation': 'cut'})
+
 
 if __name__ == '__main__':
     unittest.main()

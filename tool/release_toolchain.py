@@ -148,16 +148,17 @@ def needs_batch_sdk(context):
     if plan.get('prepared_sha') is None:
         return False
     repository = context.get('repository')
+    required = False
     for package in plan['packages']:
         if package['state'] in ('tagged', 'published') or package.get('run_id') is not None:
-            return True
+            required = True
         if repository is not None:
             tagged = repository.remote_tag_sha(package['tag'])
             if tagged is not None and tagged != plan['prepared_sha']:
                 raise Blocked('Cancelled package tag differs from frozen source')
             if tagged is not None:
-                return True
-    return False
+                required = True
+    return required
 
 
 # Purpose: Let a fresh current-stable cut also reconcile an older frozen batch.
