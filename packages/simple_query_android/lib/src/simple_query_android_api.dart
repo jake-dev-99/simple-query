@@ -11,9 +11,8 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
   SimpleQueryAndroidApi({
     p.QueryHostApi? hostApi,
     bool registerFlutterApi = true,
-    bool enforceAndroidPlatformCheck = true,
-  })  : _hostApi = hostApi ?? p.QueryHostApi(),
-        _enforceAndroidPlatformCheck = enforceAndroidPlatformCheck {
+    this._enforceAndroidPlatformCheck = true,
+  }) : _hostApi = hostApi ?? p.QueryHostApi() {
     if (registerFlutterApi) {
       p.QueryFlutterApi.setUp(this);
     }
