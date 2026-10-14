@@ -290,6 +290,21 @@ if sys.argv[1:] not in [['pub','get','--no-example'], ['analyze','--no-fatal-war
         with self.assertRaisesRegex(Blocked, 'Frozen SDK'):
             self.repo.expected_sdk(plan)
 
+    # Purpose: Keep matching journal copies from replacing committed SDK evidence.
+    # /**
+    #  * @param self The real-git fixture containing the prepared SDK source file.
+    #  * @returns None; asserts two mutated journal fields cannot authorize recovery.
+    #  * @throws AssertionError if prepared-source identity is bypassed.
+    #  */
+    def test_matching_journal_sdk_copies_cannot_override_prepared_commit(self):
+        self.assertEqual(self.cut(), 'complete')
+        plan = self.journal.load()
+        plan['packaging_sdk']['revision'] = 'b' * 40
+        plan['files']['tool/release-sdk.json'] = json.dumps(plan['packaging_sdk'])
+        from release_services import Blocked
+        with self.assertRaisesRegex(Blocked, 'SDK'):
+            self.repo.expected_sdk(plan)
+
     # Purpose: Reconcile a prior batch while retaining a newer SDK for a fresh cut.
     # /**
     #  * @param self The fixture with separately installed current and prior SDKs.

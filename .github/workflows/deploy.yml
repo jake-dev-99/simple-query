@@ -144,7 +144,20 @@ jobs:
       - name: Select committed packaging SDK
         if: startsWith(needs.resolve-tag.outputs.tag, format('{0}-v', matrix.package.name))
         id: release-sdk
-        run: python3 tool/release_toolchain.py --deploy
+        env:
+          INPUT_EVENT_NAME: ${{ github.event_name }}
+        run: |
+          script=tool/release_toolchain.py
+          mode=--deploy
+          if [ "$INPUT_EVENT_NAME" = "workflow_dispatch" ]; then
+            tooling="$(mktemp -d "$RUNNER_TEMP/release-tooling.XXXXXX")"
+            git archive "$GITHUB_SHA" tool | tar -x -C "$tooling"
+            python3 -m pip install -r "$tooling/tool/release-requirements.txt"
+            script="$tooling/tool/release_toolchain.py"
+            mode=--inspect
+          fi
+          echo "RELEASE_TOOLCHAIN_SCRIPT=$script" >> "$GITHUB_ENV"
+          python3 "$script" "$mode" --source-root "$GITHUB_WORKSPACE"
 
       - name: Install committed packaging SDK
         if: startsWith(needs.resolve-tag.outputs.tag, format('{0}-v', matrix.package.name))
@@ -155,7 +168,7 @@ jobs:
 
       - name: Verify installed packaging SDK
         if: startsWith(needs.resolve-tag.outputs.tag, format('{0}-v', matrix.package.name))
-        run: python3 tool/release_toolchain.py --verify
+        run: python3 "$RELEASE_TOOLCHAIN_SCRIPT" --verify --source-root "$GITHUB_WORKSPACE"
 
       - name: Verify pubspec version matches tag
         if: startsWith(needs.resolve-tag.outputs.tag, format('{0}-v', matrix.package.name))

@@ -1,7 +1,11 @@
 """SDK provenance regressions use frozen identities and original Deploy records."""
 import json
+import os
+from pathlib import Path
+import sys
+import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from release_services import Blocked
 
@@ -33,6 +37,8 @@ class ToolchainTest(unittest.TestCase):
                      'status': 'blocked', 'files': {}, 'packages': [
                          {'name': 'demo', 'tag': 'demo-v1.0.1', 'run_id': 7,
                           'state': 'published'}]}
+        self.repository = Mock()
+        self.repository.prepared_sdk.return_value = None
         self.journal = Mock()
         self.journal.run.return_value = {'id': 7, 'status': 'completed', 'conclusion': 'success'}
         self.journal.logs.return_value = 'FLUTTER_ROOT: /opt/hostedtoolcache/flutter/stable-3.47.7-x64/flutter'
@@ -58,8 +64,9 @@ class ToolchainTest(unittest.TestCase):
     def test_prepared_sdk_pin_survives_stable_advance(self):
         self.plan['packaging_sdk'] = self.original
         self.plan['files']['tool/release-sdk.json'] = json.dumps(self.original)
+        self.repository.prepared_sdk.return_value = self.original
         result = self.module.resolve_batch_sdk({'plan': self.plan, 'journal': self.journal,
-                                                'catalog': self.catalog})
+                                                'catalog': self.catalog, 'repository': self.repository})
         self.assertEqual(result, self.original)
         self.journal.logs.assert_not_called()
 
@@ -157,6 +164,7 @@ class ToolchainTest(unittest.TestCase):
         self.plan['status'] = 'cancelled'
         self.plan['packages'][0].update(state='pending', run_id=None)
         repository = Mock()
+        repository.prepared_sdk.return_value = None
         repository.remote_tag_sha.return_value = None
         result = self.module.resolve_workflow_sdk({'plan': self.plan, 'journal': self.journal,
                                                    'repository': repository,
@@ -175,6 +183,7 @@ class ToolchainTest(unittest.TestCase):
         self.plan['status'] = 'cancelled'
         self.plan['packages'][0].update(state='pending', run_id=None)
         repository = Mock()
+        repository.prepared_sdk.return_value = None
         repository.remote_tag_sha.return_value = 'e' * 40
         result = self.module.resolve_workflow_sdk({'plan': self.plan, 'journal': self.journal,
                                                    'repository': repository,
@@ -192,6 +201,7 @@ class ToolchainTest(unittest.TestCase):
         self.plan['packages'].append({'name': 'second', 'tag': 'second-v1.0.1',
                                        'state': 'pending', 'run_id': None})
         repository = Mock()
+        repository.prepared_sdk.return_value = None
         repository.remote_tag_sha.side_effect = ['e' * 40, 'f' * 40]
         with self.assertRaisesRegex(Blocked, 'Cancelled package tag'):
             self.module.needs_batch_sdk({'plan': self.plan, 'repository': repository,
@@ -205,6 +215,7 @@ class ToolchainTest(unittest.TestCase):
     #  */
     def test_early_sdk_selection_must_match_immutable_intent(self):
         repository = Mock()
+        repository.prepared_sdk.return_value = None
         repository.intent_sdk.return_value = self.original
         for phase in ['planning', 'preflight', 'push', 'publication']:
             self.plan.update(phase=phase, prepared_sha=None, packaging_sdk=self.latest)
@@ -227,6 +238,53 @@ class ToolchainTest(unittest.TestCase):
             repository.git = Mock(return_value=raw)
             with self.assertRaises(Blocked):
                 repository.intent_sdk(self.plan)
+
+    # Purpose: Keep cancellation available without external catalogs or SDK setup.
+    # /**
+    #  * @param self The workflow selector with unavailable external services.
+    #  * @returns None; asserts cancel emits empty SDK outputs without network access.
+    #  * @throws AssertionError if cancellation calls the catalog or installs an SDK.
+    #  */
+    def test_cancel_main_needs_no_catalog_or_sdk(self):
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder) / 'output'
+            environment = {'OPERATION': 'cancel', 'GITHUB_OUTPUT': str(output)}
+            with patch.dict(os.environ, environment, clear=True), patch.object(sys, 'argv', ['release_toolchain.py']), patch.object(self.module, 'PubClient') as network:
+                self.module.main()
+            network.assert_not_called()
+            self.assertEqual(output.read_text(), 'current_version=\nbatch_version=\n')
+
+    # Purpose: Let failed cancellation without an artifact reach existing cooldown handling.
+    # /**
+    #  * @param self The cancelled legacy batch with a completed failed tag-push run.
+    #  * @returns None; asserts a fresh cut needs no historical packaging SDK.
+    #  * @throws AssertionError if a missing artifact is treated as a published receipt.
+    #  */
+    def test_failed_legacy_cancel_without_receipt_needs_no_batch_sdk(self):
+        self.plan.update(status='cancelled')
+        self.plan['packages'][0].update(state='tagged', version='1.0.1')
+        self.journal.run.return_value = {'id': 7, 'status': 'completed', 'conclusion': 'failure'}
+        pub = Mock()
+        pub.receipt.return_value = None
+        result = self.module.resolve_workflow_sdk({'plan': self.plan, 'journal': self.journal,
+                                                   'pub': pub, 'catalog': self.catalog, 'operation': 'cut'})
+        self.assertEqual(result['current'], self.latest)
+        self.assertEqual(result['context'], {})
+        self.journal.logs.assert_not_called()
+
+    # Purpose: Reject bootstrap SDK drift even when both mutable journal fields agree.
+    # /**
+    #  * @param self The historical source fixture with independently committed SDK proof.
+    #  * @returns None; asserts installer selection is bound to prepared source.
+    #  * @throws AssertionError if matching mutable fields replace the committed SDK.
+    #  */
+    def test_bootstrap_matching_journal_copies_cannot_override_prepared_source(self):
+        self.repository.prepared_sdk.return_value = self.original
+        self.plan['packaging_sdk'] = self.latest
+        self.plan['files']['tool/release-sdk.json'] = json.dumps(self.latest)
+        with self.assertRaisesRegex(Blocked, 'committed prepared source'):
+            self.module.resolve_batch_sdk({'plan': self.plan, 'journal': self.journal,
+                                           'repository': self.repository, 'catalog': self.catalog})
 
 if __name__ == '__main__':
     unittest.main()

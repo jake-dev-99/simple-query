@@ -117,21 +117,24 @@ def sdk_from_original_deploy(context):
 def resolve_batch_sdk(context):
     plan = context['plan']
     recorded = validate_sdk(plan['packaging_sdk']) if 'packaging_sdk' in plan else None
-    if not plan.get('prepared_sha') or plan.get('phase') in ('planning', 'preflight'):
-        repository = context.get('repository')
+    repository = context.get('repository')
+    if not plan.get('prepared_sha'):
         if repository is None or repository.intent_sdk(plan) != recorded:
             raise Blocked('Journal SDK differs from immutable batch intent')
-    frozen_pin = plan.get('files', {}).get(SDK_FILE)
-    if frozen_pin is not None:
-        pinned = decode_sdk(frozen_pin)
-        if recorded != pinned:
-            raise Blocked('Frozen SDK file differs from batch SDK identity')
-    elif recorded is not None and plan.get('phase') in ('planning', 'preflight'):
         pinned = recorded
     else:
-        pinned = sdk_from_original_deploy(context)
-        if recorded is not None and recorded != pinned:
-            raise Blocked('Recorded SDK differs from original Deploy evidence')
+        committed = repository.prepared_sdk(plan) if repository is not None else None
+        frozen_pin = plan.get('files', {}).get(SDK_FILE)
+        if committed is not None:
+            if recorded != committed or frozen_pin is None or decode_sdk(frozen_pin) != committed:
+                raise Blocked('Frozen SDK journal differs from committed prepared source')
+            pinned = committed
+        elif frozen_pin is not None:
+            raise Blocked('Frozen SDK journal pin is absent from committed prepared source')
+        else:
+            pinned = sdk_from_original_deploy(context)
+            if recorded is not None and recorded != pinned:
+                raise Blocked('Recorded SDK differs from original Deploy evidence')
     if released_sdk(context['catalog'], pinned['version']) != pinned:
         raise Blocked('Packaging SDK revision differs from its official release')
     return pinned
@@ -154,14 +157,20 @@ def needs_batch_sdk(context):
     repository = context.get('repository')
     required = False
     for package in plan['packages']:
-        if package['state'] in ('tagged', 'published') or package.get('run_id') is not None:
-            required = True
-        if repository is not None:
-            tagged = repository.remote_tag_sha(package['tag'])
-            if tagged is not None and tagged != plan['prepared_sha']:
-                raise Blocked('Cancelled package tag differs from frozen source')
-            if tagged is not None:
-                required = True
+        tagged = repository.remote_tag_sha(package['tag']) if repository is not None else None
+        if tagged is not None and tagged != plan['prepared_sha']:
+            raise Blocked('Cancelled package tag differs from frozen source')
+        evidence = (tagged is not None or package['state'] in ('tagged', 'published')
+                    or package.get('run_id') is not None)
+        if not evidence or package['state'] == 'aborted':
+            continue
+        pub = context.get('pub')
+        if pub is not None:
+            run = context['journal'].run(package, plan['prepared_sha'])
+            failed = run is not None and run['status'] == 'completed' and run['conclusion'] != 'success'
+            if failed and pub.receipt(package['name'], package['version']) is None:
+                continue
+        required = True
     return required
 
 
@@ -192,9 +201,16 @@ def resolve_workflow_sdk(context):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--deploy', action='store_true')
+    parser.add_argument('--inspect', action='store_true')
+    parser.add_argument('--source-root', type=Path)
     parser.add_argument('--verify', action='store_true')
     args = parser.parse_args()
-    root = Path(__file__).resolve().parents[1]
+    root = args.source_root or Path(__file__).resolve().parents[1]
+    operation = 'resume' if os.environ.get('EVENT_NAME') == 'schedule' else os.environ.get('OPERATION') or 'cut'
+    if operation == 'cancel' and not (args.deploy or args.inspect or args.verify):
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('current_version=\nbatch_version=\n')
+        return
     if args.verify:
         expected = decode_sdk(os.environ['RELEASE_CURRENT_SDK'])
         actual = inspect_sdk({'binary': 'flutter', 'directory': root, 'env': dict(os.environ)})
@@ -202,8 +218,12 @@ def main():
             raise Blocked('Installed SDK differs from the selected version and framework revision')
         print('Verified stable packaging SDK: ' + json.dumps(actual), flush=True)
         return
-    catalog = PubClient().get(SDK_CATALOG)
-    if args.deploy:
+    pub = PubClient()
+    catalog = pub.get(SDK_CATALOG)
+    if args.inspect:
+        identity = released_sdk(catalog)
+        selection = {'current': identity, 'batch': identity, 'context': {}}
+    elif args.deploy:
         identity = decode_sdk((root / SDK_FILE).read_text())
         if released_sdk(catalog, identity['version']) != identity:
             raise Blocked('Committed publication SDK is not its official stable release')
@@ -220,7 +240,7 @@ def main():
         operation = 'resume' if os.environ.get('EVENT_NAME') == 'schedule' else os.environ.get('OPERATION') or 'cut'
         selection = resolve_workflow_sdk({'plan': plan, 'journal': journal,
                                           'repository': repository,
-                                          'catalog': catalog, 'operation': operation})
+                                          'catalog': catalog, 'pub': pub, 'operation': operation})
     with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
         output.write(f'current_version={selection["current"]["version"]}\n')
         output.write(f'batch_version={selection["batch"]["version"]}\n')
