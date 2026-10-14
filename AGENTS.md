@@ -31,9 +31,22 @@ implements it, and `simple_query` is the public surface.
 
 ## Build · test · verify
 
-Dart `^3.6.0`; **melos** drives the workspace. Mirror CI
-(`.github/workflows/verify.yml`), a per-package analyze + test matrix.
-Before any push:
+Use released stable Flutter **3.47 or later** for workspace verification;
+**melos** drives the workspace. SDK floors are package-specific:
+`simple_query_android` requires Dart `^3.12.0` / Flutter `>=3.44.0`, and
+the built-in-Kotlin example requires Dart `^3.12.0` / Flutter `>=3.47.0`.
+Untouched packages retain their own declared floors (generally Dart `^3.6.0`);
+consult each `pubspec.yaml` rather than applying one workspace-wide floor.
+
+The example's Android toolchain is declared in
+`example/android/settings.gradle.kts` and the Gradle wrapper properties.
+Its Kotlin compiler dependency is resolved in settings before AGP loads;
+built-in Kotlin replaces application of `org.jetbrains.kotlin.android`.
+`android.newDsl=false` retains the configuration APIs required by stable
+Flutter; adopting AGP's new DSL is a separate migration.
+
+Mirror CI (`.github/workflows/verify.yml`), a per-package analyze + test
+matrix. Before any push:
 
 ```sh
 dart pub global activate melos   # if not installed
