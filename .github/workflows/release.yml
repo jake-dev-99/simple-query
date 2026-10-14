@@ -75,12 +75,36 @@ jobs:
         with:
           python-version: '3.12'
 
-      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
-        with:
-          channel: stable
-
       - name: Install release tooling
         run: python3 -m pip install -r tool/release-requirements.txt
+
+      - name: Select source-bound release SDKs
+        id: release-sdk
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          OPERATION: ${{ inputs.operation }}
+        run: python3 tool/release_toolchain.py
+
+      - name: Install prior batch SDK for reconciliation
+        if: steps.release-sdk.outputs.batch_version != steps.release-sdk.outputs.current_version
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          flutter-version: ${{ steps.release-sdk.outputs.batch_version }}
+
+      - name: Remember prior batch SDK executable
+        if: steps.release-sdk.outputs.batch_version != steps.release-sdk.outputs.current_version
+        run: echo "RELEASE_BATCH_FLUTTER=$FLUTTER_ROOT/bin/flutter" >> "$GITHUB_ENV"
+
+      - name: Install requested release SDK
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          flutter-version: ${{ steps.release-sdk.outputs.current_version }}
+
+      - name: Verify installed packaging SDK
+        run: python3 tool/release_toolchain.py --verify
 
       - name: Coordinate batch release
         env:

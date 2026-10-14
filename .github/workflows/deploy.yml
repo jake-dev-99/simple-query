@@ -141,10 +141,21 @@ jobs:
         uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1
         if: startsWith(needs.resolve-tag.outputs.tag, format('{0}-v', matrix.package.name))
 
-      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+      - name: Select committed packaging SDK
         if: startsWith(needs.resolve-tag.outputs.tag, format('{0}-v', matrix.package.name))
+        id: release-sdk
+        run: python3 tool/release_toolchain.py --deploy
+
+      - name: Install committed packaging SDK
+        if: startsWith(needs.resolve-tag.outputs.tag, format('{0}-v', matrix.package.name))
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           channel: stable
+          flutter-version: ${{ steps.release-sdk.outputs.current_version }}
+
+      - name: Verify installed packaging SDK
+        if: startsWith(needs.resolve-tag.outputs.tag, format('{0}-v', matrix.package.name))
+        run: python3 tool/release_toolchain.py --verify
 
       - name: Verify pubspec version matches tag
         if: startsWith(needs.resolve-tag.outputs.tag, format('{0}-v', matrix.package.name))

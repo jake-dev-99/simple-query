@@ -127,6 +127,9 @@ class CoordinatorTest(unittest.TestCase):
         flutter.write_text('''#!/usr/bin/env python3
 import json, os, pathlib, sys, tarfile
 import yaml
+if sys.argv[1:] == ['--version', '--machine']:
+ print(json.dumps({'frameworkVersion': '3.47.7', 'frameworkRevision': 'a'*40, 'channel': 'stable'}))
+ sys.exit(0)
 p=pathlib.Path.cwd(); spec=yaml.safe_load((p/'pubspec.yaml').read_text())
 with open(os.environ['GATE_TRACE'], 'a') as f:
  f.write(json.dumps({'name':spec['name'],'version':spec['version'],
@@ -238,6 +241,77 @@ if sys.argv[1:] not in [['pub','get','--no-example'], ['analyze','--no-fatal-war
         package['artifact_fingerprint'] = archive_fingerprint(output.getvalue())
         with self.assertRaisesRegex(Blocked, 'does not match frozen source'):
             self.repo.verify_receipt(plan, package, receipt, self.pub)
+
+    # Purpose: Avoid a second network-dependent archive build after fresh validation.
+    # /**
+    #  * @param self The coordinator fixture with a real source and published archive.
+    #  * @returns None; asserts recovery builds one complete archive on a cache miss.
+    #  * @throws AssertionError if receipt reconciliation repeats fresh SDK packaging.
+    #  */
+    def test_receipt_cache_miss_packages_frozen_source_once(self):
+        self.assertEqual(self.cut(), 'complete')
+        plan = self.journal.load()
+        package = plan['packages'][-1]
+        package.pop('artifact_fingerprint')
+        receipt = self.pub.receipt(package['name'], package['version'])
+        before = len(self.trace.read_text().splitlines())
+        self.repo.verify_receipt(plan, package, receipt, self.pub)
+        calls = [json.loads(line)['args'] for line in self.trace.read_text().splitlines()[before:]]
+        archives = [call for call in calls if call[:3] == ['pub', 'publish', '--to-archive']]
+        self.assertEqual(len(archives), 1)
+
+    # Purpose: Reject a moving SDK before rebuilding an immutable receipt archive.
+    # /**
+    #  * @param self The coordinator with an already frozen SDK identity.
+    #  * @returns None; asserts an installed different revision cannot package it.
+    #  * @throws AssertionError if SDK drift silently changes expected evidence.
+    #  */
+    def test_recovery_blocks_before_packaging_with_a_different_sdk(self):
+        self.assertEqual(self.cut(), 'complete')
+        plan = self.journal.load()
+        plan['packaging_sdk']['revision'] = 'b' * 40
+        from release_services import Blocked
+        before = self.trace.read_text()
+        with self.assertRaisesRegex(Blocked, 'Installed SDK'):
+            self.repo.frozen_archive_fingerprint(plan, plan['packages'][-1])
+        self.assertEqual(self.trace.read_text(), before)
+
+    # Purpose: Reconcile a prior batch while retaining a newer SDK for a fresh cut.
+    # /**
+    #  * @param self The fixture with separately installed current and prior SDKs.
+    #  * @returns None; asserts the frozen SDK binary is selected without downgrading current.
+    #  * @throws AssertionError if SDK selection loses either packaging identity.
+    #  */
+    def test_recovery_selects_frozen_binary_and_keeps_current_sdk(self):
+        self.assertEqual(self.cut(), 'complete')
+        plan = self.journal.load()
+        original_binary = self.repo.flutter
+        newer_binary = self.root / 'newer-flutter'
+        script = Path(original_binary).read_text().replace("'3.47.7'", "'3.50.0'")
+        script = script.replace("'frameworkRevision': 'a'*40", "'frameworkRevision': 'b'*40")
+        newer_binary.write_text(script)
+        newer_binary.chmod(0o755)
+        self.repo.flutter = str(newer_binary)
+        self.repo.env['RELEASE_BATCH_FLUTTER'] = original_binary
+        self.assertEqual(self.repo.sdk_flutter(plan), original_binary)
+        self.assertEqual(self.repo.installed_sdk()['version'], '3.50.0')
+        receipt = self.pub.receipt(plan['packages'][-1]['name'], plan['packages'][-1]['version'])
+        self.repo.verify_receipt(plan, plan['packages'][-1], receipt, self.pub)
+
+    # Purpose: Carry the same SDK identity in durable intent and prepared source.
+    # /**
+    #  * @param self The coordinator fixture with a stable installed SDK.
+    #  * @returns None; asserts both immutable release records contain its identity.
+    #  * @throws AssertionError if publishing cannot install the preflight SDK.
+    #  */
+    def test_sdk_identity_is_frozen_before_intent_and_in_prepared_source(self):
+        self.assertEqual(self.cut(), 'complete')
+        plan = self.journal.load()
+        intent = json.loads(self.fixture.git('for-each-ref', '--format=%(contents)',
+                                            'refs/tags/' + plan['batch_tag']))
+        pin = json.loads(self.fixture.git('show', plan['prepared_sha'] + ':tool/release-sdk.json'))
+        self.assertEqual(intent['packaging_sdk'], plan['packaging_sdk'])
+        self.assertEqual(pin, plan['packaging_sdk'])
 
     def test_batch_validates_and_publishes_in_dependency_order(self):
         self.assertEqual(self.cut(), 'complete')

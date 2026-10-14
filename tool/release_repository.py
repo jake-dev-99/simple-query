@@ -40,6 +40,8 @@ class Repository:
         self.root = Path(root).resolve()
         self.flutter = flutter
         self.validation_timeout = validation_timeout
+        self._sdk_identities = {}
+        self._packaging_flutter = flutter
         self.env = {**os.environ, **(env or {}), 'PUB_MAX_HTTP_RETRIES': '1'}
 
     def git(self, *args, input=None, env=None, check=True):
@@ -193,7 +195,65 @@ class Repository:
                             continue
                     raise Blocked(f'{name} external dependency must resolve from pub.dev or a supported SDK')
 
+    # Purpose: Verify the actual SDK instead of trusting a mutable channel label.
+    # /**
+    #  * @param self The repository with explicitly configured SDK executables.
+    #  * @param binary The exact executable, or the current workflow SDK.
+    #  * @returns The installed stable version and full framework revision.
+    #  * @throws Blocked for an unusable, malformed or experimental SDK.
+    #  */
+    def installed_sdk(self, binary=None):
+        from release_toolchain import inspect_sdk
+        executable = binary or self.flutter
+        if executable not in self._sdk_identities:
+            self._sdk_identities[executable] = inspect_sdk({'binary': executable,
+                                                         'directory': self.root, 'env': self.env})
+        return self._sdk_identities[executable]
+
+    # Purpose: Bind historic recovery and local preflight to explicit source evidence.
+    # /**
+    #  * @param self The repository and trusted workflow SDK context.
+    #  * @param plan The exact frozen source, prepared SHA and release files.
+    #  * @returns The recorded or independently source-bound SDK identity.
+    #  * @throws Blocked if no matching SDK provenance is available.
+    #  */
+    def expected_sdk(self, plan):
+        from release_toolchain import SDK_FILE, decode_sdk, validate_sdk
+        if 'packaging_sdk' in plan:
+            return validate_sdk(plan['packaging_sdk'])
+        context = json.loads(self.env.get('RELEASE_BATCH_SDK_CONTEXT', '{}'))
+        if context:
+            keys = ['batch_tag', 'source_sha', 'prepared_sha']
+            if any(context.get(key) != plan.get(key) for key in keys):
+                raise Blocked('Workflow SDK proof belongs to another frozen batch')
+            return validate_sdk(context['sdk'])
+        pin = self.git('show', plan['source_sha'] + ':' + SDK_FILE, check=False)
+        if pin.returncode == 0:
+            return decode_sdk(pin.stdout)
+        raise Blocked('Frozen batch has no packaging SDK proof; resolve original Deploy evidence first')
+
+    # Purpose: Select only a binary matching the frozen SDK, including prior batches.
+    # /**
+    #  * @param self The repository with current and optional prior-batch SDK paths.
+    #  * @param plan The source-bound release identity.
+    #  * @returns The executable with exactly the expected version and revision.
+    #  * @throws Blocked when configured SDKs cannot reproduce the frozen identity.
+    #  */
+    def sdk_flutter(self, plan):
+        expected = self.expected_sdk(plan)
+        executables = [self.flutter]
+        batch_binary = self.env.get('RELEASE_BATCH_FLUTTER')
+        if batch_binary and batch_binary not in executables:
+            executables.append(batch_binary)
+        for executable in executables:
+            if self.installed_sdk(executable) == expected:
+                self._packaging_flutter = executable
+                plan['packaging_sdk'] = expected
+                return executable
+        raise Blocked('Installed SDK does not match frozen packaging version and revision')
+
     def validate(self, plan, package=None, *, linked=False):
+        self.sdk_flutter(plan)
         packages = [package] if package else plan['packages']
         with self.snapshot(plan) as root:
             for current in packages:
@@ -259,6 +319,7 @@ class Repository:
     def frozen_archive_fingerprint(self, plan, package):
         # Example resolution and tests may generate files in their own sandbox.
         # Package a separate clean snapshot using the same preparation as Deploy.
+        self.sdk_flutter(plan)
         with self.snapshot(plan) as root, tempfile.TemporaryDirectory(prefix='release-artifact-') as temp:
             directory = root / package['path']
             self.validate_sources(root, directory, plan)
@@ -274,7 +335,7 @@ class Repository:
     def run_flutter(self, command, cwd, name):
         """Run one validation command; a hung SDK blocks the batch for attention."""
         try:
-            return subprocess.run([self.flutter, *command], cwd=cwd, env=self.env, text=True,
+            return subprocess.run([self._packaging_flutter, *command], cwd=cwd, env=self.env, text=True,
                                   capture_output=True, timeout=self.validation_timeout)
         except subprocess.TimeoutExpired as error:
             raise Blocked(f'{name} validation timed out after {self.validation_timeout}s: '
@@ -290,7 +351,9 @@ class Repository:
             raise Blocked('Published artifact archive checksum is missing or different')
         if not package.get('artifact_fingerprint'):
             self.validate(plan, package, linked=False)
-        expected = self.frozen_archive_fingerprint(plan, package)
+            expected = package['artifact_fingerprint']
+        else:
+            expected = self.frozen_archive_fingerprint(plan, package)
         if archive_fingerprint(raw) != expected:
             raise Blocked(f'Published artifact for {package["name"]} does not match frozen source')
         # This is derived evidence, never the authority for frozen source identity.
