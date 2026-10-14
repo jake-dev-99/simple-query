@@ -92,8 +92,10 @@ jobs:
       - name: Download Flutter Linux artifacts
         run: flutter precache --linux
 
-      - name: Link workspace dependencies
-        run: dart run melos bootstrap
+      # Bootstrap the Linux dependency closure only: Android and its example
+      # have newer SDK floors and are covered by the stable/native jobs.
+      - name: Link Linux workspace dependencies
+        run: dart run melos bootstrap --scope=simple_query_linux --include-dependencies
 
       - name: Verify reproducible minimum-SDK generation
         working-directory: packages/simple_query_linux
