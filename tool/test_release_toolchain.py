@@ -206,8 +206,9 @@ class ToolchainTest(unittest.TestCase):
     def test_early_sdk_selection_must_match_immutable_intent(self):
         repository = Mock()
         repository.intent_sdk.return_value = self.original
-        for phase in ['planning', 'preflight']:
+        for phase in ['planning', 'preflight', 'push', 'publication']:
             self.plan.update(phase=phase, prepared_sha=None, packaging_sdk=self.latest)
+            self.plan['files']['tool/release-sdk.json'] = json.dumps(self.latest)
             with self.assertRaisesRegex(Blocked, 'intent'):
                 self.module.resolve_batch_sdk({'plan': self.plan, 'journal': self.journal,
                                                'repository': repository, 'catalog': self.catalog})
