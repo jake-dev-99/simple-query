@@ -109,7 +109,14 @@ class WorkflowTest(unittest.TestCase):
         subprocess.run(['git', '-C', str(source), 'add', 'tool'], check=True)
         subprocess.run(['git', '-C', str(source), 'commit', '-m', 'current tooling'], check=True, capture_output=True)
         invocation = subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()
-        subprocess.run(['git', '-C', str(source), 'checkout', old], check=True, capture_output=True)
+        subprocess.run(['git', '-C', str(source), 'tag', 'historical', old], check=True)
+        remote = self.root / 'remote.git'
+        subprocess.run(['git', 'clone', '--bare', str(source), str(remote)], check=True, capture_output=True)
+        snapshot = self.root / 'snapshot'
+        subprocess.run(['git', 'clone', '--depth', '1', '--single-branch', '--branch', 'historical', remote.as_uri(), str(snapshot)], check=True, capture_output=True)
+        source = snapshot
+        missing = subprocess.run(['git', '-C', str(source), 'cat-file', '-e', invocation], capture_output=True)
+        self.assertNotEqual(missing.returncode, 0)
         self.env.update(INPUT_EVENT_NAME='workflow_dispatch', GITHUB_SHA=invocation,
                         RUNNER_TEMP=str(self.root), GITHUB_WORKSPACE=str(source),
                         GITHUB_ENV=str(self.root / 'env'))

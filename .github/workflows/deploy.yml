@@ -151,6 +151,7 @@ jobs:
           mode=--deploy
           if [ "$INPUT_EVENT_NAME" = "workflow_dispatch" ]; then
             tooling="$(mktemp -d "$RUNNER_TEMP/release-tooling.XXXXXX")"
+            git fetch --no-tags origin "$GITHUB_SHA"
             git archive "$GITHUB_SHA" tool | tar -x -C "$tooling"
             python3 -m pip install -r "$tooling/tool/release-requirements.txt"
             script="$tooling/tool/release_toolchain.py"
