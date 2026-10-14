@@ -195,7 +195,7 @@ class Repository:
 
     def validate(self, plan, package=None, *, linked=False):
         packages = [package] if package else plan['packages']
-        with self.snapshot(plan) as root, tempfile.TemporaryDirectory(prefix='release-artifact-') as artifact_dir:
+        with self.snapshot(plan) as root:
             for current in packages:
                 self.validate_sources(root, root / current['path'], plan)
             if linked:
@@ -221,23 +221,52 @@ class Repository:
                 # do not depend on hosted dependencies: find them before the
                 # release commit lands on main.
                 commands.append((directory, ['pub', 'publish', '--dry-run']))
-                if not linked:
-                    artifact = Path(artifact_dir) / (current['name'] + '.tar.gz')
-                    # SDK packaging applies the real .pubignore/.gitignore policy.
-                    # --to-archive writes locally and never initiates an upload.
-                    commands.append((directory, ['pub', 'publish', '--to-archive', str(artifact)]))
                 for command_dir, command in commands:
                     print(f'Validate {current["name"]} {current["version"]} ({"source graph" if linked else "hosted"}): {" ".join(command)}', flush=True)
-                    result = self.run_flutter(command, command_dir, current['name'])
-                    if result.returncode:
-                        output = result.stdout + result.stderr
-                        from release_services import Deferred, upload_deadline
-                        deadline = upload_deadline(output, __import__('time').time())
-                        if deadline:
-                            raise Deferred(deadline, f'Validation quota for {current["name"]}')
-                        raise Blocked(f'{current["name"]} validation failed:\n{output[-8000:]}')
+                    self.run_checked_flutter(command, command_dir, current['name'])
                 if not linked:
-                    current['artifact_fingerprint'] = archive_fingerprint(artifact.read_bytes())
+                    current['artifact_fingerprint'] = self.frozen_archive_fingerprint(plan, current)
+
+    # Purpose: Stop validation and packaging on an SDK failure or quota response.
+    # /**
+    #  * @param self The repository and its configured stable Flutter process.
+    #  * @param command The Flutter command arguments.
+    #  * @param cwd The isolated working directory for this command.
+    #  * @param name The package identifier used in diagnostic messages.
+    #  * @returns None after a successful SDK command.
+    #  * @throws Blocked on validation failure, or Deferred on a quota cooldown.
+    #  */
+    def run_checked_flutter(self, command, cwd, name):
+        result = self.run_flutter(command, cwd, name)
+        if result.returncode:
+            output = result.stdout + result.stderr
+            from release_services import Deferred, upload_deadline
+            deadline = upload_deadline(output, __import__('time').time())
+            if deadline:
+                raise Deferred(deadline, f'Validation quota for {name}')
+            raise Blocked(f'{name} validation failed:\n{output[-8000:]}')
+
+    # Purpose: Derive complete SDK archive evidence from untouched frozen source.
+    # /**
+    #  * @param self The repository with the configured stable Flutter SDK.
+    #  * @param plan The immutable source SHA and frozen release manifest files.
+    #  * @param package The selected package name, path, and release version.
+    #  * @returns The fingerprint of every file packaged by the SDK.
+    #  * @throws Blocked on invalid sources or SDK failure; Deferred on quotas.
+    #  */
+    def frozen_archive_fingerprint(self, plan, package):
+        # Example resolution and tests may generate files in their own sandbox.
+        # Package a separate clean snapshot using the same preparation as Deploy.
+        with self.snapshot(plan) as root, tempfile.TemporaryDirectory(prefix='release-artifact-') as temp:
+            directory = root / package['path']
+            self.validate_sources(root, directory, plan)
+            artifact = Path(temp) / (package['name'] + '.tar.gz')
+            for command in [['pub', 'get', '--no-example'],
+                            ['pub', 'publish', '--to-archive', str(artifact)]]:
+                print(f'Archive {package["name"]} {package["version"]} (frozen source): '
+                      f'{" ".join(command)}', flush=True)
+                self.run_checked_flutter(command, directory, package['name'])
+            return archive_fingerprint(artifact.read_bytes())
 
     def run_flutter(self, command, cwd, name):
         """Run one validation command; a hung SDK blocks the batch for attention."""
@@ -256,9 +285,10 @@ class Repository:
         raw = pub.get(url, binary=True)
         if raw is None or hashlib.sha256(raw).hexdigest() != receipt.get('archive_sha256'):
             raise Blocked('Published artifact archive checksum is missing or different')
-        expected = package.get('artifact_fingerprint')
-        if not expected:
+        if not package.get('artifact_fingerprint'):
             self.validate(plan, package, linked=False)
-            expected = package['artifact_fingerprint']
+        expected = self.frozen_archive_fingerprint(plan, package)
         if archive_fingerprint(raw) != expected:
             raise Blocked(f'Published artifact for {package["name"]} does not match frozen source')
+        # This is derived evidence, never the authority for frozen source identity.
+        package['artifact_fingerprint'] = expected
