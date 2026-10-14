@@ -1,8 +1,16 @@
-## Unreleased
+## 0.3.0
 
 - **Behavior change (Android):** every API call now reports a host failure as `SimpleQueryError`, never a raw `PlatformException`. A provider `SecurityException` becomes `permissionDenied`, an `IllegalArgumentException` becomes `invalidQuery`, and unlisted failures become `transientFailure`; see `docs/ERROR_MAPPING.md`. `observe()` streams now emit a failed registration as a stream error. Callers that caught `PlatformException` must catch `SimpleQueryError`. This ships in the same minor release (0.3.0) as UNFY-284 (UNFY-300).
 - **Behavior change (Android):** `query()`, `queryRaw()`, `queryTyped()`, `QueryBuilder.execute*()`, `queryPaginated()` / `queryPaginatedTyped()` and the `android.provider` `queryWithJoins` extension now throw `SimpleQueryError(code: unavailable)` when the provider returns a null cursor (unreachable, or none returned), instead of an empty result; paginated streams emit it as a stream error. Catch `unavailable` where a provider is optional. This changes documented query semantics, so the next `simple_query` release must be at least a minor bump (0.3.0), not the default patch (UNFY-284).
 - Require `simple_query_android: ^0.3.0`, the first release with the native `ContentQuery.queryOrNull(...)` helper, so consumers resolving through `simple_query` get it (UNFY-284).
+
+- fix(UNFY-300): map every Android host error to SimpleQueryError
+- fix(UNFY-284): surface a null cursor on the Dart query path as SimpleQueryError(unavailable)
+- fix(UNFY-284): require simple_query_android ^0.3.0 from the facade
+- Require simple_query_ios ^0.3.0.
+- Require simple_query_linux ^0.3.0.
+- Require simple_query_macos ^0.3.0.
+- Require simple_query_windows ^0.3.0.
 
 ## 0.2.3
 

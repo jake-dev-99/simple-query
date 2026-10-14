@@ -1,3 +1,26 @@
+## 0.3.0
+
+- fix(UNFY-265): enforce native filesystem mutation scope
+- UNFY-265 Document handwritten Linux resource contracts
+- fix(UNFY-265): release cancelled pending observer starts
+- UNFY-265: document every generated GObject definition
+- UNFY-265: fix Linux review findings and cancellation ownership
+- fix(UNFY-265): harden binary errors and split Linux modules
+- fix(UNFY-265): roll back failed observer startup
+- fix(UNFY-265): preserve Linux observation and batch contracts
+- fix(UNFY-265): repair Linux callback ownership and failures
+- fix(UNFY-265): use GObject bindings on Linux
+- chore(release): reset versions to align with pub.dev (smallest iteration)
+- chore: bring .gitignore to Flutter-template parity + untrack pubspec.lock files
+- chore(release): unblock pub publish — split path overrides into pubspec_overrides.yaml
+- chore(release): coordinated 0.6.0 across all simple_query packages
+- docs+tool: CHANGELOG Unreleased discipline
+- chore(release): coordinated 0.5.0 across all simple_query packages
+- chore(pigeon): pin to 22.7.4 + CI drift check + regen tool
+- chore(release): coordinated 0.4.0 across all simple_query packages
+- release: 0.3.1 — coordinated bump + audit-driven cleanup (#20)
+- Require simple_query_shared ^0.3.0.
+
 ## 0.2.1
 
 ### Reset to align with pub.dev's published series
@@ -15,8 +38,6 @@ The 0.3 — 0.6 work described in the entries below is not lost —
 it lives in source and will surface in published form through
 subsequent patch / minor / major bumps as appropriate. Entries
 kept for archival reference.
-
-## Unreleased
 
 ## 0.6.0
 

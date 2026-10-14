@@ -1,6 +1,6 @@
 name: simple_query
 description: Cross-platform typed query API for device data (contacts, media, files, calendar, messages, calls).
-version: 0.2.3
+version: 0.3.0
 homepage: https://github.com/simplezen/simple-query
 repository: https://github.com/simplezen/simple-query
 issue_tracker: https://github.com/simplezen/simple-query/issues
@@ -28,10 +28,10 @@ dependencies:
   # ^0.3.0: the first release with ContentQuery.queryOrNull (UNFY-284).
   # Publish simple_query_android first; the facade cut validates it.
   simple_query_android: ^0.3.0
-  simple_query_ios: ^0.2.0
-  simple_query_macos: ^0.2.0
-  simple_query_linux: ^0.2.0
-  simple_query_windows: ^0.2.0
+  simple_query_ios: ^0.3.0
+  simple_query_macos: ^0.3.0
+  simple_query_linux: ^0.3.0
+  simple_query_windows: ^0.3.0
 
 dev_dependencies:
   flutter_test:

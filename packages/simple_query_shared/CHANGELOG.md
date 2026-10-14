@@ -1,3 +1,19 @@
+## 0.3.0
+
+- fix(UNFY-265): release cancelled pending observer starts
+- chore(release): reset versions to align with pub.dev (smallest iteration)
+- chore: bring .gitignore to Flutter-template parity + untrack pubspec.lock files
+- chore(release): unblock pub publish — split path overrides into pubspec_overrides.yaml
+- test: propagate const→final flip across all affected packages
+- fix(shared): close observer StreamController; silence two lint false positives
+- chore(release): coordinated 0.6.0 across all simple_query packages
+- docs+tool: CHANGELOG Unreleased discipline
+- chore(release): coordinated 0.5.0 across all simple_query packages
+- chore(release): coordinated 0.4.0 across all simple_query packages
+- feat(permissions): inline check, drop simple_permissions dependency
+- feat(shared): enforce canonical field vocabulary on non-Android platforms
+- release: 0.3.1 — coordinated bump + audit-driven cleanup (#20)
+
 ## 0.2.1
 
 ### Reset to align with pub.dev's published series
@@ -15,8 +31,6 @@ The 0.3 — 0.6 work described in the entries below is not lost —
 it lives in source and will surface in published form through
 subsequent patch / minor / major bumps as appropriate. Entries
 kept for archival reference.
-
-## Unreleased
 
 ## 0.6.0
 

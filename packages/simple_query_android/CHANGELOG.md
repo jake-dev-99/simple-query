@@ -1,4 +1,4 @@
-## Unreleased
+## 0.3.0
 
 - **Behavior change:** no host call lets a raw `PlatformException` reach callers any more (UNFY-300). The Kotlin host classifies each failure by exception type into the bridge code vocabulary, and the Dart side maps it to `SimpleQueryError`: a provider `SecurityException` → `permissionDenied`, `IllegalArgumentException` (e.g. `Unknown URI`) → `invalidQuery`, `UnsupportedOperationException` → `notSupported`, and so on per `docs/ERROR_MAPPING.md`. Anything unlisted → `transientFailure`. This covers queries, joins, mutations, batches, binary open/close, provider calls, file extraction, observers and the permission pre-flight. Errors carry domain, operation, a `simple_query:` message, `details.code`, `details.nativeType` and the host details, and keep the original stack trace. Callers that caught `PlatformException` must catch `SimpleQueryError` and switch on its `code`.
 - `observe()` now delivers a failed observer registration as a stream error, instead of an uncaught error (UNFY-300).
@@ -12,6 +12,18 @@
 - The permission pre-flight `SimpleQueryError(permissionDenied)` now carries the request's `domain` (UNFY-300).
 - **Behavior change:** a null resolver cursor (provider unreachable, or none returned) on the Dart `query()` path and the `android.provider` `queryWithJoins` extension now throws `SimpleQueryError(code: unavailable)` with domain, operation and the failing provider's `details.contentUri`, instead of returning an empty result. Callers that relied on `[]` for an optional provider must catch `unavailable`. `queryWithJoins` raises it for the primary query and for any related query, whose join is named in the native details. Other host errors map as described in the UNFY-300 entry above (UNFY-284).
 - Add `ContentQuery.queryOrNull(...)`, which returns `null` when the resolver hands back a null cursor (provider unreachable, or none returned) and an empty list only for zero matching rows; `ContentQuery.query(...)` now delegates to it and still returns an empty list for both (UNFY-284).
+
+- fix(UNFY-172): migrate Android and example to built-in Kotlin
+- fix(UNFY-300): unblock a stalled provider read on release; honest stream-error docs
+- fix(UNFY-300): report closeBinary failures with their request context
+- fix(UNFY-300): let a release stop a running copy; tighten detach races
+- fix(UNFY-300): give each pipe end one closer; release streams and observers on detach
+- fix(UNFY-300): close stream pipes on every exit; surface close failures
+- fix(UNFY-300): classify extraction failures; reply on body cancellation
+- fix(UNFY-300): address /code-review findings on host-error mapping
+- fix(UNFY-300): map every Android host error to SimpleQueryError
+- fix(UNFY-284): surface a null cursor on the Dart query path as SimpleQueryError(unavailable)
+- feat(UNFY-284): add ContentQuery.queryOrNull to distinguish no cursor from zero rows
 
 ## 0.2.3
 
