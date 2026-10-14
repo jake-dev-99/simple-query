@@ -223,20 +223,22 @@ class Repository:
                 commands.append((directory, ['pub', 'publish', '--dry-run']))
                 for command_dir, command in commands:
                     print(f'Validate {current["name"]} {current["version"]} ({"source graph" if linked else "hosted"}): {" ".join(command)}', flush=True)
-                    self.run_checked_flutter(command, command_dir, current['name'])
+                    self.run_checked_flutter({'command': command, 'cwd': command_dir,
+                                              'name': current['name']})
                 if not linked:
                     current['artifact_fingerprint'] = self.frozen_archive_fingerprint(plan, current)
 
     # Purpose: Stop validation and packaging on an SDK failure or quota response.
     # /**
     #  * @param self The repository and its configured stable Flutter process.
-    #  * @param command The Flutter command arguments.
-    #  * @param cwd The isolated working directory for this command.
-    #  * @param name The package identifier used in diagnostic messages.
+    #  * @param options Named command arguments, working directory and package name.
     #  * @returns None after a successful SDK command.
     #  * @throws Blocked on validation failure, or Deferred on a quota cooldown.
     #  */
-    def run_checked_flutter(self, command, cwd, name):
+    def run_checked_flutter(self, options):
+        command = options['command']
+        cwd = options['cwd']
+        name = options['name']
         result = self.run_flutter(command, cwd, name)
         if result.returncode:
             output = result.stdout + result.stderr
@@ -265,7 +267,8 @@ class Repository:
                             ['pub', 'publish', '--to-archive', str(artifact)]]:
                 print(f'Archive {package["name"]} {package["version"]} (frozen source): '
                       f'{" ".join(command)}', flush=True)
-                self.run_checked_flutter(command, directory, package['name'])
+                self.run_checked_flutter({'command': command, 'cwd': directory,
+                                          'name': package['name']})
             return archive_fingerprint(artifact.read_bytes())
 
     def run_flutter(self, command, cwd, name):

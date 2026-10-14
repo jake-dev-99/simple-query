@@ -220,16 +220,16 @@ if sys.argv[1:] not in [['pub','get','--no-example'], ['analyze','--no-fatal-war
         receipt = self.pub.receipt(package['name'], package['version'])
         url = receipt['archive_url']
         output = io.BytesIO()
-        with tarfile.open(fileobj=io.BytesIO(self.pub.archives[url])) as source:
-            with tarfile.open(fileobj=output, mode='w:gz') as target:
-                for entry in source:
-                    if not entry.isfile():
-                        continue
-                    payload = source.extractfile(entry).read()
-                    if entry.name == 'lib/plugin.dart':
-                        payload = b'// modified after frozen validation\n'
-                        entry.size = len(payload)
-                    target.addfile(entry, io.BytesIO(payload))
+        with (tarfile.open(fileobj=io.BytesIO(self.pub.archives[url])) as source,
+              tarfile.open(fileobj=output, mode='w:gz') as target):
+            for entry in source:
+                if not entry.isfile():
+                    continue
+                payload = source.extractfile(entry).read()
+                if entry.name == 'lib/plugin.dart':
+                    payload = b'// modified after frozen validation\n'
+                    entry.size = len(payload)
+                target.addfile(entry, io.BytesIO(payload))
         import hashlib
         from release_repository import archive_fingerprint
         from release_services import Blocked
