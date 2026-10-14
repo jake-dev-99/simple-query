@@ -90,10 +90,12 @@ def sdk_from_original_deploy(context):
     plan, journal = context['plan'], context['journal']
     versions = set()
     for package in plan['packages']:
-        if package.get('run_id') is None:
-            continue
         run = journal.run(package, plan['prepared_sha'])
-        if (not run or run['id'] != package['run_id'] or run['status'] != 'completed'
+        recorded_run = package.get('run_id')
+        if run is None and recorded_run is None:
+            continue
+        if (not run or (recorded_run is not None and run['id'] != recorded_run)
+                or run['status'] != 'completed'
                 or run['conclusion'] != 'success'):
             raise Blocked('Original Deploy SDK proof does not match a completed tag-push run')
         found = set(re.findall(r'/flutter/stable-(\d+\.\d+\.\d+)-(?:x64|arm64)(?:/|\b)',
@@ -131,6 +133,33 @@ def resolve_batch_sdk(context):
     return pinned
 
 
+# Purpose: Avoid SDK reconstruction when cancelled preparation never reached a tag.
+# /**
+#  * @param context The prior plan and read-only repository tag boundary.
+#  * @returns Whether original publication SDK evidence is required.
+#  * @throws Blocked if a remote package tag differs from prepared source.
+#  */
+def needs_batch_sdk(context):
+    plan = context.get('plan')
+    if plan is None or plan['status'] == 'complete' or context['operation'] == 'cancel':
+        return False
+    if plan['status'] != 'cancelled':
+        return True
+    if plan.get('prepared_sha') is None:
+        return False
+    repository = context.get('repository')
+    for package in plan['packages']:
+        if package['state'] in ('tagged', 'published') or package.get('run_id') is not None:
+            return True
+        if repository is not None:
+            tagged = repository.remote_tag_sha(package['tag'])
+            if tagged is not None and tagged != plan['prepared_sha']:
+                raise Blocked('Cancelled package tag differs from frozen source')
+            if tagged is not None:
+                return True
+    return False
+
+
 # Purpose: Let a fresh current-stable cut also reconcile an older frozen batch.
 # /**
 #  * @param context The operation, latest authorized batch, catalog and GitHub client.
@@ -139,9 +168,7 @@ def resolve_batch_sdk(context):
 #  */
 def resolve_workflow_sdk(context):
     plan = context.get('plan')
-    previous = (plan is not None and plan['status'] != 'complete'
-                and context['operation'] != 'cancel'
-                and (plan['status'] != 'cancelled' or plan.get('prepared_sha') is not None))
+    previous = needs_batch_sdk(context)
     batch = resolve_batch_sdk(context) if previous else None
     current = released_sdk(context['catalog']) if context['operation'] == 'cut' or batch is None else batch
     batch_context = {}
@@ -181,11 +208,13 @@ def main():
         from release_repository import Repository
         journal = GitHubClient(os.environ['GITHUB_REPOSITORY'], os.environ['GH_TOKEN'])
         plan = journal.load()
-        orphan = Repository(root).recover_intent(plan)
+        repository = Repository(root)
+        orphan = repository.recover_intent(plan)
         if orphan is not None:
             plan = orphan
         operation = 'resume' if os.environ.get('EVENT_NAME') == 'schedule' else os.environ.get('OPERATION') or 'cut'
         selection = resolve_workflow_sdk({'plan': plan, 'journal': journal,
+                                          'repository': repository,
                                           'catalog': catalog, 'operation': operation})
     with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
         output.write(f'current_version={selection["current"]["version"]}\n')

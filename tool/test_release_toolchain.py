@@ -147,6 +147,40 @@ class ToolchainTest(unittest.TestCase):
         self.assertEqual(result['context'], {})
         self.journal.run.assert_not_called()
 
+    # Purpose: Permit replacement of prepared source that was never tagged.
+    # /**
+    #  * @param self A historical cancelled plan without packaging SDK metadata.
+    #  * @returns None; asserts no SDK proof is demanded before any publication.
+    #  * @throws AssertionError if preparation alone blocks the next authorized cut.
+    #  */
+    def test_prepared_but_untagged_cancelled_batch_allows_new_cut(self):
+        self.plan['status'] = 'cancelled'
+        self.plan['packages'][0].update(state='pending', run_id=None)
+        repository = Mock()
+        repository.remote_tag_sha.return_value = None
+        result = self.module.resolve_workflow_sdk({'plan': self.plan, 'journal': self.journal,
+                                                   'repository': repository,
+                                                   'catalog': self.catalog, 'operation': 'cut'})
+        self.assertEqual(result['current'], self.latest)
+        self.assertEqual(result['context'], {})
+        self.journal.run.assert_not_called()
+
+    # Purpose: Detect a real tag push whose state checkpoint was interrupted.
+    # /**
+    #  * @param self The pending journal with a source-bound remote package tag.
+    #  * @returns None; asserts prior SDK recovery still covers an unrecorded push.
+    #  * @throws AssertionError if pending state masks actual deployment evidence.
+    #  */
+    def test_uncheckpointed_tag_push_still_recovers_original_sdk(self):
+        self.plan['status'] = 'cancelled'
+        self.plan['packages'][0].update(state='pending', run_id=None)
+        repository = Mock()
+        repository.remote_tag_sha.return_value = 'e' * 40
+        result = self.module.resolve_workflow_sdk({'plan': self.plan, 'journal': self.journal,
+                                                   'repository': repository,
+                                                   'catalog': self.catalog, 'operation': 'cut'})
+        self.assertEqual(result['batch'], self.original)
+
 
 if __name__ == '__main__':
     unittest.main()
