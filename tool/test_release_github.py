@@ -50,6 +50,77 @@ class GitHubTest(unittest.TestCase):
         self.assertEqual(restored['files'], plan['files'])
         self.assertEqual(restored['journal_id'], 123)
 
+    # Purpose: Prove draft recovery preserves immutable source and publication state.
+    # /**
+    #  * @param self The unittest fixture with its local GitHub HTTP server.
+    #  * @returns None; asserts the original journal identity, progress, and cooldown survive recovery.
+    #  * @throws AssertionError if the journal boundary violates the contract.
+    #  */
+    def test_untagged_draft_restores_frozen_identity_and_publication_progress(self):
+        plan = {'schema': 1, 'batch_tag': 'sz-release-batch-12345',
+                'source_sha': 'a'*40, 'prepared_sha': 'b'*40,
+                'files': {'pubspec.yaml': 'version: 1.3.4\n'},
+                'status': 'deferred', 'not_before': self.clock.now()+86400,
+                'packages': [{'name': 'demo', 'state': 'tagged', 'run_id': 77}]}
+        self.responses = [(200, {}, [{'id': 123, 'draft': True,
+            'tag_name': 'untagged-d21f35a3575a2d58b422',
+            'name': 'Internal batch sz-release-batch-12345',
+            'body': self.module.encode(plan)}])]
+        restored = self.client.load()
+        self.assertIsNotNone(restored)
+        self.assertEqual(restored['journal_id'], 123)
+        for key, value in plan.items():
+            self.assertEqual(restored[key], value)
+        self.assertEqual(len(self.requests), 1)
+        self.assertEqual(self.requests[0][0], 'GET')
+
+    # Purpose: Reject corrupt internal draft journals without treating them as absent.
+    # /**
+    #  * @param self The unittest fixture with its local GitHub HTTP server.
+    #  * @returns None; asserts corrupt frozen state fails closed.
+    #  * @throws AssertionError if the journal boundary violates the contract.
+    #  */
+    def test_untagged_internal_draft_with_corrupt_body_fails_closed(self):
+        from release_services import Blocked
+        self.responses = [(200, {}, [{'id': 123, 'draft': True,
+            'tag_name': 'untagged-abc',
+            'name': 'Internal batch sz-release-batch-12345', 'body': '{}'}])]
+        with self.assertRaisesRegex(Blocked, 'Invalid batch journal'):
+            self.client.load()
+
+    # Purpose: Reject a journal whose external identity differs from its frozen batch.
+    # /**
+    #  * @param self The unittest fixture with its local GitHub HTTP server.
+    #  * @returns None; asserts both tagged and untagged identities bind to the frozen body.
+    #  * @throws AssertionError if the journal boundary violates the contract.
+    #  */
+    def test_draft_identity_must_match_its_frozen_plan(self):
+        from release_services import Blocked
+        plan = {'schema': 1, 'batch_tag': 'sz-release-batch-999', 'files': {}}
+        for tag, name in [('untagged-abc', 'Internal batch sz-release-batch-12345'),
+                          ('sz-release-batch-12345', 'Internal batch sz-release-batch-12345')]:
+            with self.subTest(tag=tag):
+                self.responses = [(200, {}, [{'id': 123, 'draft': True,
+                    'tag_name': tag, 'name': name, 'body': self.module.encode(plan)}])]
+                with self.assertRaisesRegex(Blocked, 'identity'):
+                    self.client.load()
+
+    # Purpose: Keep ordinary drafts and published releases outside journal discovery.
+    # /**
+    #  * @param self The unittest fixture with its local GitHub HTTP server.
+    #  * @returns None; asserts ordinary releases are ignored even when a published title resembles a journal.
+    #  * @throws AssertionError if the journal boundary violates the contract.
+    #  */
+    def test_ordinary_untagged_draft_is_not_a_release_journal(self):
+        for name, draft in [('Upcoming release', True), ('sz-release-batch-12345', True),
+                            ('Internal batch sz-release-batch-12345', False)]:
+            with self.subTest(name=name, draft=draft):
+                self.responses = [(200, {}, [{'id': 123, 'draft': draft,
+                    'tag_name': 'untagged-abc', 'name': name,
+                    'body': self.module.encode({'schema': 1, 'files': {},
+                        'batch_tag': 'sz-release-batch-12345'}) if not draft else 'Notes'}])]
+                self.assertIsNone(self.client.load())
+
     def test_missing_journal_is_noop_and_other_releases_are_ignored(self):
         self.responses = [(200, {}, [{'id': 1, 'draft': False, 'tag_name': 'demo-v1.0.0', 'body': 'notes'}])]
         self.assertIsNone(self.client.load())
@@ -115,13 +186,20 @@ class GitHubTest(unittest.TestCase):
 
     def test_history_retains_only_prior_publications_in_the_daily_window(self):
         from datetime import datetime, timezone
-        def body(when):
-            return self.module.encode({'schema': 1, 'files': {}, 'packages': [
+        # Purpose: Encode frozen publication timestamps for history recovery.
+        # /**
+        #  * @param tag The immutable batch identifier.
+        #  * @param when The publication timestamps in seconds since the epoch.
+        #  * @returns The compressed journal body consumed by the GitHub adapter.
+        #  * @throws ValueError if a fixture timestamp cannot be encoded.
+        #  */
+        def body(tag, when):
+            return self.module.encode({'schema': 1, 'batch_tag': tag, 'files': {}, 'packages': [
                 {'published_at': datetime.fromtimestamp(t, timezone.utc).isoformat()} for t in when]})
         self.responses = [(200, {}, [
-            {'id': 2, 'draft': True, 'tag_name': 'sz-release-batch-2', 'body': body([])},
+            {'id': 2, 'draft': True, 'tag_name': 'sz-release-batch-2', 'body': body('sz-release-batch-2', [])},
             {'id': 1, 'draft': True, 'tag_name': 'sz-release-batch-1',
-             'body': body([self.clock.now()-10, self.clock.now()-86401])}])]
+             'body': body('sz-release-batch-1', [self.clock.now()-10, self.clock.now()-86401])}])]
         self.assertEqual(self.client.load()['journal_id'], 2)
         self.assertEqual(self.client.known_publications, [self.clock.now()-10])
 

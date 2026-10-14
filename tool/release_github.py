@@ -101,9 +101,22 @@ class GitHubClient:
         for page in range(1, 11):
             releases = self.request('GET', self.path + f'/releases?per_page=100&page={page}')
             for release in releases:
-                if not release['tag_name'].startswith('sz-release-batch-'):
+                # GitHub can assign draft releases an untagged-* tag name.
+                # The internal title and frozen body retain the batch identity.
+                identity = release['tag_name']
+                if not identity.startswith('sz-release-batch-'):
+                    if not release['draft']:
+                        continue
+                    title = release.get('name') or ''
+                    if not title.startswith('Internal batch '):
+                        continue
+                    identity = title.removeprefix('Internal batch ')
+                if not identity.startswith('sz-release-batch-'):
                     continue
                 plan = decode(release.get('body') or '')
+                if (not re.fullmatch(r'sz-release-batch-\d+', identity)
+                        or plan.get('batch_tag') != identity):
+                    raise Blocked('Batch journal identity does not match its frozen plan')
                 plan['journal_id'] = release['id']
                 if not release['draft']:
                     plan.update(status='blocked', error='Batch journal is no longer an internal draft release')
