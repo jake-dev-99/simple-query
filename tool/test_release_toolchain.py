@@ -197,6 +197,21 @@ class ToolchainTest(unittest.TestCase):
             self.module.needs_batch_sdk({'plan': self.plan, 'repository': repository,
                                          'operation': 'cut'})
 
+    # Purpose: Keep early recovery bound to the immutable SDK authorization.
+    # /**
+    #  * @param self The mutable journal and original intent-tag SDK identity.
+    #  * @returns None; asserts a different valid stable SDK is rejected before prepare.
+    #  * @throws AssertionError if planning/preflight can replace the authorized SDK.
+    #  */
+    def test_early_sdk_selection_must_match_immutable_intent(self):
+        repository = Mock()
+        repository.intent_sdk.return_value = self.original
+        for phase in ['planning', 'preflight']:
+            self.plan.update(phase=phase, prepared_sha=None, packaging_sdk=self.latest)
+            with self.assertRaisesRegex(Blocked, 'intent'):
+                self.module.resolve_batch_sdk({'plan': self.plan, 'journal': self.journal,
+                                               'repository': repository, 'catalog': self.catalog})
+
 
 if __name__ == '__main__':
     unittest.main()

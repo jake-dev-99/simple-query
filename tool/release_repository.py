@@ -210,6 +210,27 @@ class Repository:
                                                          'directory': self.root, 'env': self.env})
         return self._sdk_identities[executable]
 
+    # Purpose: Verify the SDK authorization made before the mutable journal exists.
+    # /**
+    #  * @param self The repository with its fetched immutable intent tags.
+    #  * @param plan The expected batch identifier and frozen source commit.
+    #  * @returns The exact SDK identity recorded in the original intent tag.
+    #  * @throws Blocked when intent metadata or its source identity cannot be proven.
+    #  */
+    def intent_sdk(self, plan):
+        from release_toolchain import validate_sdk
+        tag = plan['batch_tag']
+        raw = self.git('for-each-ref', '--format=%(contents)', 'refs/tags/' + tag)
+        try:
+            intent = json.loads(raw)
+            tagged = self.git('rev-parse', tag + '^{commit}')
+            if (intent.get('batch_tag') != tag or intent.get('source_sha') != plan['source_sha']
+                    or tagged != plan['source_sha']):
+                raise Blocked('SDK intent tag differs from frozen source identity')
+            return validate_sdk(intent['packaging_sdk'])
+        except (ValueError, KeyError, TypeError) as error:
+            raise Blocked('Immutable SDK intent is missing or malformed') from error
+
     # Purpose: Bind historic recovery and local preflight to explicit source evidence.
     # /**
     #  * @param self The repository and trusted workflow SDK context.

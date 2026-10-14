@@ -117,6 +117,10 @@ def sdk_from_original_deploy(context):
 def resolve_batch_sdk(context):
     plan = context['plan']
     recorded = validate_sdk(plan['packaging_sdk']) if 'packaging_sdk' in plan else None
+    if plan.get('phase') in ('planning', 'preflight'):
+        repository = context.get('repository')
+        if repository is None or repository.intent_sdk(plan) != recorded:
+            raise Blocked('Journal SDK differs from immutable batch intent')
     frozen_pin = plan.get('files', {}).get(SDK_FILE)
     if frozen_pin is not None:
         pinned = decode_sdk(frozen_pin)

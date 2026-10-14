@@ -326,6 +326,11 @@ if sys.argv[1:] not in [['pub','get','--no-example'], ['analyze','--no-fatal-war
         pin = json.loads(self.fixture.git('show', plan['prepared_sha'] + ':tool/release-sdk.json'))
         self.assertEqual(intent['packaging_sdk'], plan['packaging_sdk'])
         self.assertEqual(pin, plan['packaging_sdk'])
+        self.assertEqual(self.repo.intent_sdk(plan), plan['packaging_sdk'])
+        from release_services import Blocked
+        plan['source_sha'] = 'f' * 40
+        with self.assertRaisesRegex(Blocked, 'intent'):
+            self.repo.intent_sdk(plan)
 
     def test_batch_validates_and_publishes_in_dependency_order(self):
         self.assertEqual(self.cut(), 'complete')
