@@ -214,5 +214,19 @@ class ToolchainTest(unittest.TestCase):
                                                'repository': repository, 'catalog': self.catalog})
 
 
+    # Purpose: Report malformed intent metadata through the release blocker path.
+    # /**
+    #  * @param self The SDK fixture with invalid JSON object shapes.
+    #  * @returns None; asserts valid JSON scalars/arrays cannot crash recovery.
+    #  * @throws AssertionError if malformed intent raises an uncaught exception.
+    #  */
+    def test_intent_sdk_rejects_non_object_metadata(self):
+        from release_repository import Repository
+        repository = Repository.__new__(Repository)
+        for raw in ['null', '[]', '"intent"']:
+            repository.git = Mock(return_value=raw)
+            with self.assertRaises(Blocked):
+                repository.intent_sdk(self.plan)
+
 if __name__ == '__main__':
     unittest.main()

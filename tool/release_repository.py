@@ -223,6 +223,8 @@ class Repository:
         raw = self.git('for-each-ref', '--format=%(contents)', 'refs/tags/' + tag)
         try:
             intent = json.loads(raw)
+            if not isinstance(intent, dict):
+                raise Blocked('Immutable SDK intent must be a JSON object')
             tagged = self.git('rev-parse', tag + '^{commit}')
             if (intent.get('batch_tag') != tag or intent.get('source_sha') != plan['source_sha']
                     or tagged != plan['source_sha']):
