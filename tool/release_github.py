@@ -105,6 +105,8 @@ class GitHubClient:
                 # The internal title and frozen body retain the batch identity.
                 identity = release['tag_name']
                 if not identity.startswith('sz-release-batch-'):
+                    if not release['draft']:
+                        continue
                     title = release.get('name') or ''
                     if not title.startswith('Internal batch '):
                         continue
