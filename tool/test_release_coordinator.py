@@ -290,6 +290,21 @@ if sys.argv[1:] not in [['pub','get','--no-example'], ['analyze','--no-fatal-war
         with self.assertRaisesRegex(Blocked, 'Frozen SDK'):
             self.repo.expected_sdk(plan)
 
+    # Purpose: Keep matching journal copies from replacing committed SDK evidence.
+    # /**
+    #  * @param self The real-git fixture containing the prepared SDK source file.
+    #  * @returns None; asserts two mutated journal fields cannot authorize recovery.
+    #  * @throws AssertionError if prepared-source identity is bypassed.
+    #  */
+    def test_matching_journal_sdk_copies_cannot_override_prepared_commit(self):
+        self.assertEqual(self.cut(), 'complete')
+        plan = self.journal.load()
+        plan['packaging_sdk']['revision'] = 'b' * 40
+        plan['files']['tool/release-sdk.json'] = json.dumps(plan['packaging_sdk'])
+        from release_services import Blocked
+        with self.assertRaisesRegex(Blocked, 'SDK'):
+            self.repo.expected_sdk(plan)
+
     # Purpose: Reconcile a prior batch while retaining a newer SDK for a fresh cut.
     # /**
     #  * @param self The fixture with separately installed current and prior SDKs.
@@ -331,6 +346,31 @@ if sys.argv[1:] not in [['pub','get','--no-example'], ['analyze','--no-fatal-war
         plan['source_sha'] = 'f' * 40
         with self.assertRaisesRegex(Blocked, 'intent'):
             self.repo.intent_sdk(plan)
+
+    # Purpose: Recover a checkpointed prepared commit that never reached remote main.
+    # /**
+    #  * @param self The real-git batch interrupted immediately before source push.
+    #  * @returns None; asserts a fresh runner recreates the exact commit without remote writes.
+    #  * @throws AssertionError if checkpoint recovery blocks or changes the frozen SHA.
+    #  */
+    def test_missing_prepared_commit_recreates_exact_source_before_sdk_selection(self):
+        from unittest.mock import Mock
+        self.repo.push_prepared = Mock(side_effect=RuntimeError('stopped before push'))
+        with self.assertRaisesRegex(RuntimeError, 'stopped before push'):
+            self.cut()
+        plan = self.journal.load()
+        prepared = plan['prepared_sha']
+        fresh_root = self.root.parent / (self.root.name + '-fresh')
+        subprocess.run(['git', 'clone', str(self.remote), str(fresh_root)], check=True, capture_output=True)
+        self.addCleanup(__import__('shutil').rmtree, fresh_root)
+        services = importlib.import_module('release_repository')
+        fresh = services.Repository(fresh_root, flutter=self.repo.flutter, env=self.repo.env)
+        self.assertNotEqual(fresh.git('cat-file', '-e', prepared + '^{commit}', check=False).returncode, 0)
+        identity = fresh.prepared_sdk(plan)
+        self.assertEqual(identity, plan['packaging_sdk'])
+        self.assertEqual(fresh.git('rev-parse', prepared + '^{commit}'), prepared)
+        self.assertEqual(fresh.git('rev-parse', 'origin/main'), plan['source_sha'])
+        self.assertEqual(plan['prepared_sha'], prepared)
 
     def test_batch_validates_and_publishes_in_dependency_order(self):
         self.assertEqual(self.cut(), 'complete')

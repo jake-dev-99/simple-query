@@ -42,6 +42,7 @@ class Repository:
         self.validation_timeout = validation_timeout
         self._sdk_identities = {}
         self._packaging_flutter = flutter
+        self._preview_sdk_context = None
         self.env = {**os.environ, **(env or {}), 'PUB_MAX_HTTP_RETRIES': '1'}
 
     def git(self, *args, input=None, env=None, check=True):
@@ -233,29 +234,74 @@ class Repository:
         except (ValueError, KeyError, TypeError) as error:
             raise Blocked('Immutable SDK intent is missing or malformed') from error
 
-    # Purpose: Bind historic recovery and local preflight to explicit source evidence.
+    # Purpose: Read committed SDK evidence, recreating an interrupted local checkpoint exactly.
+    # /**
+    #  * @param self The repository containing immutable prepared commits.
+    #  * @param plan The source-bound release plan with an optional prepared SHA.
+    #  * @returns The committed SDK identity, or None for pre-pin historical source.
+    #  * @throws Blocked when source recreation differs from its SHA/intent or the pin is malformed.
+    #  */
+    def prepared_sdk(self, plan):
+        from release_toolchain import SDK_FILE, decode_sdk, validate_sdk
+        if not plan.get('prepared_sha'):
+            return None
+        missing = self.git('cat-file', '-e', plan['prepared_sha'] + '^{commit}', check=False)
+        if missing.returncode:
+            if self.intent_sdk(plan) != validate_sdk(plan.get('packaging_sdk')):
+                raise Blocked('Missing prepared commit SDK differs from immutable intent')
+            self.prepare(plan)  # verifies recreated SHA before any source/SDK use
+        pin = self.git('show', plan['prepared_sha'] + ':' + SDK_FILE, check=False)
+        return decode_sdk(pin.stdout) if pin.returncode == 0 else None
+
+    # Purpose: Authorize only a newly constructed read-only preview before an intent exists.
+    # /**
+    #  * @param self The repository executing a dry-run cut with no release writes.
+    #  * @param plan The locally constructed source, batch and installed SDK identity.
+    #  * @returns None; records isolated preview evidence outside the mutable journal.
+    #  * @throws Blocked when the fresh preview SDK identity is invalid.
+    #  */
+    def authorize_preview(self, plan):
+        from release_toolchain import validate_sdk
+        self._preview_sdk_context = {key: plan[key] for key in ['batch_tag', 'source_sha']}
+        self._preview_sdk_context['sdk'] = validate_sdk(plan['packaging_sdk'])
+
+    # Purpose: Bind recovery to committed SDK source and planning to immutable intent.
     # /**
     #  * @param self The repository and trusted workflow SDK context.
     #  * @param plan The exact frozen source, prepared SHA and release files.
-    #  * @returns The recorded or independently source-bound SDK identity.
-    #  * @throws Blocked if no matching SDK provenance is available.
+    #  * @returns The independently source-bound SDK identity.
+    #  * @throws Blocked if journal metadata differs from committed or original-run evidence.
     #  */
     def expected_sdk(self, plan):
         from release_toolchain import SDK_FILE, decode_sdk, validate_sdk
-        if 'packaging_sdk' in plan:
-            identity = validate_sdk(plan['packaging_sdk'])
-            pin = plan.get('files', {}).get(SDK_FILE)
-            if pin is not None and decode_sdk(pin) != identity:
-                raise Blocked('Frozen SDK file differs from batch metadata')
-            return identity
+        recorded = validate_sdk(plan['packaging_sdk']) if 'packaging_sdk' in plan else None
+        committed = self.prepared_sdk(plan)
+        journal_pin = plan.get('files', {}).get(SDK_FILE)
+        if committed is not None:
+            if recorded != committed or journal_pin is None or decode_sdk(journal_pin) != committed:
+                raise Blocked('Frozen SDK journal differs from committed prepared source')
+            return committed
+        if plan.get('prepared_sha') and journal_pin is not None:
+            raise Blocked('Frozen SDK journal pin is absent from committed prepared source')
+        if recorded is not None and not plan.get('prepared_sha'):
+            preview = self._preview_sdk_context
+            bound = (preview is not None and all(preview.get(key) == plan.get(key)
+                     for key in ['batch_tag', 'source_sha']))
+            intended = preview['sdk'] if bound else self.intent_sdk(plan)
+            if recorded != intended or (journal_pin is not None and decode_sdk(journal_pin) != intended):
+                raise Blocked('Journal SDK differs from immutable batch intent')
+            return intended
         context = json.loads(self.env.get('RELEASE_BATCH_SDK_CONTEXT', '{}'))
         if context:
             keys = ['batch_tag', 'source_sha', 'prepared_sha']
             if any(context.get(key) != plan.get(key) for key in keys):
                 raise Blocked('Workflow SDK proof belongs to another frozen batch')
-            return validate_sdk(context['sdk'])
+            proven = validate_sdk(context['sdk'])
+            if recorded is not None and recorded != proven:
+                raise Blocked('Recorded SDK differs from original Deploy evidence')
+            return proven
         pin = self.git('show', plan['source_sha'] + ':' + SDK_FILE, check=False)
-        if pin.returncode == 0:
+        if pin.returncode == 0 and recorded is None:
             return decode_sdk(pin.stdout)
         raise Blocked('Frozen batch has no packaging SDK proof; resolve original Deploy evidence first')
 

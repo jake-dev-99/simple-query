@@ -89,6 +89,45 @@ class WorkflowTest(unittest.TestCase):
     def test_deploy_disables_sdk_retries_so_coordinator_owns_cooldown(self):
         self.assertEqual(workflow('deploy.yml')['jobs']['publish']['env']['PUB_MAX_HTTP_RETRIES'], '1')
 
+    # Purpose: Keep historical tag inspection independent of files absent from old source.
+    # /**
+    #  * @param self The workflow shell fixture with a historical source commit.
+    #  * @returns None; asserts manual inspection loads invocation-pinned current tooling.
+    #  * @throws AssertionError if checkout of an old tag loses the SDK selector.
+    #  */
+    def test_manual_historical_inspection_uses_invocation_tooling(self):
+        source = self.root / 'source'
+        source.mkdir()
+        subprocess.run(['git', 'init', str(source)], check=True, capture_output=True)
+        subprocess.run(['git', '-C', str(source), 'config', 'user.name', 'Fixture'], check=True)
+        subprocess.run(['git', '-C', str(source), 'config', 'user.email', 'fixture@example.invalid'], check=True)
+        (source / 'pubspec.yaml').write_text('name: fixture\nversion: 1.0.0\n')
+        subprocess.run(['git', '-C', str(source), 'add', '.'], check=True)
+        subprocess.run(['git', '-C', str(source), 'commit', '-m', 'old source'], check=True, capture_output=True)
+        old = subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()
+        shutil.copytree(ROOT / 'tool', source / 'tool', ignore=shutil.ignore_patterns('__pycache__'))
+        subprocess.run(['git', '-C', str(source), 'add', 'tool'], check=True)
+        subprocess.run(['git', '-C', str(source), 'commit', '-m', 'current tooling'], check=True, capture_output=True)
+        invocation = subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()
+        subprocess.run(['git', '-C', str(source), 'tag', 'historical', old], check=True)
+        remote = self.root / 'remote.git'
+        subprocess.run(['git', 'clone', '--bare', str(source), str(remote)], check=True, capture_output=True)
+        snapshot = self.root / 'snapshot'
+        subprocess.run(['git', 'clone', '--depth', '1', '--single-branch', '--branch', 'historical', remote.as_uri(), str(snapshot)], check=True, capture_output=True)
+        source = snapshot
+        missing = subprocess.run(['git', '-C', str(source), 'cat-file', '-e', invocation], capture_output=True)
+        self.assertNotEqual(missing.returncode, 0)
+        self.env.update(INPUT_EVENT_NAME='workflow_dispatch', GITHUB_SHA=invocation,
+                        RUNNER_TEMP=str(self.root), GITHUB_WORKSPACE=str(source.parent),
+                        GITHUB_ENV=str(self.root / 'env'))
+        self.fake('python3', '#!/usr/bin/env bash\nif [ "$1" = "-m" ]; then exit 0; fi\ntest -f "$1" || exit 91\nprintf "%s\n" "$@"\n')
+        result = self.step('deploy.yml', 'Select committed packaging SDK', source)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('--inspect', result.stdout.splitlines())
+        self.assertEqual(Path(result.stdout.splitlines()[-1]).resolve(), source.resolve())
+        self.assertFalse((source / 'tool/release_toolchain.py').exists())
+        self.assertEqual(subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip(), old)
+
     def test_deploy_uploads_only_from_original_tag_push(self):
         steps = {step['name']: step for step in workflow('deploy.yml')['jobs']['publish']['steps'] if 'name' in step}
         self.assertIn("github.event_name == 'push'", steps['Publish']['if'])

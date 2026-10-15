@@ -197,7 +197,9 @@ class Coordinator:
                 'error': None, 'package_paths': self.packages, 'packages': [], 'files': {},
                 'target': package, 'bump': bump, 'created_at': self.now(),
                 'batch_tag': 'sz-release-batch-' + self.run_id}
-        if not dry_run:
+        if dry_run:
+            self.repo.authorize_preview(plan)
+        else:
             self.repo.tag(plan['batch_tag'], plan['source_sha'], message=json.dumps(plan))
             self.journal.create(plan)
         return plan
