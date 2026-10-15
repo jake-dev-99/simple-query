@@ -120,6 +120,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         if: startsWith(needs.resolve-tag.outputs.tag, format('{0}-v', matrix.package.name))
         with:
+          # Public repository: read-only fetches need no persisted token.
           persist-credentials: false
           ref: ${{ needs.resolve-tag.outputs.ref }}
           fetch-depth: 0  # full history for the ancestry check
