@@ -272,6 +272,28 @@ class ToolchainTest(unittest.TestCase):
         self.assertEqual(result['context'], {})
         self.journal.logs.assert_not_called()
 
+    # Purpose: Keep a committed SDK available if a delayed receipt appears after bootstrap.
+    # /**
+    #  * @param self The cancelled pinned batch whose failed run may have uploaded.
+    #  * @returns None; asserts an absent early receipt cannot discard the frozen SDK.
+    #  * @throws AssertionError if later reconciliation would only have current stable.
+    #  */
+    def test_failed_pinned_cancel_retains_sdk_for_delayed_receipt(self):
+        self.plan.update(status='cancelled', packaging_sdk=self.original)
+        self.plan['files']['tool/release-sdk.json'] = json.dumps(self.original)
+        self.plan['packages'][0].update(state='tagged', version='1.0.1')
+        self.repository.prepared_sdk.return_value = self.original
+        self.repository.remote_tag_sha.return_value = self.plan['prepared_sha']
+        self.journal.run.return_value = {'id': 7, 'status': 'completed', 'conclusion': 'failure'}
+        pub = Mock()
+        pub.receipt.return_value = None
+        result = self.module.resolve_workflow_sdk({'plan': self.plan, 'journal': self.journal,
+                                                   'repository': self.repository, 'pub': pub,
+                                                   'catalog': self.catalog, 'operation': 'cut'})
+        self.assertEqual(result['current'], self.latest)
+        self.assertEqual(result['batch'], self.original)
+        self.assertEqual(result['context']['prepared_sha'], self.plan['prepared_sha'])
+
     # Purpose: Reject bootstrap SDK drift even when both mutable journal fields agree.
     # /**
     #  * @param self The historical source fixture with independently committed SDK proof.

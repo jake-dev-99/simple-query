@@ -165,7 +165,8 @@ def needs_batch_sdk(context):
         if not evidence or package['state'] == 'aborted':
             continue
         pub = context.get('pub')
-        if pub is not None:
+        # A committed pin remains needed if a receipt appears after this lookup.
+        if pub is not None and SDK_FILE not in plan.get('files', {}):
             run = context['journal'].run(package, plan['prepared_sha'])
             failed = run is not None and run['status'] == 'completed' and run['conclusion'] != 'success'
             if failed and pub.receipt(package['name'], package['version']) is None:
