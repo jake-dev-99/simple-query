@@ -90,6 +90,7 @@ jobs:
       PUB_MAX_HTTP_RETRIES: '1'
     needs: resolve-tag
     permissions:
+      actions: read  # source-matched original Deploy metadata/logs for inspection
       id-token: write
       contents: read
     runs-on: ubuntu-latest
