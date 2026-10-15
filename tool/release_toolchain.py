@@ -166,10 +166,11 @@ def needs_batch_sdk(context):
             continue
         pub = context.get('pub')
         # A committed pin remains needed if a receipt appears after this lookup.
-        if pub is not None and SDK_FILE not in plan.get('files', {}):
+        if pub is not None:
             run = context['journal'].run(package, plan['prepared_sha'])
             failed = run is not None and run['status'] == 'completed' and run['conclusion'] != 'success'
-            if failed and pub.receipt(package['name'], package['version']) is None:
+            committed = repository.prepared_sdk(plan) if repository is not None else None
+            if failed and pub.receipt(package['name'], package['version']) is None and committed is None:
                 continue
         required = True
     return required

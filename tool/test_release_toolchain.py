@@ -293,6 +293,11 @@ class ToolchainTest(unittest.TestCase):
         self.assertEqual(result['current'], self.latest)
         self.assertEqual(result['batch'], self.original)
         self.assertEqual(result['context']['prepared_sha'], self.plan['prepared_sha'])
+        self.plan['files'].clear()
+        with self.assertRaisesRegex(Blocked, 'committed prepared source'):
+            self.module.resolve_workflow_sdk({'plan': self.plan, 'journal': self.journal,
+                                             'repository': self.repository, 'pub': pub,
+                                             'catalog': self.catalog, 'operation': 'cut'})
 
     # Purpose: Reject bootstrap SDK drift even when both mutable journal fields agree.
     # /**
