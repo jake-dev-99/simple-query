@@ -42,6 +42,7 @@ class QueryHostApiImplTest {
 
         override fun onCreate() = true
 
+        /** Answers by URI path, recording each URI and the `sortOrder` the provider received. */
         override fun query(
             uri: Uri,
             projection: Array<String>?,
@@ -256,6 +257,7 @@ class QueryHostApiImplTest {
         assertTrue(provider.opened.single().isClosed)
     }
 
+    /** A join's primary query with a limit and no sort gets `_id ASC LIMIT 10`. */
     @Test
     fun joinNullSortWithLimitSendsDefaultSort() {
         call("queryWithJoins", joinRequest(primary = "rows", join = "empty", limit = 10))
@@ -263,6 +265,7 @@ class QueryHostApiImplTest {
         assertEquals("_id ASC LIMIT 10", provider.sortOrders.first())
     }
 
+    /** A join's primary query with a limit, an offset and no sort gets `_id ASC LIMIT 10 OFFSET 0`. */
     @Test
     fun joinNullSortWithLimitAndOffsetSendsDefaultSort() {
         call("queryWithJoins", joinRequest(primary = "rows", join = "empty", limit = 10, offset = 0))
@@ -270,6 +273,7 @@ class QueryHostApiImplTest {
         assertEquals("_id ASC LIMIT 10 OFFSET 0", provider.sortOrders.first())
     }
 
+    /** A blank sort with a limit is treated as no sort. */
     @Test
     fun joinBlankSortWithLimitSendsDefaultSort() {
         call("queryWithJoins", joinRequest(primary = "rows", join = "empty", sortOrder = "  ", limit = 10))
@@ -277,6 +281,7 @@ class QueryHostApiImplTest {
         assertEquals("_id ASC LIMIT 10", provider.sortOrders.first())
     }
 
+    /** A caller's sort is kept unchanged when a limit and offset are added. */
     @Test
     fun joinGivenSortWithLimitKeepsSort() {
         call(
@@ -287,6 +292,7 @@ class QueryHostApiImplTest {
         assertEquals("date DESC LIMIT 5 OFFSET 2", provider.sortOrders.first())
     }
 
+    /** The `query` host call gets the same default as a join when it has a limit and an offset but no sort. */
     @Test
     fun queryNullSortWithLimitAndOffsetSendsDefaultSort() {
         call("query", QueryRequest(contentUri = uri("rows"), limit = 10, offset = 0))
@@ -294,6 +300,7 @@ class QueryHostApiImplTest {
         assertEquals("_id ASC LIMIT 10 OFFSET 0", provider.sortOrders.first())
     }
 
+    /** With no limit, the sort order reaches the provider as given, including null. */
     @Test
     fun queryNullSortWithoutLimitSendsNoSort() {
         call("query", QueryRequest(contentUri = uri("rows")))
@@ -335,6 +342,7 @@ class QueryHostApiImplTest {
         assertTrue(provider.queried.isEmpty())
     }
 
+    /** A join request whose primary query carries the given [sortOrder], [limit] and [offset]. */
     private fun joinRequest(
         primary: String,
         join: String,
