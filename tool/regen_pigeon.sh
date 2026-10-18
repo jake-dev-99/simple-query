@@ -4,9 +4,9 @@
 #
 # Used by:
 # - Developers: run after editing any pigeon.dart.
-# - CI: see .github/workflows/ci.yml `pigeon-drift` job — runs this and
-#   fails the build if `git diff --exit-code` shows changes (i.e. the
-#   committed generated code is out of sync with pigeon.dart).
+# - CI: no job runs the drift check today. To check by hand, run this and
+#   confirm `git diff --exit-code` is clean (i.e. the committed generated
+#   code matches pigeon.dart).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

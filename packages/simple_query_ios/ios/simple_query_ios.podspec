@@ -9,7 +9,7 @@ iOS implementation for simple_query federated plugin.
   s.license          = { :type => 'MIT', :text => 'MIT' }
   s.author           = { 'SimpleZen' => 'support@simplezen.io' }
   s.source           = { :path => '.' }
-  s.source_files     = 'Classes/**/*'
+  s.source_files     = 'simple_query_ios/Sources/simple_query_ios/**/*.swift'
   s.dependency 'Flutter'
   s.platform         = :ios, '14.0'
   s.pod_target_xcconfig = {

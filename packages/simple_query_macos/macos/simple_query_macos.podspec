@@ -9,7 +9,7 @@ macOS implementation for simple_query federated plugin.
   s.license          = { :type => 'MIT', :text => 'MIT' }
   s.author           = { 'SimpleZen' => 'support@simplezen.io' }
   s.source           = { :path => '.' }
-  s.source_files     = 'Classes/**/*'
+  s.source_files     = 'simple_query_macos/Sources/simple_query_macos/**/*.swift'
   s.dependency 'FlutterMacOS'
   s.platform         = :osx, '10.14'
   s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES' }

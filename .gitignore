@@ -107,3 +107,7 @@ lib/generated_plugin_registrant.dart
 
 # Delegation executor workdirs (SMPL-693) — never committed.
 .exec/
+
+# Swift Package Manager (plugin packages)
+.build/
+.swiftpm/
