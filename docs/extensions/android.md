@@ -10,6 +10,7 @@ Namespace: `android.provider`
 - `queryWithJoins`
   - required args: `contentUri`, `joins`
   - optional args: `projection`, `selection`, `selectionArgs`, `sortOrder`, `limit`, `offset`
+  - sort order: a `limit` (with or without `offset`) and no `sortOrder` sorts by `_id ASC`, as `query()` does; a provider with no `_id` column needs an explicit `sortOrder`
   - response shape: `{ rowCount: int, rows: [{ data: Map<String,Object?>, related: Map<String,List<Map<String,Object?>>> }] }`
   - error mapping: malformed join payload -> `invalidQuery`, provider failure -> `unavailable`/`transientFailure`, null cursor for the primary or any related query -> `unavailable` (native details name the failing `join`)
 - `extractToFile`
