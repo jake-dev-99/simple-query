@@ -4,7 +4,7 @@ import 'package:pigeon/pigeon.dart';
   PigeonOptions(
     dartOut: 'lib/src/generated/native_query.g.dart',
     dartPackageName: 'simple_query_macos',
-    swiftOut: 'macos/Classes/NativeQuery.g.swift',
+    swiftOut: 'macos/simple_query_macos/Sources/simple_query_macos/NativeQuery.g.swift',
     swiftOptions: SwiftOptions(
       errorClassName: 'NativeQueryPigeonError',
     ),
