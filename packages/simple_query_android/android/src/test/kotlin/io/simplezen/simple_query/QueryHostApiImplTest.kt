@@ -37,10 +37,12 @@ class QueryHostApiImplTest {
     // "rows" -> two rows (one BLOB column, which the Pigeon path drops).
     class FakeProvider : ContentProvider() {
         val queried = mutableListOf<String?>()
+        val sortOrders = mutableListOf<String?>()
         val opened = mutableListOf<Cursor>()
 
         override fun onCreate() = true
 
+        /** Answers by URI path, recording each URI and the `sortOrder` the provider received. */
         override fun query(
             uri: Uri,
             projection: Array<String>?,
@@ -49,6 +51,7 @@ class QueryHostApiImplTest {
             sortOrder: String?,
         ): Cursor? {
             queried.add(uri.lastPathSegment)
+            sortOrders.add(sortOrder)
             val columns = arrayOf("_id", "body", "data")
             val cursor = when (uri.lastPathSegment) {
                 "denied" -> throw SecurityException("Permission Denial: reading $uri")
@@ -254,6 +257,57 @@ class QueryHostApiImplTest {
         assertTrue(provider.opened.single().isClosed)
     }
 
+    /** A join's primary query with a limit and no sort gets `_id ASC LIMIT 10`. */
+    @Test
+    fun joinNullSortWithLimitSendsDefaultSort() {
+        call("queryWithJoins", joinRequest(primary = "rows", join = "empty", limit = 10))
+
+        assertEquals("_id ASC LIMIT 10", provider.sortOrders.first())
+    }
+
+    /** A join's primary query with a limit, an offset and no sort gets `_id ASC LIMIT 10 OFFSET 0`. */
+    @Test
+    fun joinNullSortWithLimitAndOffsetSendsDefaultSort() {
+        call("queryWithJoins", joinRequest(primary = "rows", join = "empty", limit = 10, offset = 0))
+
+        assertEquals("_id ASC LIMIT 10 OFFSET 0", provider.sortOrders.first())
+    }
+
+    /** A blank sort with a limit is treated as no sort. */
+    @Test
+    fun joinBlankSortWithLimitSendsDefaultSort() {
+        call("queryWithJoins", joinRequest(primary = "rows", join = "empty", sortOrder = "  ", limit = 10))
+
+        assertEquals("_id ASC LIMIT 10", provider.sortOrders.first())
+    }
+
+    /** A caller's sort is kept unchanged when a limit and offset are added. */
+    @Test
+    fun joinGivenSortWithLimitKeepsSort() {
+        call(
+            "queryWithJoins",
+            joinRequest(primary = "rows", join = "empty", sortOrder = "date DESC", limit = 5, offset = 2),
+        )
+
+        assertEquals("date DESC LIMIT 5 OFFSET 2", provider.sortOrders.first())
+    }
+
+    /** The `query` host call gets the same default as a join when it has a limit and an offset but no sort. */
+    @Test
+    fun queryNullSortWithLimitAndOffsetSendsDefaultSort() {
+        call("query", QueryRequest(contentUri = uri("rows"), limit = 10, offset = 0))
+
+        assertEquals("_id ASC LIMIT 10 OFFSET 0", provider.sortOrders.first())
+    }
+
+    /** With no limit, the sort order reaches the provider as given, including null. */
+    @Test
+    fun queryNullSortWithoutLimitSendsNoSort() {
+        call("query", QueryRequest(contentUri = uri("rows")))
+
+        assertNull(provider.sortOrders.first())
+    }
+
     @Test
     fun insertUnsupportedRepliesNotSupported() {
         val reply = call("insert", InsertRequest(contentUri = uri("rows"), values = mapOf("body" to "x")))
@@ -288,8 +342,20 @@ class QueryHostApiImplTest {
         assertTrue(provider.queried.isEmpty())
     }
 
-    private fun joinRequest(primary: String, join: String) = JoinQueryRequest(
-        primary = QueryRequest(contentUri = uri(primary)),
+    /** A join request whose primary query carries the given [sortOrder], [limit] and [offset]. */
+    private fun joinRequest(
+        primary: String,
+        join: String,
+        sortOrder: String? = null,
+        limit: Long? = null,
+        offset: Long? = null,
+    ) = JoinQueryRequest(
+        primary = QueryRequest(
+            contentUri = uri(primary),
+            sortOrder = sortOrder,
+            limit = limit,
+            offset = offset,
+        ),
         joins = listOf(
             JoinSpec(
                 name = "parts",

@@ -175,13 +175,30 @@ class QueryHostApiImpl(
         )
     }
 
+    /**
+     * Purpose: Fold a request's `limit` and `offset` into the sort order,
+     * the only place the legacy `ContentResolver.query(...)` signature
+     * accepts them. A provider that applies the sort order as SQL honors
+     * them; one that ignores the sort order drops them.
+     *
+     * A bare `LIMIT` is not a valid sort clause, so a null or blank
+     * [sortOrder] is replaced by [DEFAULT_SORT_ORDER]. That value matches the
+     * default the Dart `query()` sends (`simple_query_android_api.dart`); a
+     * provider with no `_id` column must be given an explicit sort order.
+     *
+     * @param sortOrder the caller's sort order; null or blank means none.
+     * @param limit the row limit, or null for none.
+     * @param offset the rows to skip; applied only with a [limit].
+     * @return [sortOrder] as given (including null) when there is no [limit];
+     *   otherwise the sort order followed by `LIMIT` and, when [offset] is
+     *   set, `OFFSET`.
+     */
     private fun buildSortOrderWithLimit(sortOrder: String?, limit: Long?, offset: Long?): String? {
-        // Some ContentProviders support LIMIT in sortOrder
-        return when {
-            limit != null && offset != null -> "$sortOrder LIMIT $limit OFFSET $offset"
-            limit != null -> "${sortOrder ?: ""} LIMIT $limit".trim()
-            else -> sortOrder
-        }
+        if (limit == null) return sortOrder
+
+        val sort = if (sortOrder.isNullOrBlank()) DEFAULT_SORT_ORDER else sortOrder
+        val offsetClause = if (offset == null) "" else " OFFSET $offset"
+        return "$sort LIMIT $limit$offsetClause"
     }
 
     private fun buildJoinSelection(
@@ -562,5 +579,14 @@ class QueryHostApiImpl(
         scope.cancel()
         observerRegistry.dispose()
         streamManager.dispose()
+    }
+
+    private companion object {
+        /**
+         * The sort a `limit` gets when the caller gave none. Matches the Dart
+         * `query()` default in `simple_query_android_api.dart`. A provider with
+         * no `_id` column must be given an explicit sort order.
+         */
+        const val DEFAULT_SORT_ORDER = "_id ASC"
     }
 }

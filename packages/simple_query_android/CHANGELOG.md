@@ -1,3 +1,7 @@
+## Unreleased
+
+- A host query with a `limit` and no sort order now sorts by `_id ASC`, instead of sending the provider invalid SQL that failed as `invalidQuery`. This fixes `queryWithJoins` with a `limit` and no `sortOrder` (UNFY-301).
+
 ## 0.3.0
 
 - **Behavior change:** no host call lets a raw `PlatformException` reach callers any more (UNFY-300). The Kotlin host classifies each failure by exception type into the bridge code vocabulary, and the Dart side maps it to `SimpleQueryError`: a provider `SecurityException` → `permissionDenied`, `IllegalArgumentException` (e.g. `Unknown URI`) → `invalidQuery`, `UnsupportedOperationException` → `notSupported`, and so on per `docs/ERROR_MAPPING.md`. Anything unlisted → `transientFailure`. This covers queries, joins, mutations, batches, binary open/close, provider calls, file extraction, observers and the permission pre-flight. Errors carry domain, operation, a `simple_query:` message, `details.code`, `details.nativeType` and the host details, and keep the original stack trace. Callers that caught `PlatformException` must catch `SimpleQueryError` and switch on its `code`.
