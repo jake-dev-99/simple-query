@@ -20,6 +20,32 @@ class Deferred(RuntimeError):
         self.until = until
 
 
+# Purpose: Decide whether a scheduled run must leave a batch alone until an operator acts (UNFY-402).
+# /**
+#  * @param plan The latest journal plan, or None when no journal exists.
+#  * @param scheduled Whether the run was started by the hourly schedule.
+#  * @returns True when the batch is blocked and only a manual dispatch may touch it.
+#  */
+def quiet_on_schedule(plan, scheduled):
+    return bool(scheduled and plan is not None and plan['status'] == 'blocked')
+
+
+# Purpose: Make scheduled resumes go quiet after a blocker raised outside the coordinator's run (UNFY-402).
+# /**
+#  * @param journal The durable journal that persists batch plans.
+#  * @param plan The latest loaded journal plan, or None when no journal exists.
+#  * @param error The Blocked error to record on the batch.
+#  * @returns None; only an in-flight journal is rewritten. Absent journals and
+#  *          complete, cancelled or already blocked ones are left alone, so a
+#  *          journal that is no longer a draft is never re-drafted by save().
+#  */
+def record_blocker(journal, plan, error):
+    if plan is None or plan.get('journal_id') is None or plan['status'] in ('blocked', 'complete', 'cancelled'):
+        return
+    plan.update(status='blocked', error=str(error), not_before=0)
+    journal.save(plan)
+
+
 def retry_deadline(value, now):
     if value is None:
         return None

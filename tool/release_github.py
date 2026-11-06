@@ -5,6 +5,7 @@ import json
 import os
 import re
 import time
+from typing import NamedTuple
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -48,6 +49,17 @@ def decode(body):
         return plan
     except (ValueError, KeyError, TypeError, zlib.error) as error:
         raise Blocked('Invalid batch journal; preserve it for inspection') from error
+
+
+# Purpose: Summarize one release listing so orphan recovery can trust or refuse it (UNFY-402).
+# /**
+#  * @param release_count Every release GitHub returned, journal or not.
+#  * @param journaled The batch identity of every journal seen, draft or published.
+#  * @returns An immutable summary; an empty or partial listing proves no tag is an orphan.
+#  */
+class ReleaseListing(NamedTuple):
+    release_count: int
+    journaled: frozenset
 
 
 class GitHubClient:
@@ -96,10 +108,14 @@ class GitHubClient:
     def load(self):
         # Keep only one full journal and rolling-window timestamps, never all
         # historical frozen files. An incomplete bounded scan requires attention.
+        # The listing summary lets orphan recovery refuse a tag whose journal
+        # this scan did not see (UNFY-402).
         latest = None
         self.known_publications = []
+        release_count, journaled = 0, set()
         for page in range(1, 11):
             releases = self.request('GET', self.path + f'/releases?per_page=100&page={page}')
+            release_count += len(releases)
             for release in releases:
                 # GitHub can assign draft releases an untagged-* tag name.
                 # The internal title and frozen body retain the batch identity.
@@ -118,6 +134,7 @@ class GitHubClient:
                         or plan.get('batch_tag') != identity):
                     raise Blocked('Batch journal identity does not match its frozen plan')
                 plan['journal_id'] = release['id']
+                journaled.add(identity)
                 if not release['draft']:
                     plan.update(status='blocked', error='Batch journal is no longer an internal draft release')
                 if latest is None or plan['journal_id'] > latest['journal_id']:
@@ -127,6 +144,7 @@ class GitHubClient:
                 else:
                     self.remember_publications(plan)
             if len(releases) < 100:
+                self.listing = ReleaseListing(release_count, frozenset(journaled))
                 return latest
         raise Blocked('Release history exceeds 1000 records; inspect/archive obsolete journals before resuming')
 

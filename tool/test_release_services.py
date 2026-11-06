@@ -4,6 +4,7 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import threading
 import unittest
+from unittest.mock import Mock
 
 
 class Clock:
@@ -17,6 +18,47 @@ class Clock:
     def sleep(self, seconds):
         self.sleeps.append(seconds)
         self.value += seconds
+
+
+# Purpose: Pin which journals a blocker raised outside the coordinator may rewrite (UNFY-402).
+# /**
+#  * @param unittest.TestCase The standard isolated assertion fixture.
+#  * @returns A suite covering in-flight, terminal, absent and already-blocked journals.
+#  * @throws AssertionError if a terminal or non-draft journal could be re-saved as a draft.
+#  */
+class BlockerTest(unittest.TestCase):
+    def setUp(self):
+        self.module = importlib.import_module('release_services')
+        self.journal = Mock()
+        self.error = self.module.Blocked('Immutable SDK intent is missing or malformed')
+
+    def test_in_flight_journal_is_marked_blocked_without_cooldown(self):
+        for status in ['planning', 'planned', 'prepared', 'publishing', 'deferred']:
+            with self.subTest(status=status):
+                plan = {'journal_id': 9, 'status': status, 'not_before': 1700000900.0, 'error': None}
+                self.journal.save.reset_mock()
+                self.module.record_blocker(self.journal, plan, self.error)
+                self.journal.save.assert_called_once_with(plan)
+                self.assertEqual((plan['status'], plan['not_before'], plan['error']),
+                                 ('blocked', 0, str(self.error)))
+
+    def test_terminal_absent_and_already_blocked_journals_are_never_rewritten(self):
+        for plan in [None, {'status': 'planning'},
+                     *({'journal_id': 9, 'status': status, 'error': 'original cause'}
+                       for status in ['complete', 'cancelled', 'blocked'])]:
+            with self.subTest(plan=plan):
+                before = dict(plan) if plan else None
+                self.module.record_blocker(self.journal, plan, self.error)
+                self.assertEqual(plan, before)
+        self.journal.save.assert_not_called()
+
+    def test_only_a_blocked_batch_is_quiet_and_only_on_schedule(self):
+        quiet = self.module.quiet_on_schedule
+        self.assertTrue(quiet({'status': 'blocked'}, True))
+        self.assertFalse(quiet({'status': 'blocked'}, False))
+        self.assertFalse(quiet(None, True))
+        for status in ['planning', 'deferred', 'complete', 'cancelled']:
+            self.assertFalse(quiet({'status': status}, True), status)
 
 
 class HttpTest(unittest.TestCase):

@@ -125,6 +125,34 @@ class GitHubTest(unittest.TestCase):
         self.responses = [(200, {}, [{'id': 1, 'draft': False, 'tag_name': 'demo-v1.0.0', 'body': 'notes'}])]
         self.assertIsNone(self.client.load())
 
+    # Purpose: Let orphan recovery tell an empty listing from a listing without journals.
+    # /**
+    #  * @param self The unittest fixture with its local GitHub HTTP server.
+    #  * @returns None; asserts load() reports every release and every journaled batch identity.
+    #  * @throws AssertionError if a journaled batch could pass as an orphan intent.
+    #  */
+    def test_load_reports_release_count_and_every_journaled_batch(self):
+        # Purpose: Encode a minimal frozen journal for one batch identity.
+        # /**
+        #  * @param tag The immutable batch identifier.
+        #  * @returns The compressed journal body consumed by the GitHub adapter.
+        #  * @throws Blocked if the fixture body exceeds GitHub capacity.
+        #  */
+        def body(tag):
+            return self.module.encode({'schema': 1, 'batch_tag': tag, 'files': {}, 'packages': []})
+        self.responses = [(200, {}, [
+            {'id': 3, 'draft': False, 'tag_name': 'demo-v1.0.0', 'body': 'notes'},
+            {'id': 2, 'draft': True, 'tag_name': 'untagged-abc',
+             'name': 'Internal batch sz-release-batch-2', 'body': body('sz-release-batch-2')},
+            {'id': 1, 'draft': True, 'tag_name': 'sz-release-batch-1', 'body': body('sz-release-batch-1')}])]
+        self.assertEqual(self.client.load()['journal_id'], 2)
+        self.assertEqual(self.client.listing, self.module.ReleaseListing(
+            release_count=3, journaled=frozenset({'sz-release-batch-1', 'sz-release-batch-2'})))
+        self.responses = [(200, {}, [])]
+        self.assertIsNone(self.client.load())
+        self.assertEqual(self.client.listing,
+                         self.module.ReleaseListing(release_count=0, journaled=frozenset()))
+
     def test_rate_limit_respects_retry_after_on_mutation_without_retrying_post(self):
         services = importlib.import_module('release_services')
         self.responses = [(429, {'Retry-After': '86400'}, {'message': 'quota'})]

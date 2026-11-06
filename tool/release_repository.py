@@ -57,7 +57,16 @@ class Repository:
         self.git('fetch', 'origin', 'main', '--tags')
         return self.git('rev-parse', 'origin/main')
 
-    def recover_intent(self, existing=None):
+    # Purpose: Recover a manual intent whose journal creation was interrupted, and nothing else.
+    # /**
+    #  * @param self The repository with its fetched immutable intent tags.
+    #  * @param existing The latest journal plan, or None when the listing holds no journal.
+    #  * @param listing The release listing summary the journal was loaded from.
+    #  * @returns The orphan intent newer than every journal, or None when there is none.
+    #  * @throws Blocked for an empty listing, a candidate that already has a journal, or an intent without a packaging SDK.
+    #  */
+    def recover_intent(self, existing, listing):
+        from release_toolchain import validate_sdk
         # The immutable annotated tag survives a stopped runner between tag and
         # journal creation. Never resurrect an older completed/cancelled batch.
         self.git('fetch', 'origin', 'main', '--tags')
@@ -67,6 +76,16 @@ class Repository:
                       and int(name.rsplit('-', 1)[1]) > cutoff]
         if not candidates:
             return None
+        # An empty listing cannot prove these tags are orphans: GitHub once listed
+        # nothing while a complete journal existed, and a duplicate journal for a
+        # finished batch was created (UNFY-402).
+        if not listing.release_count:
+            raise Blocked('Release listing is empty while batch intent tags exist; '
+                          'inspect GitHub before recovering an orphan')
+        journaled = sorted(set(candidates) & listing.journaled)
+        if journaled:
+            raise Blocked(f'Batch intent {", ".join(journaled)} already has a journal; '
+                          'inspect duplicate journals before resuming')
         tag = max(candidates, key=lambda name: int(name.rsplit('-', 1)[1]))
         try:
             plan = json.loads(self.git('for-each-ref', '--format=%(contents)', 'refs/tags/' + tag))
@@ -76,6 +95,11 @@ class Repository:
                 or self.git('rev-parse', tag + '^{commit}') != plan.get('source_sha')
                 or self.git('merge-base', '--is-ancestor', plan['source_sha'], 'origin/main', check=False).returncode):
             raise Blocked('Orphan batch intent does not match main source')
+        # Planning and SDK selection need the frozen SDK; a pre-UNFY-345 intent
+        # has none and would crash both steps every hour.
+        if 'packaging_sdk' not in plan:
+            raise Blocked(f'Orphan batch intent {tag} predates the packaging SDK pin; inspect it before resuming')
+        validate_sdk(plan['packaging_sdk'])
         return plan
 
     def prepare(self, plan):

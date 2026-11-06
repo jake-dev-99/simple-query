@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 import subprocess
 
-from release_services import Blocked, PubClient
+from release_services import Blocked, PubClient, quiet_on_schedule, record_blocker
 
 SDK_FILE = 'tool/release-sdk.json'
 SDK_CATALOG = 'https://storage.googleapis.com/flutter_infra_release/releases/releases_linux.json'
@@ -215,6 +215,42 @@ def inspection_sdk(context):
     return identity
 
 
+# Purpose: Let a run that needs no SDK skip installation and verification.
+# /**
+#  * @param None Workflow metadata comes from the trusted environment.
+#  * @returns None; writes empty SDK selections to the GitHub output file.
+#  * @throws OSError if the GitHub output file cannot be written.
+#  */
+def emit_no_sdk():
+    with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+        output.write('current_version=\nbatch_version=\n')
+
+
+# Purpose: Select cut/resume SDKs, recording any blocker so scheduled runs go quiet (UNFY-402).
+# /**
+#  * @param context The journal, repository, pub client, operation, and schedule/dry-run flags.
+#  * @returns The SDK selection, or None when a scheduled run meets a blocked batch.
+#  * @throws SystemExit(1) after a blocker is printed and, outside dry runs, persisted on the in-flight journal.
+#  */
+def workflow_selection(context):
+    journal, repository = context['journal'], context['repository']
+    plan = journal.load()
+    if quiet_on_schedule(plan, context['scheduled']):
+        return None  # the coordinator reports noop; no recovery, catalog or SDK is needed
+    try:
+        orphan = repository.recover_intent(plan, journal.listing)
+        if orphan is not None:
+            plan = orphan
+        return resolve_workflow_sdk({'plan': plan, 'journal': journal, 'repository': repository,
+                                     'catalog': context['pub'].get(SDK_CATALOG), 'pub': context['pub'],
+                                     'operation': context['operation']})
+    except Blocked as error:
+        if not context['dry_run']:
+            record_blocker(journal, plan, error)
+        print(f'Batch blocked: {error}', flush=True)
+        raise SystemExit(1) from error
+
+
 # Purpose: Configure exact SDK setup without mutating journals or release tags.
 # /**
 #  * @param None Workflow metadata comes from the existing trusted environment.
@@ -231,8 +267,7 @@ def main():
     root = args.source_root or Path(__file__).resolve().parents[1]
     operation = 'resume' if os.environ.get('EVENT_NAME') == 'schedule' else os.environ.get('OPERATION') or 'cut'
     if operation == 'cancel' and not (args.deploy or args.inspect or args.verify):
-        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-            output.write('current_version=\nbatch_version=\n')
+        emit_no_sdk()
         return
     if args.verify:
         expected = decode_sdk(os.environ['RELEASE_CURRENT_SDK'])
@@ -242,32 +277,29 @@ def main():
         print('Verified stable packaging SDK: ' + json.dumps(actual), flush=True)
         return
     pub = PubClient()
-    catalog = pub.get(SDK_CATALOG)
     if args.inspect:
         from release_github import GitHubClient
         from release_repository import Repository
         identity = inspection_sdk({'repository': Repository(root), 'tag': os.environ['INSPECT_TAG'],
                                    'journal': GitHubClient(os.environ['GITHUB_REPOSITORY'], os.environ['GH_TOKEN']),
-                                   'catalog': catalog})
+                                   'catalog': pub.get(SDK_CATALOG)})
         selection = {'current': identity, 'batch': identity, 'context': {}}
     elif args.deploy:
         identity = decode_sdk((root / SDK_FILE).read_text())
-        if released_sdk(catalog, identity['version']) != identity:
+        if released_sdk(pub.get(SDK_CATALOG), identity['version']) != identity:
             raise Blocked('Committed publication SDK is not its official stable release')
         selection = {'current': identity, 'batch': identity, 'context': {}}
     else:
         from release_github import GitHubClient
         from release_repository import Repository
-        journal = GitHubClient(os.environ['GITHUB_REPOSITORY'], os.environ['GH_TOKEN'])
-        plan = journal.load()
-        repository = Repository(root)
-        orphan = repository.recover_intent(plan)
-        if orphan is not None:
-            plan = orphan
-        operation = 'resume' if os.environ.get('EVENT_NAME') == 'schedule' else os.environ.get('OPERATION') or 'cut'
-        selection = resolve_workflow_sdk({'plan': plan, 'journal': journal,
-                                          'repository': repository,
-                                          'catalog': catalog, 'pub': pub, 'operation': operation})
+        selection = workflow_selection({
+            'journal': GitHubClient(os.environ['GITHUB_REPOSITORY'], os.environ['GH_TOKEN']),
+            'repository': Repository(root), 'pub': pub, 'operation': operation,
+            'scheduled': os.environ.get('EVENT_NAME') == 'schedule',
+            'dry_run': os.environ.get('DRY_RUN') == 'true'})
+        if selection is None:
+            emit_no_sdk()
+            return
     with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
         output.write(f'current_version={selection["current"]["version"]}\n')
         output.write(f'batch_version={selection["batch"]["version"]}\n')

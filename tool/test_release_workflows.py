@@ -86,6 +86,17 @@ class WorkflowTest(unittest.TestCase):
                         result = subprocess.run(['bash', '-n'], input=step['run'], text=True, capture_output=True)
                         self.assertEqual(result.returncode, 0, str(file)+': '+result.stderr)
 
+    # Purpose: Keep the SDK step's blocker persistence off during previews (UNFY-402).
+    # /**
+    #  * @param self The workflow fixture.
+    #  * @returns None; asserts both Python steps see the dry_run input.
+    #  * @throws AssertionError if the SDK step cannot tell a preview from a real run.
+    #  */
+    def test_release_python_steps_see_the_dry_run_input(self):
+        steps = {step.get('name'): step for step in workflow('release.yml')['jobs']['cut-release']['steps']}
+        for name in ['Select source-bound release SDKs', 'Coordinate batch release']:
+            self.assertEqual(steps[name]['env']['DRY_RUN'], '${{ inputs.dry_run }}', name)
+
     def test_deploy_disables_sdk_retries_so_coordinator_owns_cooldown(self):
         self.assertEqual(workflow('deploy.yml')['jobs']['publish']['env']['PUB_MAX_HTTP_RETRIES'], '1')
 

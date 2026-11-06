@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
+from release_github import ReleaseListing
 from release_services import Blocked
 
 
@@ -331,6 +332,111 @@ class ToolchainTest(unittest.TestCase):
         self.repository.git.side_effect = ['d' * 40, 'e' * 40]
         with self.assertRaisesRegex(Blocked, 'tag'):
             self.module.inspection_sdk(context)
+
+    # Purpose: Build the SDK-step context for a journaled batch without live services.
+    # /**
+    #  * @param self The toolchain fixture.
+    #  * @param plan The latest journal plan the GitHub client would load.
+    #  * @param options Overrides for the operation, schedule and dry-run flags.
+    #  * @returns The context consumed by workflow_selection, with mocked journal, repository and pub.
+    #  * @throws AssertionError never; the mocks record calls for the test to assert.
+    #  */
+    def sdk_step(self, plan, **options):
+        journal = Mock()
+        journal.load.return_value = plan
+        journal.listing = ReleaseListing(release_count=1, journaled=frozenset({plan['batch_tag']}))
+        repository = Mock()
+        repository.recover_intent.return_value = None
+        pub = Mock()
+        pub.get.return_value = self.catalog
+        return {'journal': journal, 'repository': repository, 'pub': pub, 'operation': 'resume',
+                'scheduled': True, 'dry_run': False, **options}
+
+    def in_flight_plan(self):
+        return {'schema': 1, 'journal_id': 9, 'batch_tag': 'sz-release-batch-9', 'source_sha': 'd' * 40,
+                'prepared_sha': None, 'status': 'planning', 'phase': 'planning', 'not_before': 0,
+                'error': None, 'files': {}, 'packages': []}
+
+    # Purpose: Make hourly resumes go quiet after the SDK step blocks an in-flight batch (UNFY-402).
+    # /**
+    #  * @param self The toolchain fixture with a pre-pin planning journal.
+    #  * @returns None; asserts the blocker is persisted and the next scheduled run needs no SDK.
+    #  * @throws AssertionError if the step fails without recording why.
+    #  */
+    def test_sdk_step_blocker_is_persisted_on_the_in_flight_journal(self):
+        plan = self.in_flight_plan()
+        context = self.sdk_step(plan)
+        context['repository'].intent_sdk.side_effect = Blocked('Immutable SDK intent is missing or malformed')
+        with self.assertRaises(SystemExit) as stop:
+            self.module.workflow_selection(context)
+        self.assertEqual(stop.exception.code, 1)
+        context['journal'].save.assert_called_once_with(plan)
+        self.assertEqual((plan['status'], plan['not_before']), ('blocked', 0))
+        self.assertIn('SDK intent', plan['error'])
+        context['journal'].save.reset_mock()
+        context['pub'].get.reset_mock()
+        self.assertIsNone(self.module.workflow_selection(context))
+        context['journal'].save.assert_not_called()
+        context['pub'].get.assert_not_called()
+
+    # Purpose: Keep dry runs free of release-state writes even when the SDK step blocks.
+    # /**
+    #  * @param self The toolchain fixture with a pre-pin planning journal.
+    #  * @returns None; asserts the step still fails but the journal is untouched.
+    #  * @throws AssertionError if a preview persists a blocker.
+    #  */
+    def test_dry_run_sdk_step_blocker_leaves_the_journal_unchanged(self):
+        plan = self.in_flight_plan()
+        context = self.sdk_step(plan, dry_run=True, scheduled=False)
+        context['repository'].intent_sdk.side_effect = Blocked('Immutable SDK intent is missing or malformed')
+        with self.assertRaises(SystemExit):
+            self.module.workflow_selection(context)
+        context['journal'].save.assert_not_called()
+        self.assertEqual(plan['status'], 'planning')
+
+    # Purpose: Never rewrite a terminal journal because a newer orphan tag is unusable.
+    # /**
+    #  * @param self The toolchain fixture with a complete journal and a refused orphan.
+    #  * @returns None; asserts the step fails without touching the completed batch.
+    #  * @throws AssertionError if a complete journal is marked blocked.
+    #  */
+    def test_sdk_step_blocker_never_rewrites_a_complete_journal(self):
+        plan = {**self.in_flight_plan(), 'status': 'complete', 'phase': 'complete'}
+        context = self.sdk_step(plan)
+        context['repository'].recover_intent.side_effect = Blocked(
+            'Orphan batch intent sz-release-batch-10 predates the packaging SDK pin')
+        with self.assertRaises(SystemExit):
+            self.module.workflow_selection(context)
+        context['journal'].save.assert_not_called()
+        self.assertEqual(plan['status'], 'complete')
+
+    # Purpose: Let a scheduled run on a blocked batch finish without catalog or SDK setup.
+    # /**
+    #  * @param self The toolchain fixture with a blocked journal.
+    #  * @returns None; asserts main emits empty SDK outputs and reads no catalog.
+    #  * @throws AssertionError if the quiet path installs an SDK or writes the journal.
+    #  */
+    def test_scheduled_run_on_a_blocked_batch_needs_no_catalog_or_sdk(self):
+        plan = {**self.in_flight_plan(), 'status': 'blocked', 'error': 'Analyzer error',
+                'packaging_sdk': self.original}
+        context = self.sdk_step(plan)
+        context['repository'].intent_sdk.return_value = self.original
+        self.assertIsNone(self.module.workflow_selection(context))
+        context['pub'].get.assert_not_called()
+        context['repository'].recover_intent.assert_not_called()
+        context['journal'].save.assert_not_called()
+        manual = self.module.workflow_selection({**context, 'scheduled': False})
+        self.assertEqual((manual['current'], manual['batch']), (self.original, self.original))
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder) / 'output'
+            environment = {'GITHUB_OUTPUT': str(output), 'GITHUB_ENV': str(Path(folder) / 'env'),
+                           'GITHUB_REPOSITORY': 'owner/repo', 'GH_TOKEN': 'fixture', 'EVENT_NAME': 'schedule'}
+            with patch.dict(os.environ, environment, clear=True), patch.object(sys, 'argv', ['release_toolchain.py']), patch.object(self.module, 'PubClient') as pub:
+                with patch('release_repository.Repository', return_value=context['repository']), patch('release_github.GitHubClient', return_value=context['journal']):
+                    self.module.main()
+            pub.return_value.get.assert_not_called()
+            self.assertEqual(output.read_text(), 'current_version=\nbatch_version=\n')
+            self.assertFalse((Path(folder) / 'env').exists())
 
     # Purpose: Exercise the workflow entry point when stable has advanced after a tag.
     # /**
