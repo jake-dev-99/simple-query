@@ -56,6 +56,7 @@ def decode(body):
 #  * @param release_count Every release GitHub returned, journal or not.
 #  * @param journaled The batch identity of every journal seen, draft or published.
 #  * @returns An immutable summary; an empty or partial listing proves no tag is an orphan.
+#  * @throws Nothing; construction only records the completed listing.
 #  */
 class ReleaseListing(NamedTuple):
     release_count: int

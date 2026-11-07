@@ -1,9 +1,11 @@
 """Release boundaries: hosted HTTP, quotas, git snapshots, and GitHub journal."""
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 import json
 import random
 import re
+import sys
 import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
@@ -14,36 +16,119 @@ class Blocked(RuntimeError):
     """An error requiring attention; never automatically retry publication."""
 
 
+SDK_IDENTITY_FIELDS = frozenset({'version', 'revision', 'channel'})
+SDK_VERSION_PATTERN = r'\d+\.\d+\.\d+'
+SDK_REVISION_PATTERN = r'[0-9a-f]{40}'
+
+
+# Purpose: Reject incomplete or moving SDK descriptions before recovery can authorize them (UNFY-402).
+# /**
+#  * @param value The candidate SDK identity from immutable source or workflow metadata.
+#  * @returns Whether all fields identify one exact stable framework release.
+#  * @throws Nothing; malformed values fail the predicate.
+#  */
+def is_exact_stable_sdk(value):
+    return (isinstance(value, dict) and set(value) == SDK_IDENTITY_FIELDS
+            and value['channel'] == 'stable'
+            and re.fullmatch(SDK_VERSION_PATTERN, str(value['version'])) is not None
+            and re.fullmatch(SDK_REVISION_PATTERN, str(value['revision'])) is not None)
+
+
+# Purpose: Keep only exact released SDK identities in source and workflow metadata.
+# /**
+#  * @param value The declared Flutter version, framework revision and channel.
+#  * @returns The validated stable identity without accepting version ranges.
+#  * @throws Blocked for incomplete, experimental or malformed identities.
+#  */
+def validate_sdk(value):
+    if not is_exact_stable_sdk(value):
+        raise Blocked('Packaging SDK must be an exact stable version and framework revision')
+    return dict(value)
+
 class Deferred(RuntimeError):
     def __init__(self, until, reason):
         super().__init__(reason)
         self.until = until
 
 
-# Purpose: Decide whether a scheduled run must leave a batch alone until an operator acts (UNFY-402).
+# Purpose: Keep schedule policy explicit at coordinator and SDK-selection boundaries (UNFY-402).
 # /**
 #  * @param plan The latest journal plan, or None when no journal exists.
-#  * @param scheduled Whether the run was started by the hourly schedule.
-#  * @returns True when the batch is blocked and only a manual dispatch may touch it.
+#  * @param scheduled Whether the hourly schedule started this run.
+#  * @returns Immutable inputs for the shared blocked-batch policy.
+#  * @throws Nothing; construction performs no I/O.
 #  */
-def quiet_on_schedule(plan, scheduled):
-    return bool(scheduled and plan is not None and plan['status'] == 'blocked')
+@dataclass(frozen=True, kw_only=True)
+class ScheduleContext:
+    plan: dict | None
+    scheduled: bool
+
+
+# Purpose: Bind a blocker to the loaded journal without positional argument ambiguity (UNFY-402).
+# /**
+#  * @param journal The durable journal that persists batch plans.
+#  * @param plan The latest loaded journal plan, or None when no journal exists.
+#  * @param error The failure requiring operator attention.
+#  * @returns Immutable inputs for recording a batch blocker.
+#  * @throws Nothing; construction performs no I/O.
+#  */
+@dataclass(frozen=True, kw_only=True)
+class BlockerContext:
+    journal: object
+    plan: dict | None
+    error: Blocked
+
+
+BLOCKER_PROTECTED_STATUSES = frozenset({'blocked', 'complete', 'cancelled'})
+
+
+# Purpose: Decide whether a scheduled run must leave a batch alone until an operator acts (UNFY-402).
+# /**
+#  * @param context The loaded plan and explicit schedule policy inputs.
+#  * @returns True when the batch is blocked and only a manual dispatch may touch it.
+#  * @throws KeyError if a present plan lacks its required status.
+#  */
+def quiet_on_schedule(context):
+    return bool(context.scheduled and context.plan is not None and context.plan['status'] == 'blocked')
+
+
+# Purpose: Prevent blocker handling from re-drafting terminal or non-journal records (UNFY-402).
+# /**
+#  * @param plan The latest journal plan, or None when no journal exists.
+#  * @returns Whether this in-flight journal may persist a new blocker.
+#  * @throws KeyError if an identified journal lacks its required status.
+#  */
+def can_record_blocker(plan):
+    return (plan is not None and plan.get('journal_id') is not None
+            and plan['status'] not in BLOCKER_PROTECTED_STATUSES)
 
 
 # Purpose: Make scheduled resumes go quiet after a blocker raised outside the coordinator's run (UNFY-402).
 # /**
-#  * @param journal The durable journal that persists batch plans.
-#  * @param plan The latest loaded journal plan, or None when no journal exists.
-#  * @param error The Blocked error to record on the batch.
+#  * @param context The journal, loaded plan and blocker bound to this operation.
 #  * @returns None; only an in-flight journal is rewritten. Absent journals and
 #  *          complete, cancelled or already blocked ones are left alone, so a
 #  *          journal that is no longer a draft is never re-drafted by save().
+#  * @throws Blocked or a transport error when the journal cannot be saved.
 #  */
-def record_blocker(journal, plan, error):
-    if plan is None or plan.get('journal_id') is None or plan['status'] in ('blocked', 'complete', 'cancelled'):
+def record_blocker(context):
+    plan = context.plan
+    if not can_record_blocker(plan):
         return
-    plan.update(status='blocked', error=str(error), not_before=0)
-    journal.save(plan)
+    plan.update(status='blocked', error=str(context.error))
+    context.journal.save(plan)
+
+
+# Purpose: Make blocked release attempts reconstructable without parsing freeform output (UNFY-402).
+# /**
+#  * @param context The operation, batch tag when known, and blocker to report.
+#  * @returns None; emits one structured error event on stderr.
+#  * @throws OSError if the diagnostic cannot be written.
+#  */
+def log_blocker(context):
+    print(json.dumps({'level': 'error', 'event': 'release_batch_blocked',
+                      'operation': context['operation'], 'batch_tag': context['batch_tag'],
+                      'error': str(context['error'])}), file=sys.stderr, flush=True)
 
 
 def retry_deadline(value, now):

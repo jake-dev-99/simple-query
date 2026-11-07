@@ -6,25 +6,11 @@ from pathlib import Path
 import re
 import subprocess
 
-from release_services import Blocked, PubClient, quiet_on_schedule, record_blocker
+from release_services import (Blocked, BlockerContext, PubClient, ScheduleContext,
+                              log_blocker, quiet_on_schedule, record_blocker, validate_sdk)
 
 SDK_FILE = 'tool/release-sdk.json'
 SDK_CATALOG = 'https://storage.googleapis.com/flutter_infra_release/releases/releases_linux.json'
-
-
-# Purpose: Keep only exact released SDK identities in source and workflow metadata.
-# /**
-#  * @param value The declared Flutter version, framework revision and channel.
-#  * @returns The validated stable identity without accepting version ranges.
-#  * @throws Blocked for incomplete, experimental or malformed identities.
-#  */
-def validate_sdk(value):
-    if (not isinstance(value, dict) or set(value) != {'version', 'revision', 'channel'}
-            or value['channel'] != 'stable'
-            or not re.fullmatch(r'\d+\.\d+\.\d+', str(value['version']))
-            or not re.fullmatch(r'[0-9a-f]{40}', str(value['revision']))):
-        raise Blocked('Packaging SDK must be an exact stable version and framework revision')
-    return dict(value)
 
 
 # Purpose: Turn invalid serialized SDK metadata into an explicit release blocker.
@@ -232,23 +218,44 @@ def emit_no_sdk():
 #  * @returns The SDK selection, or None when a scheduled run meets a blocked batch.
 #  * @throws SystemExit(1) after a blocker is printed and, outside dry runs, persisted on the in-flight journal.
 #  */
-def workflow_selection(context):
-    journal, repository = context['journal'], context['repository']
-    plan = journal.load()
-    if quiet_on_schedule(plan, context['scheduled']):
+def select_workflow_sdk_and_record_blockers(context):
+    plan = context['journal'].load()
+    if quiet_on_schedule(ScheduleContext(plan=plan, scheduled=context['scheduled'])):
         return None  # the coordinator reports noop; no recovery, catalog or SDK is needed
     try:
-        orphan = repository.recover_intent(plan, journal.listing)
-        if orphan is not None:
-            plan = orphan
-        return resolve_workflow_sdk({'plan': plan, 'journal': journal, 'repository': repository,
-                                     'catalog': context['pub'].get(SDK_CATALOG), 'pub': context['pub'],
-                                     'operation': context['operation']})
+        return recover_and_select_workflow_sdk({**context, 'plan': plan})
     except Blocked as error:
-        if not context['dry_run']:
-            record_blocker(journal, plan, error)
-        print(f'Batch blocked: {error}', flush=True)
-        raise SystemExit(1) from error
+        record_and_report_selection_blocker({**context, 'plan': plan, 'error': error})
+
+
+# Purpose: Keep immutable-intent recovery separate from the workflow's failure boundary (UNFY-402).
+# /**
+#  * @param context The loaded plan, journal, repository, catalog client and operation.
+#  * @returns The SDK selection bound to the recovered or already loaded plan.
+#  * @throws Blocked when recovery or official SDK provenance cannot be established.
+#  */
+def recover_and_select_workflow_sdk(context):
+    journal, repository = context['journal'], context['repository']
+    orphan = repository.recover_intent(context['plan'], journal.listing)
+    plan = orphan if orphan is not None else context['plan']
+    return resolve_workflow_sdk({'plan': plan, 'journal': journal, 'repository': repository,
+                                 'catalog': context['pub'].get(SDK_CATALOG), 'pub': context['pub'],
+                                 'operation': context['operation']})
+
+
+# Purpose: Stop scheduled retries after an SDK-selection blocker without mutating dry runs (UNFY-402).
+# /**
+#  * @param context The workflow flags, loaded journal plan, operation and blocker.
+#  * @returns Never; the workflow must stop before any SDK is installed.
+#  * @throws SystemExit(1) after recording and logging the blocker; save failures propagate.
+#  */
+def record_and_report_selection_blocker(context):
+    if not context['dry_run']:
+        record_blocker(BlockerContext(journal=context['journal'], plan=context['plan'], error=context['error']))
+    plan = context['plan']
+    log_blocker({'operation': context['operation'], 'batch_tag': plan['batch_tag'] if plan else None,
+                 'error': context['error']})
+    raise SystemExit(1) from context['error']
 
 
 # Purpose: Configure exact SDK setup without mutating journals or release tags.
@@ -292,7 +299,7 @@ def main():
     else:
         from release_github import GitHubClient
         from release_repository import Repository
-        selection = workflow_selection({
+        selection = select_workflow_sdk_and_record_blockers({
             'journal': GitHubClient(os.environ['GITHUB_REPOSITORY'], os.environ['GH_TOKEN']),
             'repository': Repository(root), 'pub': pub, 'operation': operation,
             'scheduled': os.environ.get('EVENT_NAME') == 'schedule',

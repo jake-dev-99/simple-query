@@ -132,7 +132,7 @@ class GitHubTest(unittest.TestCase):
     #  * @throws AssertionError if a journaled batch could pass as an orphan intent.
     #  */
     def test_load_reports_release_count_and_every_journaled_batch(self):
-        # Purpose: Encode a minimal frozen journal for one batch identity.
+        # Purpose: Distinguish persisted batch identities independently of release tag spelling.
         # /**
         #  * @param tag The immutable batch identifier.
         #  * @returns The compressed journal body consumed by the GitHub adapter.
@@ -148,6 +148,14 @@ class GitHubTest(unittest.TestCase):
         self.assertEqual(self.client.load()['journal_id'], 2)
         self.assertEqual(self.client.listing, self.module.ReleaseListing(
             release_count=3, journaled=frozenset({'sz-release-batch-1', 'sz-release-batch-2'})))
+
+    # Purpose: Keep an empty API response distinguishable from proof of a visible journal.
+    # /**
+    #  * @param self The unittest fixture with its local GitHub HTTP server.
+    #  * @returns None; asserts an empty release listing carries no journal identities.
+    #  * @throws AssertionError if absence is mistaken for readable release history.
+    #  */
+    def test_load_reports_an_empty_release_listing_without_journal_evidence(self):
         self.responses = [(200, {}, [])]
         self.assertIsNone(self.client.load())
         self.assertEqual(self.client.listing,

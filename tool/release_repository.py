@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 
 import yaml
 
-from release_services import Blocked
+from release_services import Blocked, validate_sdk
 
 
 def fingerprint(files):
@@ -66,7 +66,6 @@ class Repository:
     #  * @throws Blocked for an empty listing, a candidate that already has a journal, or an intent without a packaging SDK.
     #  */
     def recover_intent(self, existing, listing):
-        from release_toolchain import validate_sdk
         # The immutable annotated tag survives a stopped runner between tag and
         # journal creation. Never resurrect an older completed/cancelled batch.
         self.git('fetch', 'origin', 'main', '--tags')
