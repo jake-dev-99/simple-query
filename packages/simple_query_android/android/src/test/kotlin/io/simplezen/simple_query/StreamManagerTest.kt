@@ -573,6 +573,24 @@ class StreamManagerTest {
     }
 
     /**
+     * Purpose: Pin that a provider read failing with "Broken pipe" is a copy
+     *   failure, not a reader that closed early, so closeStream raises it
+     *   (UNFY-365).
+     *
+     * @return Nothing.
+     * @throws AssertionError when closeStream does not raise the failure.
+     */
+    @Test
+    fun closeStreamRaisesAProviderBrokenPipeFromTheCopy() {
+        register(CONTENT) { FailsAfterFirstChunk(IOException("Broken pipe")) }
+        val descriptor = manager.openStream(CONTENT)
+
+        val error = assertFailsWith<IOException> { manager.closeStream(descriptor.streamId) }
+
+        assertEquals("Broken pipe", error.message)
+    }
+
+    /**
      * Purpose: Pin that a copy failing partway through makes closeStream
      *   raise that failure after releasing both ends (UNFY-365).
      *

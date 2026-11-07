@@ -358,8 +358,7 @@ class StreamManager(
      * @param streamInfo the stream's pipes and input.
      * @return Nothing.
      * @throws Nothing; a failure of the copy or of the input's close is
-     *   recorded for closeStream. A broken pipe means the reader closed
-     *   early, so it is not a copy failure.
+     *   recorded for closeStream.
      */
     private fun copyContentToPipe(streamInfo: StreamInfo) {
         // Null when a release already closed the input openStream opened.
@@ -383,12 +382,11 @@ class StreamManager(
                     output.write(buffer, 0, bytesRead)
                 }
             }
-        } catch (e: IOException) {
-            // A broken pipe means the reader closed early, which is expected.
-            if (!e.message.orEmpty().contains("Broken pipe", ignoreCase = true)) {
-                recordFailure(streamInfo, e)
-            }
         } catch (e: Throwable) {
+            // A broken pipe on the write end needs no special case: only a
+            // release closes this manager's read end, so recordFailure skips
+            // it. Any other failure, including a provider's own "Broken pipe",
+            // is a real copy failure.
             recordFailure(streamInfo, e)
         }
     }
