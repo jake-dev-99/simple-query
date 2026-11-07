@@ -21,8 +21,13 @@ abstract class NativeQueryHostApi {
   void observeStop(String observerId);
   Map<String?, Object?> openBinary(Map<String?, Object?> request);
   void closeBinary(String handleId);
+  /// Purpose: Calls a namespaced Windows-only extension.
+  ///
+  /// @param namespace_ selects the registered Windows extension namespace.
+  /// The trailing underscore keeps the generated C++ parameter from using the
+  /// reserved word `namespace`.
   Map<String?, Object?>? callExtension(
-    String namespace,
+    String namespace_,
     String method,
     Map<String?, Object?>? args,
   );

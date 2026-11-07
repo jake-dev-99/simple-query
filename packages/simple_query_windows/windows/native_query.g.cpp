@@ -283,12 +283,12 @@ void NativeQueryHostApi::SetUp(
       channel.SetMessageHandler([api](const EncodableValue& message, const flutter::MessageReply<EncodableValue>& reply) {
         try {
           const auto& args = std::get<EncodableList>(message);
-          const auto& encodable_namespace_arg = args.at(0);
-          if (encodable_namespace_arg.IsNull()) {
-            reply(WrapError("namespace_arg unexpectedly null."));
+          const auto& encodable_namespace__arg = args.at(0);
+          if (encodable_namespace__arg.IsNull()) {
+            reply(WrapError("namespace__arg unexpectedly null."));
             return;
           }
-          const auto& namespace_arg = std::get<std::string>(encodable_namespace_arg);
+          const auto& namespace__arg = std::get<std::string>(encodable_namespace__arg);
           const auto& encodable_method_arg = args.at(1);
           if (encodable_method_arg.IsNull()) {
             reply(WrapError("method_arg unexpectedly null."));
@@ -297,7 +297,7 @@ void NativeQueryHostApi::SetUp(
           const auto& method_arg = std::get<std::string>(encodable_method_arg);
           const auto& encodable_args_arg = args.at(2);
           const auto* args_arg = std::get_if<EncodableMap>(&encodable_args_arg);
-          ErrorOr<std::optional<EncodableMap>> output = api->CallExtension(namespace_arg, method_arg, args_arg);
+          ErrorOr<std::optional<EncodableMap>> output = api->CallExtension(namespace__arg, method_arg, args_arg);
           if (output.has_error()) {
             reply(WrapError(output.error()));
             return;

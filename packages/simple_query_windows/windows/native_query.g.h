@@ -91,8 +91,13 @@ class NativeQueryHostApi {
   virtual std::optional<FlutterError> ObserveStop(const std::string& observer_id) = 0;
   virtual ErrorOr<flutter::EncodableMap> OpenBinary(const flutter::EncodableMap& request) = 0;
   virtual std::optional<FlutterError> CloseBinary(const std::string& handle_id) = 0;
+  // Purpose: Calls a namespaced Windows-only extension.
+  //
+  // @param namespace_ selects the registered Windows extension namespace.
+  // The trailing underscore keeps the generated C++ parameter from using the
+  // reserved word `namespace`.
   virtual ErrorOr<std::optional<flutter::EncodableMap>> CallExtension(
-    const std::string& namespace,
+    const std::string& namespace_,
     const std::string& method,
     const flutter::EncodableMap* args) = 0;
 

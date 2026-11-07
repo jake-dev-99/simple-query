@@ -18,6 +18,7 @@
 #include <flutter/plugin_registrar_windows.h>
 #include <winrt/Windows.ApplicationModel.Appointments.h>
 #include <winrt/Windows.ApplicationModel.Contacts.h>
+#include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/base.h>
 
@@ -247,17 +248,15 @@ WinRtRowsResult ListCalendarRecords() {
     const auto calendars = store.FindAppointmentCalendarsAsync().get();
 
     const auto now = winrt::clock::now();
-    winrt::Windows::Foundation::TimeSpan lookback{};
-    lookback.Duration = std::chrono::duration_cast<
-                            winrt::Windows::Foundation::TimeSpan::duration>(
-                            std::chrono::hours(24 * 365))
-                            .count();
+    // C++/WinRT projects TimeSpan as a std::chrono::duration, so it is
+    // converted directly rather than through the ABI Duration field.
+    const auto lookback =
+        std::chrono::duration_cast<winrt::Windows::Foundation::TimeSpan>(
+            std::chrono::hours(24 * 365));
     const auto start = now - lookback;
-    winrt::Windows::Foundation::TimeSpan range{};
-    range.Duration = std::chrono::duration_cast<
-                         winrt::Windows::Foundation::TimeSpan::duration>(
-                         std::chrono::hours(24 * 365 * 2))
-                         .count();
+    const auto range =
+        std::chrono::duration_cast<winrt::Windows::Foundation::TimeSpan>(
+            std::chrono::hours(24 * 365 * 2));
 
     for (const auto& calendar : calendars) {
       const auto appointments = calendar.FindAppointmentsAsync(start, range).get();

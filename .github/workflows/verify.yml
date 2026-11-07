@@ -107,6 +107,25 @@ jobs:
       - name: Build Flutter Linux consumer fixture
         run: bash tool/build_linux_consumer.sh
 
+  windows-consumer:
+    name: Windows consumer build
+    # Matches the Unify app's Windows build job, so the plugin compiles with
+    # the same Visual Studio toolchain that app releases use.
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+
+      - name: Build Flutter Windows consumer fixture
+        shell: bash
+        run: bash tool/build_windows_consumer.sh
+
   package-tests:
     name: Analyze + test (${{ matrix.package }})
     runs-on: ubuntu-latest

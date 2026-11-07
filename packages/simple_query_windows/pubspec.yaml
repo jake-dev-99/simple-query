@@ -33,5 +33,5 @@ flutter:
     implements: simple_query
     platforms:
       windows:
-        pluginClass: SimpleQueryWindowsPlugin
+        pluginClass: SimpleQueryWindowsPluginCApi
         dartPluginClass: SimpleQueryWindows
