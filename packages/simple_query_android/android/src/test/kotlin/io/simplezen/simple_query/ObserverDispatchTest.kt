@@ -26,13 +26,27 @@ class ObserverDispatchTest {
     // Decode the native-to-Dart payload. The generated Kotlin decoder is for
     // Dart-to-native messages, whose Pigeon codec writes all integers as int64.
     private object FlutterObserverCodec : StandardMessageCodec() {
+        // Read from the generated encoder, so a Pigeon schema change that
+        // renumbers the types cannot break this decoder.
+        private val changeTypeId = pigeonTypeId(ContentChangeType.UNKNOWN)
+        private val changeEventId =
+            pigeonTypeId(ContentChangeEvent("", "", ContentChangeType.UNKNOWN, null, false))
+
         override fun readValueOfType(type: Byte, buffer: ByteBuffer): Any? = when (type) {
-            129.toByte() -> ContentChangeType.ofRaw((readValue(buffer) as Number).toInt())
-            // ContentChangeEvent's Pigeon type id in Query.g.kt (UNFY-365
-            // removed StreamError, which came before it).
-            145.toByte() -> readValue(buffer)
+            changeTypeId -> ContentChangeType.ofRaw((readValue(buffer) as Number).toInt())
+            changeEventId -> readValue(buffer)
             else -> super.readValueOfType(type, buffer)
         }
+
+        /**
+         * Purpose: Find the type id the generated Pigeon codec writes for
+         * [value]'s class.
+         *
+         * @param value a sample of the Pigeon class or enum.
+         * @return the type id, the first byte of the encoded message.
+         * @throws NullPointerException when the codec encodes nothing.
+         */
+        private fun pigeonTypeId(value: Any): Byte = QueryFlutterApi.codec.encodeMessage(value)!!.get(0)
     }
 
     private val events = mutableListOf<List<Any?>>()

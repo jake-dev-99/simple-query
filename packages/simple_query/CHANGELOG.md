@@ -1,7 +1,7 @@
 ## Unreleased
 
 - **Behavior change (Android):** `openBinary()` now opens the provider content before it returns, so a failure to open it (`permissionDenied`, `unavailable`, or `unavailable` with `reason: noStream`) throws from `openBinary()` instead of yielding an empty stream (UNFY-364).
-- **Behavior change (Android):** `closeBinary()`, `BinaryContent.close()` and `withBinaryContent` throw a failed background copy as `SimpleQueryError` (UNFY-365).
+- **Behavior change (Android):** `closeBinary()`, `BinaryContent.close()` and `withBinaryContent` throw a failed background copy as `SimpleQueryError`, including one that races the close (UNFY-365).
 
 ## 0.3.0
 

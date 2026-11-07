@@ -8,13 +8,17 @@ import android.os.ParcelFileDescriptor
 import android.util.Log
 import java.io.ByteArrayInputStream
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileNotFoundException
 import java.io.IOException
 import java.io.InputStream
 import java.util.concurrent.AbstractExecutorService
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import java.util.function.Supplier
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -72,6 +76,32 @@ class StreamManagerTest {
         override fun close() {
             inner.close()
             throw IOException("close failed")
+        }
+    }
+
+    /**
+     * Purpose: A pipe end that counts down [closed] once its descriptor is
+     * released, then runs [afterClose].
+     *
+     * Robolectric's createPipe backs both ends with one temp file, so a
+     * reader sees end-of-file whenever it catches up with the writer. A real
+     * pipe's reader sees end-of-stream only when the write end closes, so
+     * threaded tests wait on [closed] to read at that moment.
+     *
+     * @param inner the end to wrap.
+     * @param closed counted down after [inner] closes.
+     * @param afterClose runs after [closed] is counted down.
+     * @throws Exception whatever [afterClose] throws.
+     */
+    private class SignalingEnd(
+        private val inner: ParcelFileDescriptor,
+        private val closed: CountDownLatch,
+        private val afterClose: () -> Unit = {},
+    ) : ParcelFileDescriptor(inner) {
+        override fun close() {
+            inner.close()
+            closed.countDown()
+            afterClose()
         }
     }
 
@@ -187,14 +217,62 @@ class StreamManagerTest {
     @Before
     fun setUp() {
         Robolectric.buildContentProvider(NoStreamProvider::class.java).create(NO_STREAM_AUTHORITY)
-        manager = StreamManager(
-            context,
-            executor = executor,
-            createPipe = {
-                val pipes = ParcelFileDescriptor.createPipe()
-                arrayOf(wrapReadEnd(pipes[0]), wrapWriteEnd(pipes[1])).also { createdPipes.add(it) }
-            },
-        )
+        manager = managerOn(executor)
+    }
+
+    /**
+     * Purpose: Build a manager on [copies] whose pipes this test records and
+     * wraps.
+     *
+     * @param copies the executor that runs the background copies.
+     * @return the manager.
+     * @throws Nothing.
+     */
+    private fun managerOn(copies: ExecutorService) = StreamManager(
+        context,
+        executor = copies,
+        createPipe = {
+            val pipes = ParcelFileDescriptor.createPipe()
+            arrayOf(wrapReadEnd(pipes[0]), wrapWriteEnd(pipes[1])).also { createdPipes.add(it) }
+        },
+    )
+
+    /**
+     * Purpose: Build a single real copy thread, as production runs copies,
+     * whose uncaught failures go to [onUncaught].
+     *
+     * @param onUncaught receives a failure that escapes a copy.
+     * @return the executor.
+     * @throws Nothing.
+     */
+    private fun copyThread(onUncaught: (Throwable) -> Unit = {}): ExecutorService =
+        Executors.newSingleThreadExecutor { task ->
+            Thread(task).apply {
+                isDaemon = true
+                setUncaughtExceptionHandler { _, error -> onUncaught(error) }
+            }
+        }
+
+    /**
+     * Purpose: Read the stream's read end to end-of-stream on this thread,
+     * as a Dart reader does on its own, without closing it.
+     *
+     * @param writeEndClosed counted down when the write end closes, the
+     *   moment a real pipe delivers end-of-stream ([SignalingEnd]).
+     * @return the number of bytes read.
+     * @throws AssertionError when the write end does not close in time.
+     * @throws IOException when the read fails.
+     */
+    private fun readToEndOfStream(writeEndClosed: CountDownLatch): Int {
+        assertTrue(writeEndClosed.await(5, TimeUnit.SECONDS), "the copy never closed the write end")
+        val reader = FileInputStream(readEnd().fileDescriptor)
+        val buffer = ByteArray(64)
+        var total = 0
+        while (true) {
+            val read = reader.read(buffer)
+            if (read == -1) return total
+            total += read
+        }
     }
 
     /**
@@ -435,32 +513,48 @@ class StreamManagerTest {
         assertTrue(content.closed)
     }
 
+    /**
+     * Purpose: Pin that closeStream during a running copy stops it, waits
+     *   for it, and raises nothing: the read the release cuts short fails
+     *   with "Stream closed", and that failure is the release itself.
+     *
+     * @return Nothing.
+     * @throws AssertionError when closeStream raises the release's own
+     *   failure, which happens when recordFailure's caller drops its
+     *   released check, or the copy keeps running.
+     */
     @Test
     fun closeStreamStopsARunningCopyWithoutRaisingItsFailure() {
-        executor.runInline = false
-        lateinit var streamId: String
+        val midStream = CountDownLatch(1)
+        val inputClosed = CountDownLatch(1)
         var reads = 0
-        // Caught here: a throw inside read would be swallowed by the copy's own catch.
-        var releaseError: Throwable? = null
         register(CONTENT) {
             object : InputStream() {
                 override fun read(): Int = throw UnsupportedOperationException()
                 override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
                     reads += 1
-                    // The reader gives up while the copy is mid-stream.
-                    if (reads == 1) releaseError = runCatching { manager.closeStream(streamId) }.exceptionOrNull()
-                    // Endless content, bounded so a regression fails instead of hanging.
-                    return if (reads < MAX_READS) length.coerceAtMost(4) else -1
+                    if (reads == 1) return 4
+                    // Mid-stream: the reader gives up while this read waits.
+                    midStream.countDown()
+                    assertTrue(inputClosed.await(5, TimeUnit.SECONDS))
+                    throw IOException("Stream closed")
+                }
+
+                override fun close() {
+                    inputClosed.countDown()
                 }
             }
         }
-        streamId = manager.openStream(CONTENT).streamId
+        val copies = copyThread()
+        manager = managerOn(copies)
+        val descriptor = manager.openStream(CONTENT)
+        assertTrue(midStream.await(5, TimeUnit.SECONDS))
 
-        executor.runQueued()
+        manager.closeStream(descriptor.streamId)
 
-        assertNull(releaseError)
-        assertTrue(reads < MAX_READS, "copy kept reading after release: $reads reads")
+        assertEquals(2, reads)
         assertFalse(writeEnd().fileDescriptor.valid())
+        copies.shutdown()
     }
 
     @Test
@@ -492,7 +586,6 @@ class StreamManagerTest {
         executor.runInline = false
         val readEntered = CountDownLatch(1)
         val closed = CountDownLatch(1)
-        val copyDone = CountDownLatch(1)
         register(CONTENT) {
             object : InputStream() {
                 override fun read(): Int = throw UnsupportedOperationException()
@@ -505,16 +598,12 @@ class StreamManagerTest {
 
                 override fun close() {
                     closed.countDown()
-                    // The stalled read's failure has been handled before
-                    // closeStream checks for a recorded copy failure.
-                    assertTrue(copyDone.await(5, TimeUnit.SECONDS))
                 }
             }
         }
         val descriptor = manager.openStream(CONTENT)
         val copy = Thread {
             executor.runQueued()
-            copyDone.countDown()
         }.apply {
             isDaemon = true
             start()
@@ -693,6 +782,131 @@ class StreamManagerTest {
         assertEquals("disk read failed", logged.throwable?.message)
     }
 
+    /**
+     * Purpose: Pin the real thread order: the copy fails on its own thread,
+     *   the reader reads to end-of-stream on another, then closeStream
+     *   raises the failure (UNFY-365).
+     *
+     * @return Nothing.
+     * @throws AssertionError when closeStream returns normally.
+     */
+    @Test
+    fun closeStreamRaisesACopyFailureAfterTheReaderSawEndOfStreamOnAnotherThread() {
+        register(CONTENT) { FailsAfterFirstChunk(IOException("disk read failed")) }
+        val writeEndClosed = CountDownLatch(1)
+        wrapWriteEnd = { SignalingEnd(it, writeEndClosed) }
+        val copies = copyThread()
+        manager = managerOn(copies)
+        val descriptor = manager.openStream(CONTENT)
+
+        assertEquals(4, readToEndOfStream(writeEndClosed))
+        val error = assertFailsWith<IOException> { manager.closeStream(descriptor.streamId) }
+
+        assertEquals("disk read failed", error.message)
+        copies.shutdown()
+    }
+
+    /**
+     * Purpose: Pin that a write-end close which delivers end-of-stream and
+     *   then fails is raised by a closeStream the reader calls at once,
+     *   because closeStream waits for the copy to record it (UNFY-365).
+     *
+     * The failing close reports only after the release has closed the read
+     * end, so closeStream is always inside that window.
+     *
+     * @return Nothing.
+     * @throws AssertionError when closeStream returns normally.
+     */
+    @Test
+    fun closeStreamRaisesAWriteEndCloseFailureThatRacesTheRelease() {
+        register(CONTENT) { ByteArrayInputStream(byteArrayOf(1, 2, 3)) }
+        val writeEndClosed = CountDownLatch(1)
+        val readEndClosed = CountDownLatch(1)
+        wrapReadEnd = { SignalingEnd(it, readEndClosed) }
+        wrapWriteEnd = {
+            SignalingEnd(it, writeEndClosed) {
+                readEndClosed.await(5, TimeUnit.SECONDS)
+                throw IOException("close failed")
+            }
+        }
+        val copies = copyThread()
+        manager = managerOn(copies)
+        val descriptor = manager.openStream(CONTENT)
+
+        assertEquals(3, readToEndOfStream(writeEndClosed))
+        val error = assertFailsWith<IOException> { manager.closeStream(descriptor.streamId) }
+
+        assertEquals("close failed", error.message)
+        copies.shutdown()
+    }
+
+    /**
+     * Purpose: Pin that a provider rethrowing one cached exception from both
+     *   its read and its close is raised as that exception, with nothing
+     *   suppressed onto it (Kotlin's addSuppressed skips the exception
+     *   itself).
+     *
+     * @return Nothing.
+     * @throws AssertionError when closeStream raises anything else.
+     */
+    @Test
+    fun closeStreamRaisesAFailureTheProviderRethrowsFromItsClose() {
+        val cached = IOException("provider failed")
+        register(CONTENT) {
+            object : InputStream() {
+                override fun read(): Int = throw cached
+                override fun close() = throw cached
+            }
+        }
+        val descriptor = manager.openStream(CONTENT)
+
+        val error = assertFailsWith<IOException> { manager.closeStream(descriptor.streamId) }
+
+        assertTrue(error === cached)
+        assertTrue(error.suppressed.isEmpty())
+    }
+
+    /**
+     * Purpose: Pin that a JVM Error in the copy propagates on the copy's own
+     *   thread, after the input and write end close, instead of being
+     *   recorded and raised later by closeStream as a retryable failure.
+     *
+     * @return Nothing.
+     * @throws AssertionError when the Error does not reach the copy thread's
+     *   uncaught-exception handler, an end stays open, or closeStream
+     *   raises it.
+     */
+    @Test
+    fun aJvmErrorInTheCopyPropagatesOnTheCopyThread() {
+        val inputClosed = CountDownLatch(1)
+        register(CONTENT) {
+            object : InputStream() {
+                override fun read(): Int = throw StackOverflowError("provider stack")
+                override fun close() {
+                    inputClosed.countDown()
+                }
+            }
+        }
+        val writeEndClosed = CountDownLatch(1)
+        wrapWriteEnd = { SignalingEnd(it, writeEndClosed) }
+        val uncaught = AtomicReference<Throwable?>(null)
+        val reachedThread = CountDownLatch(1)
+        val copies = copyThread { error ->
+            uncaught.set(error)
+            reachedThread.countDown()
+        }
+        manager = managerOn(copies)
+        val descriptor = manager.openStream(CONTENT)
+
+        assertEquals(0, readToEndOfStream(writeEndClosed))
+        assertTrue(inputClosed.await(5, TimeUnit.SECONDS))
+        manager.closeStream(descriptor.streamId)
+
+        assertTrue(reachedThread.await(5, TimeUnit.SECONDS))
+        assertEquals("provider stack", (uncaught.get() as StackOverflowError).message)
+        copies.shutdown()
+    }
+
     @Test
     fun extractToFileCopiesTheContent() {
         register(CONTENT) { ByteArrayInputStream(byteArrayOf(4, 5, 6)) }
@@ -776,6 +990,5 @@ class StreamManagerTest {
     private companion object {
         const val CONTENT = "content://io.simplezen.simple_query.streams.test/item"
         const val NO_STREAM_AUTHORITY = "io.simplezen.simple_query.nostream.test"
-        const val MAX_READS = 1000
     }
 }
