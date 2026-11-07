@@ -64,8 +64,9 @@ classify as. A provider that dies mid-write is a `RemoteException` and so
 also `unavailable`, where `ContentResolver` would silently have
 returned `null` (insert) or `-1` (update, delete).
 
-`openBinary()` reports a provider that returns no stream with details
-`reason: noStream`.
+`openBinary()` reports a provider that returns no stream with native
+details `reason: noStream`, which the mapped error keeps under
+`details['details']`.
 
 Each mapped error carries:
 

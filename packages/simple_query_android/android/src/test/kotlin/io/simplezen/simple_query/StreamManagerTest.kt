@@ -78,24 +78,47 @@ class StreamManagerTest {
     }
 
     /**
-     * Provider content that records whether it was read and closed. A
-     * non-null [closeFailure] makes its close fail after recording it.
+     * Purpose: Provider content that records whether it was read and
+     * closed, and fails a read after close as a real provider stream does.
+     *
+     * @param bytes the content.
+     * @param closeFailure thrown by close, after the close is recorded;
+     *   null for a close that succeeds.
+     * @throws IOException from a read after close.
      */
     private class TrackedStream(
         bytes: ByteArray,
-        private val closeFailure: String? = null,
+        private val closeFailure: Exception? = null,
     ) : ByteArrayInputStream(bytes) {
         var reads = 0
         var closed = false
 
         override fun read(b: ByteArray, off: Int, len: Int): Int {
+            if (closed) throw IOException("Stream closed")
             reads += 1
             return super.read(b, off, len)
         }
 
         override fun close() {
             closed = true
-            closeFailure?.let { throw IOException(it) }
+            closeFailure?.let { throw it }
+        }
+    }
+
+    /**
+     * Purpose: Provider content whose first read runs [beforeFailing], then
+     * fails the copy, counting each read attempt.
+     *
+     * @param beforeFailing work the read does before it fails.
+     * @throws IOException from every read.
+     */
+    private class FailingRead(private val beforeFailing: () -> Unit) : InputStream() {
+        var attempts = 0
+
+        override fun read(): Int {
+            attempts += 1
+            beforeFailing()
+            throw IOException("disk read failed")
         }
     }
 
@@ -165,6 +188,14 @@ class StreamManagerTest {
         )
     }
 
+    /**
+     * Purpose: Pin that a provider SecurityException at open fails openStream,
+     *   releases both pipe ends and queues no copy (UNFY-364).
+     *
+     * @return Nothing.
+     * @throws AssertionError when the failure is swallowed, a pipe end
+     *   stays open, or a copy is queued.
+     */
     @Test
     fun openStreamRaisesAProviderOpenFailureAndReleasesBothEnds() {
         register(CONTENT) { throw SecurityException("Permission Denial") }
@@ -175,6 +206,14 @@ class StreamManagerTest {
         assertReleasedWithoutACopy()
     }
 
+    /**
+     * Purpose: Pin that a provider FileNotFoundException at open fails
+     *   openStream, releases both pipe ends and queues no copy (UNFY-364).
+     *
+     * @return Nothing.
+     * @throws AssertionError when the failure is swallowed, a pipe end
+     *   stays open, or a copy is queued.
+     */
     @Test
     fun openStreamRaisesAFileNotFoundOpenFailureAndReleasesBothEnds() {
         register(CONTENT) { throw FileNotFoundException("No content provider") }
@@ -185,6 +224,15 @@ class StreamManagerTest {
         assertReleasedWithoutACopy()
     }
 
+    /**
+     * Purpose: Pin that a provider returning no stream fails openStream as
+     *   unavailable with `reason: noStream` and releases both pipe ends
+     *   (UNFY-364).
+     *
+     * @return Nothing.
+     * @throws AssertionError when the code or details differ, a pipe end
+     *   stays open, or a copy is queued.
+     */
     @Test
     fun openStreamRaisesUnavailableWhenTheProviderReturnsNoStream() {
         val uri = "content://$NO_STREAM_AUTHORITY/nostream"
@@ -199,6 +247,59 @@ class StreamManagerTest {
         assertTrue(executor.queued.isEmpty())
     }
 
+    /**
+     * Purpose: Pin that an unchecked failure closing the input still lets
+     *   closeStream close both pipe ends, then raises it.
+     *
+     * @return Nothing.
+     * @throws AssertionError when the failure is swallowed or a pipe end
+     *   stays open.
+     */
+    @Test
+    fun closeStreamClosesBothEndsWhenTheInputCloseThrowsAnUncheckedFailure() {
+        val content = TrackedStream(byteArrayOf(1), closeFailure = IllegalStateException("provider close failed"))
+        register(CONTENT) { content }
+        executor.runInline = false
+        val descriptor = manager.openStream(CONTENT)
+
+        val error = assertFailsWith<IllegalStateException> { manager.closeStream(descriptor.streamId) }
+
+        assertEquals("provider close failed", error.message)
+        assertTrue(content.closed)
+        assertFalse(readEnd().fileDescriptor.valid())
+        assertFalse(writeEnd().fileDescriptor.valid())
+    }
+
+    /**
+     * Purpose: Pin that dispose() logs an unchecked failure closing an input
+     *   and still releases the stream's pipe ends.
+     *
+     * @return Nothing.
+     * @throws AssertionError when dispose() throws or a pipe end stays
+     *   open.
+     */
+    @Test
+    fun disposeContinuesPastAnUncheckedInputCloseFailure() {
+        val content = TrackedStream(byteArrayOf(1), closeFailure = IllegalStateException("provider close failed"))
+        register(CONTENT) { content }
+        executor.runInline = false
+        manager.openStream(CONTENT)
+
+        manager.dispose()
+
+        assertTrue(content.closed)
+        assertFalse(readEnd().fileDescriptor.valid())
+        assertFalse(writeEnd().fileDescriptor.valid())
+    }
+
+    /**
+     * Purpose: Pin that a dispose() during the provider open closes the opened
+     *   input and fails openStream (UNFY-364).
+     *
+     * @return Nothing.
+     * @throws AssertionError when the input or a pipe end stays open, or
+     *   openStream returns.
+     */
     @Test
     fun openStreamClosesTheOpenedInputWhenDisposeRacesTheOpen() {
         val content = TrackedStream(byteArrayOf(1))
@@ -215,9 +316,17 @@ class StreamManagerTest {
         assertFalse(writeEnd().fileDescriptor.valid())
     }
 
+    /**
+     * Purpose: Pin that a failed input close during the dispose race is kept
+     *   as suppressed on the IllegalStateException (UNFY-364).
+     *
+     * @return Nothing.
+     * @throws AssertionError when the close failure replaces or drops
+     *   the dispose failure, or a pipe end stays open.
+     */
     @Test
     fun aDisposeRacingTheOpenKeepsAFailedInputCloseAsSuppressed() {
-        val content = TrackedStream(byteArrayOf(1), closeFailure = "provider close failed")
+        val content = TrackedStream(byteArrayOf(1), closeFailure = IOException("provider close failed"))
         register(CONTENT) {
             manager.dispose()
             content
@@ -231,6 +340,14 @@ class StreamManagerTest {
         assertFalse(writeEnd().fileDescriptor.valid())
     }
 
+    /**
+     * Purpose: Pin that a finished copy reads and closes the input openStream
+     *   opened, and closes the write end (UNFY-364).
+     *
+     * @return Nothing.
+     * @throws AssertionError when the copy skips the read, leaves the input
+     *   or the write end open, or reports an error.
+     */
     @Test
     fun aSuccessfulCopyClosesBothTheInputAndTheWriteEndWithoutAnError() {
         val content = TrackedStream(byteArrayOf(1, 2, 3))
@@ -245,12 +362,25 @@ class StreamManagerTest {
         assertTrue(sentChannels.isEmpty())
     }
 
+    /**
+     * Purpose: Pin that a copy whose read fails still closes the input and the
+     *   write end, and reports one stream error (UNFY-364).
+     *
+     * @return Nothing.
+     * @throws AssertionError when the read is skipped, the input or the
+     *   write end stays open, or no stream error is sent.
+     */
     @Test
     fun aFailedCopyStillClosesTheInputAndReportsAStreamError() {
         var closed = false
+        var attempts = 0
         register(CONTENT) {
             object : InputStream() {
-                override fun read(): Int = throw IOException("disk read failed")
+                override fun read(): Int {
+                    attempts += 1
+                    throw IOException("disk read failed")
+                }
+
                 override fun close() {
                     closed = true
                 }
@@ -260,6 +390,7 @@ class StreamManagerTest {
         manager.openStream(CONTENT)
         idle()
 
+        assertEquals(1, attempts)
         assertTrue(closed)
         assertFalse(writeEnd().fileDescriptor.valid())
         assertEquals(listOf(STREAM_ERROR_CHANNEL), sentChannels)
@@ -418,7 +549,8 @@ class StreamManagerTest {
 
     @Test
     fun aStreamErrorPostedJustBeforeDisposeIsNotSent() {
-        register(CONTENT) { failingRead {} }
+        val content = FailingRead {}
+        register(CONTENT) { content }
         // The failed copy's report is queued on the main looper...
         manager.openStream(CONTENT)
 
@@ -426,17 +558,20 @@ class StreamManagerTest {
         manager.dispose()
         idle()
 
+        assertEquals(1, content.attempts)
         assertTrue(sentChannels.isEmpty())
     }
 
     @Test
     fun aStreamErrorRaisedAfterDisposeIsNotSent() {
         // The copy is in flight when the plugin detaches, then fails.
-        register(CONTENT) { failingRead { manager.dispose() } }
+        val content = FailingRead { manager.dispose() }
+        register(CONTENT) { content }
 
         manager.openStream(CONTENT)
         idle()
 
+        assertEquals(1, content.attempts)
         assertTrue(sentChannels.isEmpty())
         assertFalse(writeEnd().fileDescriptor.valid())
     }
@@ -500,15 +635,13 @@ class StreamManagerTest {
         )
     }
 
-    /** Content whose read runs [beforeFailing], then fails the copy. */
-    private fun failingRead(beforeFailing: () -> Unit) = object : InputStream() {
-        override fun read(): Int {
-            beforeFailing()
-            throw IOException("disk read failed")
-        }
-    }
-
-    /** A failed openStream left no pipe open, queued no copy and sent no stream error. */
+    /**
+     * Purpose: Assert that a failed openStream opened the content once, left
+     * no pipe end open, queued no copy and sent no stream error.
+     *
+     * @return Nothing.
+     * @throws AssertionError when any of those does not hold.
+     */
     private fun assertReleasedWithoutACopy() {
         assertFalse(readEnd().fileDescriptor.valid())
         assertFalse(writeEnd().fileDescriptor.valid())

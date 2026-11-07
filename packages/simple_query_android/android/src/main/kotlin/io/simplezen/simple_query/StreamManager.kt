@@ -126,7 +126,7 @@ class StreamManager(
             val error = disposedError()
             try {
                 streamInfo.activeInput.getAndSet(null)?.close()
-            } catch (e: IOException) {
+            } catch (e: Exception) {
                 error.addSuppressed(e)
             }
             throw abandon(streamId, streamInfo, error)
@@ -186,6 +186,8 @@ class StreamManager(
      * @return Nothing.
      * @throws IOException when the platform reports a failed close, after
      *   both ends were attempted (UNFY-300).
+     * @throws RuntimeException when the provider stream's close fails with
+     *   one, after both ends were attempted.
      */
     fun closeStream(streamId: String) {
         val streamInfo = activeStreams[streamId] ?: return
@@ -210,7 +212,7 @@ class StreamManager(
         for (id in activeStreams.keys.toList()) {
             try {
                 closeStream(id)
-            } catch (e: IOException) {
+            } catch (e: Exception) {
                 Log.e(TAG, "dispose: closing stream $id failed", e)
             }
         }
@@ -238,7 +240,8 @@ class StreamManager(
      */
     private fun noStreamError(contentUri: String) = QueryFlutterError(
         HostErrors.UNAVAILABLE,
-        "simple_query: content provider returned no stream for $contentUri",
+        "simple_query: content provider returned no stream for $contentUri; " +
+            "check that the content still exists, then retry",
         mapOf("reason" to "noStream", "contentUri" to contentUri),
     )
 
@@ -266,11 +269,13 @@ class StreamManager(
      *
      * @param streamInfo the stream's pipes and active input.
      * @return the first close failure, with any later one suppressed onto
-     *   it; null when all closed.
+     *   it; null when all closed. A provider stream's close may fail with an
+     *   unchecked exception, so every [Exception] is collected, and no
+     *   failure skips the ends after it.
      * @throws Nothing.
      */
-    private fun releaseEnds(streamInfo: StreamInfo): IOException? {
-        var failure: IOException? = null
+    private fun releaseEnds(streamInfo: StreamInfo): Exception? {
+        var failure: Exception? = null
         val closes = listOf(
             { streamInfo.activeInput.getAndSet(null)?.close() },
             { closeWriteEndOnce(streamInfo) },
@@ -279,7 +284,7 @@ class StreamManager(
         for (close in closes) {
             try {
                 close()
-            } catch (e: IOException) {
+            } catch (e: Exception) {
                 failure?.addSuppressed(e) ?: run { failure = e }
             }
         }

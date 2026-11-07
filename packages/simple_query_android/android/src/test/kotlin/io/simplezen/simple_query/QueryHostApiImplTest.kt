@@ -246,7 +246,14 @@ class QueryHostApiImplTest {
         assertEquals(before, cacheDir.list()?.count { it.startsWith("sq_extract_") } ?: 0)
     }
 
-    /** A provider open failure fails openStream itself, not the background copy (UNFY-364). */
+    /**
+     * Purpose: Pin that a provider open failure fails the openStream host
+     * call with its classification, not the background copy (UNFY-364).
+     *
+     * @return Nothing.
+     * @throws AssertionError when the reply is not a permission-denied
+     *   error naming `java.lang.SecurityException`.
+     */
     @Test
     fun openStreamFailureRepliesItsClassification() {
         val reply = call("openStream", uri("rows"))
