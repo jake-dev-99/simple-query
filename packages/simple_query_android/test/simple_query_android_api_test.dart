@@ -904,6 +904,34 @@ void main() {
       );
     });
 
+    // StreamManager.closeStream raises a failed background copy (UNFY-365).
+    test('closeBinary raises the host\'s copy failure with the handle\'s '
+        'request context', () async {
+      final host = _FakeHostApi();
+      final api = apiFor(host);
+      final handle = await api.openBinary(
+        const iface.BinaryRequest(
+          domain: iface.QueryDomain.media,
+          platformData: <String, Object?>{
+            'contentUri': 'content://media/external/images/media/7',
+          },
+        ),
+      );
+      host.failures['closeStream'] =
+          kotlinFailure('transient', 'java.io.IOException');
+
+      await expectLater(
+        api.closeBinary(handle.handleId),
+        throwsA(hostError(
+          code: iface.SimpleQueryErrorCode.transientFailure,
+          hostCode: 'transient',
+          domain: iface.QueryDomain.media,
+          operation: iface.QueryOperation.read,
+          contentUri: 'content://media/external/images/media/7',
+        )),
+      );
+    });
+
     test('closeBinary of an unknown handle still closes it by id', () async {
       final host = _FakeHostApi()
         ..failures['closeStream'] =

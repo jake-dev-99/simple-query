@@ -22,8 +22,6 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
   final bool _enforceAndroidPlatformCheck;
   int? _cachedSdkInt;
 
-  final _observerEventsController =
-      StreamController<iface.ObserveEvent>.broadcast();
   final _activeObservers = <String, _ObserverRegistration>{};
   final _openBinaryHandles = <String, _OpenBinaryHandle>{};
 
@@ -548,31 +546,10 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
       },
     );
 
-    _observerEventsController.add(mapped);
     registration.controller.add(mapped);
   }
 
-  @override
-  void onStreamError(p.StreamError error) {
-    _observerEventsController.add(
-      iface.ObserveEvent(
-        domain: iface.QueryDomain.platformSpecific,
-        changeType: iface.ObserveChangeType.unknown,
-        timestamp: DateTime.now().toUtc(),
-        source: 'android.stream_error',
-        metadata: <String, Object?>{
-          'streamId': error.streamId,
-          'contentUri': error.contentUri,
-          'message': error.message,
-          if (error.bytesTransferred != null)
-            'bytesTransferred': error.bytesTransferred!,
-        },
-      ),
-    );
-  }
-
-  /// Purpose: Release every observer and binary handle, then close the
-  /// event stream.
+  /// Purpose: Release every observer and binary handle.
   ///
   /// Every cleanup step runs even when an earlier host call fails, so one
   /// failure cannot leak the rest (UNFY-300).
@@ -603,8 +580,6 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
       await attempt(() => _closeBinaryStream(handle));
     }
     _openBinaryHandles.clear();
-
-    await _observerEventsController.close();
 
     if (failures.isNotEmpty) {
       Error.throwWithStackTrace(

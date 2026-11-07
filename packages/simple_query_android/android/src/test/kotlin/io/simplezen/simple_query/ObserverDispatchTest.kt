@@ -28,7 +28,9 @@ class ObserverDispatchTest {
     private object FlutterObserverCodec : StandardMessageCodec() {
         override fun readValueOfType(type: Byte, buffer: ByteBuffer): Any? = when (type) {
             129.toByte() -> ContentChangeType.ofRaw((readValue(buffer) as Number).toInt())
-            146.toByte() -> readValue(buffer)
+            // ContentChangeEvent's Pigeon type id in Query.g.kt (UNFY-365
+            // removed StreamError, which came before it).
+            145.toByte() -> readValue(buffer)
             else -> super.readValueOfType(type, buffer)
         }
     }
