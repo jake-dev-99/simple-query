@@ -93,12 +93,28 @@ class StreamManagerTest {
         var reads = 0
         var closed = false
 
+        /**
+         * Purpose: Read like [ByteArrayInputStream], counting each read and
+         * failing once the stream is closed.
+         *
+         * @param b the buffer to fill.
+         * @param off the first index to fill.
+         * @param len the most bytes to read.
+         * @return the bytes read, or -1 at end of stream.
+         * @throws IOException when the stream is closed.
+         */
         override fun read(b: ByteArray, off: Int, len: Int): Int {
             if (closed) throw IOException("Stream closed")
             reads += 1
             return super.read(b, off, len)
         }
 
+        /**
+         * Purpose: Record the close, then fail it when [closeFailure] is set.
+         *
+         * @return Nothing.
+         * @throws Exception [closeFailure], when set.
+         */
         override fun close() {
             closed = true
             closeFailure?.let { throw it }
@@ -115,6 +131,12 @@ class StreamManagerTest {
     private class FailingRead(private val beforeFailing: () -> Unit) : InputStream() {
         var attempts = 0
 
+        /**
+         * Purpose: Count the attempt, run [beforeFailing], then fail the read.
+         *
+         * @return Nothing; it always throws.
+         * @throws IOException on every call.
+         */
         override fun read(): Int {
             attempts += 1
             beforeFailing()
@@ -376,11 +398,23 @@ class StreamManagerTest {
         var attempts = 0
         register(CONTENT) {
             object : InputStream() {
+                /**
+                 * Purpose: Count the attempt, then fail the copy's read.
+                 *
+                 * @return Nothing; it always throws.
+                 * @throws IOException on every call.
+                 */
                 override fun read(): Int {
                     attempts += 1
                     throw IOException("disk read failed")
                 }
 
+                /**
+                 * Purpose: Record that the copy closed the input.
+                 *
+                 * @return Nothing.
+                 * @throws Nothing.
+                 */
                 override fun close() {
                     closed = true
                 }
