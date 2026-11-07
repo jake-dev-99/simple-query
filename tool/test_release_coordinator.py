@@ -12,10 +12,29 @@ import tarfile
 import unittest
 
 import test_release_plan as fixtures
+from release_recovery_test_support import (
+    ReleaseJournalListingTestSupport, ReleaseRecoveryTestSupport)
 from test_release_services import Clock
 
 
-class Journal:
+# Purpose: Keep recovery persistence durable while deployment and publication stay controlled.
+# /**
+#  * @param file The temporary path retaining release state across coordinator instances.
+#  * @param pub The controlled publication boundary for simulated Deploy runs.
+#  * @param repo The disposable repository identifying each frozen release.
+#  * @returns A journal fixture with complete listing evidence and observable publication effects.
+#  * @throws OSError or ValueError when persisted fixture evidence cannot be read or written.
+#  */
+class Journal(ReleaseJournalListingTestSupport):
+    # Purpose: Keep recovery tests durable while isolating GitHub deployment and pub.dev writes.
+    # /**
+    #  * @param self The file-backed release-journal fixture.
+    #  * @param file The temporary path retaining the latest journal across runner instances.
+    #  * @param pub The controlled publication boundary used by simulated Deploy runs.
+    #  * @param repo The disposable repository whose commits identify each release.
+    #  * @returns None; initializes isolated deployment and cross-journal evidence.
+    #  * @throws Nothing; initialization does not access external services.
+    #  */
     def __init__(self, file, pub, repo):
         self.file, self.pub, self.repo = file, pub, repo
         self.outcomes = {}
@@ -23,9 +42,8 @@ class Journal:
         self.run_calls = []
         self.run_attempts = {}
         self.before_save = None
-
-    def load(self):
-        return json.loads(self.file.read_text()) if self.file.exists() else None
+        # A stale latest journal must not hide batch identities already persisted elsewhere.
+        self.other_journals = set()
 
     def save(self, plan):
         if self.before_save:
@@ -103,7 +121,14 @@ class Pub:
         return self.archives[url]
 
 
-class CoordinatorTest(unittest.TestCase):
+# Purpose: Keep release and recovery regressions under the same isolated test lifecycle.
+# /**
+#  * @param ReleaseRecoveryTestSupport Cohesive orphan and duplicate-journal scenario fixtures.
+#  * @param unittest.TestCase Standard test discovery, assertions and per-test cleanup.
+#  * @returns The coordinator regression suite without separately discovering fixture helpers.
+#  * @throws AssertionError or fixture errors when release behavior violates its contracts.
+#  */
+class CoordinatorTest(ReleaseRecoveryTestSupport, unittest.TestCase):
     def setUp(self):
         try:
             self.module = importlib.import_module('release_coordinator')
@@ -515,16 +540,61 @@ if sys.argv[1:] not in [['pub','get','--no-example'], ['analyze','--no-fatal-war
         self.assertEqual(self.runner().run('cancel', dry_run=True), 'preview')
         self.assertEqual(self.journal.load(), before)
 
+    # Purpose: Preserve safe orphan recovery when an earlier journal proves listing visibility.
+    # /**
+    #  * @param self The coordinator fixture with a completed batch and a later orphan.
+    #  * @returns None; asserts the interrupted batch resumes under its original identity.
+    #  * @throws AssertionError if recovery creates a replacement batch or cannot complete.
+    #  */
     def test_orphan_intent_after_journal_creation_crash_resumes(self):
-        create = self.journal.create
-        def crash(plan):
-            raise RuntimeError('Journal creation interrupted')
-        self.journal.create = crash
-        with self.assertRaisesRegex(RuntimeError, 'interrupted'):
-            self.cut()
-        self.journal.create = create
-        self.assertEqual(self.runner().run('resume', scheduled=True), 'complete')
-        self.assertEqual(self.journal.load()['batch_tag'], 'sz-release-batch-12345')
+        self.next_orphan_after_complete_batch()
+        self.assertEqual(self.run_recovery_operation('resume', scheduled=True), 'complete')
+        self.assertEqual(self.journal.load()['batch_tag'], 'sz-release-batch-12346')
+
+    # Purpose: Never trust an empty release listing to prove a batch tag is an orphan (UNFY-402).
+    # /**
+    #  * @param self The coordinator fixture with a crashed first cut and no journal.
+    #  * @returns None; asserts the resume blocks without creating a journal or validating.
+    #  * @throws AssertionError if the tag is recovered or deleted.
+    #  */
+    def test_empty_release_listing_with_batch_tags_blocks_instead_of_recovering(self):
+        self.crash_journal_creation()
+        before = self.recovery_evidence()
+        self.assertEqual((before['journal'], before['validation']), (None, None))
+        self.assertIn('sz-release-batch-12345', before['tags'])
+        self.assertEqual(self.run_recovery_operation('resume', scheduled=True), 'blocked')
+        self.assertEqual(self.recovery_evidence(), before)
+
+    # Purpose: Refuse a pre-UNFY-345 intent tag that has no packaging SDK instead of crashing.
+    # /**
+    #  * @param self The coordinator fixture with a completed batch and a legacy orphan tag.
+    #  * @returns None; asserts the resume blocks and leaves the complete journal and tag alone.
+    #  * @throws AssertionError if the legacy intent is journaled or validated.
+    #  */
+    def test_pre_pin_orphan_intent_blocks_instead_of_crashing(self):
+        self.assertEqual(self.cut(), 'complete')
+        self.publish_legacy_orphan_intent()
+        before = self.recovery_evidence()
+        self.assertEqual('sz-release-batch-12346' in before['tags'], True)
+        self.assertEqual(self.run_recovery_operation('resume', scheduled=True), 'blocked')
+        self.assertEqual(self.recovery_evidence(), before)
+
+    # Purpose: Treat a candidate tag that already has a journal as a duplicate to inspect.
+    # /**
+    #  * @param self The coordinator fixture whose latest journal is a stale duplicate.
+    #  * @returns None; asserts the in-flight journal is marked blocked and schedules go quiet.
+    #  * @throws AssertionError if a dry run writes, or the duplicate is resumed.
+    #  */
+    def test_candidate_intent_with_its_own_journal_blocks_and_quiets_the_schedule(self):
+        self.next_orphan_after_complete_batch()
+        self.retain_duplicate_journal_evidence()
+        self.assertEqual(self.run_recovery_operation('resume', dry_run=True), 'blocked')
+        self.assertEqual(self.journal.load()['status'], 'planning')
+        self.assertEqual(self.run_recovery_operation('resume', scheduled=True), 'blocked')
+        blocked = self.journal.load()
+        self.assertEqual((blocked['status'], blocked['not_before']), ('blocked', 0))
+        self.assertEqual('sz-release-batch-12346' in blocked['error'], True)
+        self.assertEqual(self.run_recovery_operation('resume', scheduled=True, run_id='12348'), 'noop')
 
     def test_original_dispatch_rerun_resumes_instead_of_selecting_new_versions(self):
         self.journal.outcomes['demo_android'] = 'running'

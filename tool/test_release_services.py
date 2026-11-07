@@ -4,6 +4,9 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import threading
 import unittest
+from unittest.mock import Mock
+
+from release_services import BlockerContext, ScheduleContext
 
 
 class Clock:
@@ -17,6 +20,82 @@ class Clock:
     def sleep(self, seconds):
         self.sleeps.append(seconds)
         self.value += seconds
+
+
+# Purpose: Pin which journals a blocker raised outside the coordinator may rewrite (UNFY-402).
+# /**
+#  * @param unittest.TestCase The standard isolated assertion fixture.
+#  * @returns A suite covering in-flight, terminal, absent and already-blocked journals.
+#  * @throws AssertionError if a terminal or non-draft journal could be re-saved as a draft.
+#  */
+class BlockerTest(unittest.TestCase):
+    # Purpose: Isolate blocker writes so one status case cannot authorize another's mutation.
+    # /**
+    #  * @param self The state-transition assertion fixture.
+    #  * @returns None; provides a journal boundary and a deterministic failure cause.
+    #  * @throws ImportError if release-state handling is unavailable.
+    #  */
+    def setUp(self):
+        self.module = importlib.import_module('release_services')
+        self.journal = Mock()
+        self.message = 'Immutable SDK intent is missing or malformed'
+        self.error = self.module.Blocked(self.message)
+
+    # Purpose: Keep every state case on the public blocker API rather than mutating its fixture.
+    # /**
+    #  * @param self The fixture retaining the journal boundary and failure cause.
+    #  * @param plan The mutable journal state, or None when no journal exists.
+    #  * @returns None; delegates the state transition to the release service.
+    #  * @throws Exception if the journal boundary rejects a required save.
+    #  */
+    def record_blocker(self, plan):
+        self.module.record_blocker(BlockerContext(journal=self.journal, plan=plan, error=self.error))
+
+    # Purpose: Stop scheduled retries without letting manual recovery bypass a pending Deploy cooldown.
+    # /**
+    #  * @param self The fixture with all recoverable journal phases.
+    #  * @returns None; asserts persistence records the blocker while retaining the retry deadline.
+    #  * @throws AssertionError if a recoverable journal is unsaved or loses its cooldown.
+    #  */
+    def test_in_flight_journal_is_marked_blocked_and_preserves_cooldown(self):
+        for status in ['planning', 'planned', 'prepared', 'publishing', 'deferred']:
+            with self.subTest(status=status):
+                plan = {'journal_id': 9, 'status': status, 'not_before': 1700000900.0, 'error': None}
+                self.journal.save.reset_mock()
+                self.record_blocker(plan)
+                self.journal.save.assert_called_once_with(plan)
+                self.assertEqual((plan['status'], plan['not_before'], plan['error']),
+                                 ('blocked', 1700000900.0, self.message))
+
+    # Purpose: Protect terminal history and avoid creating a draft without a durable journal id.
+    # /**
+    #  * @param self The fixture covering absent, incomplete, terminal and already-blocked states.
+    #  * @returns None; asserts every protected plan remains unchanged and unsaved.
+    #  * @throws AssertionError if blocker handling rewrites protected release history.
+    #  */
+    def test_terminal_absent_and_already_blocked_journals_are_never_rewritten(self):
+        for plan in [None, {'status': 'planning'},
+                     *({'journal_id': 9, 'status': status, 'error': 'original cause'}
+                       for status in ['complete', 'cancelled', 'blocked'])]:
+            with self.subTest(plan=plan):
+                before = dict(plan) if plan else None
+                self.record_blocker(plan)
+                self.assertEqual(plan, before)
+        self.journal.save.assert_not_called()
+
+    # Purpose: Silence unattended blocked retries while preserving explicit operator recovery.
+    # /**
+    #  * @param self The fixture distinguishing scheduled and manual operations.
+    #  * @returns None; asserts only scheduled blocked journals select the quiet path.
+    #  * @throws AssertionError if manual recovery or an eligible batch becomes quiet.
+    #  */
+    def test_only_a_blocked_batch_is_quiet_and_only_on_schedule(self):
+        quiet = self.module.quiet_on_schedule
+        self.assertTrue(quiet(ScheduleContext(plan={'status': 'blocked'}, scheduled=True)))
+        self.assertFalse(quiet(ScheduleContext(plan={'status': 'blocked'}, scheduled=False)))
+        self.assertFalse(quiet(ScheduleContext(plan=None, scheduled=True)))
+        for status in ['planning', 'deferred', 'complete', 'cancelled']:
+            self.assertFalse(quiet(ScheduleContext(plan={'status': status}, scheduled=True)), status)
 
 
 class HttpTest(unittest.TestCase):

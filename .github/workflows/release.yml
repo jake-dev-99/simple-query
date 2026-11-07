@@ -84,6 +84,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
           OPERATION: ${{ inputs.operation }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: python3 tool/release_toolchain.py
 
       - name: Install prior batch SDK for reconciliation

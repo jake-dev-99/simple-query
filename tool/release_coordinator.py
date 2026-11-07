@@ -10,7 +10,9 @@ import time
 import yaml
 
 from release_plan import build_plan, bump_version
-from release_services import Blocked, Deferred, publication_times, quota_deadline, upload_deadline
+from release_services import (Blocked, BlockerContext, Deferred, ScheduleContext, log_blocker,
+                              publication_times, quiet_on_schedule, quota_deadline,
+                              record_blocker, upload_deadline)
 
 
 class Coordinator:
@@ -108,7 +110,15 @@ class Coordinator:
             remaining = max(0, until - self.now())
 
     def run(self, operation, *, package='all', bump='patch', dry_run=False, scheduled=False):
-        plan = self.load_authorized(dry_run=dry_run)
+        plan = self.journal.load()
+        try:
+            plan = self.load_authorized({'plan': plan, 'dry_run': dry_run, 'scheduled': scheduled})
+        except Blocked as error:
+            if not dry_run:
+                record_blocker(BlockerContext(journal=self.journal, plan=plan, error=error))
+            log_blocker({'operation': operation, 'batch_tag': plan['batch_tag'] if plan else None,
+                         'error': error})
+            return 'blocked'
         if operation == 'cut' and plan and plan['batch_tag'] == 'sz-release-batch-' + self.run_id:
             operation = 'resume'
         if operation == 'cut' and not self.can_cut(plan, dry_run=dry_run):
@@ -137,15 +147,22 @@ class Coordinator:
             return 'blocked'
 
 
-    def load_authorized(self, *, dry_run=False):
-        """Recover the immutable manual intent if journal creation was interrupted."""
-        plan = self.journal.load()
-        if hasattr(self.repo, 'recover_intent'):
-            orphan = self.repo.recover_intent(plan)
-            if orphan:
-                plan = orphan
-                if not dry_run:
-                    self.journal.create(plan)
+    # Purpose: Preserve manual authorization across interrupted journal creation (UNFY-402).
+    # /**
+    #  * @param self The coordinator owning the journal and immutable-intent repository.
+    #  * @param context The loaded plan and explicit dry-run/schedule flags.
+    #  * @returns The loaded or safely recovered authorized batch plan.
+    #  * @throws Blocked when recovery cannot prove a valid orphan; journal errors propagate.
+    #  */
+    def load_authorized(self, context):
+        plan = context['plan']
+        if quiet_on_schedule(ScheduleContext(plan=plan, scheduled=context['scheduled'])):
+            return plan  # a blocked batch waits for an operator; a schedule recovers nothing
+        orphan = self.repo.recover_intent(plan, self.journal.listing)
+        if orphan:
+            plan = orphan
+            if not context['dry_run']:
+                self.journal.create(plan)
         return plan
 
     def can_cut(self, plan, *, dry_run=False):
@@ -173,7 +190,7 @@ class Coordinator:
     def resume_status(self, plan, *, dry_run=False, scheduled=False):
         if not plan or plan['status'] in ('complete', 'cancelled'):
             return 'noop'
-        if scheduled and plan['status'] == 'blocked':
+        if quiet_on_schedule(ScheduleContext(plan=plan, scheduled=scheduled)):
             return 'noop'
         if self.now() < plan['not_before']:
             return 'deferred'

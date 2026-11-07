@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
+from release_github import ReleaseListing
 from release_services import Blocked
 
 
@@ -331,6 +332,202 @@ class ToolchainTest(unittest.TestCase):
         self.repository.git.side_effect = ['d' * 40, 'e' * 40]
         with self.assertRaisesRegex(Blocked, 'tag'):
             self.module.inspection_sdk(context)
+
+    # Purpose: Keep recovery selection deterministic without contacting release services.
+    # /**
+    #  * @param self The toolchain fixture.
+    #  * @param options Plan changes and named operation, schedule or dry-run overrides.
+    #  * @returns The selection context with controlled journal, repository and catalog boundaries.
+    #  * @throws AssertionError never; the mocks record calls for the test to assert.
+    #  */
+    def sdk_step(self, **options):
+        plan = {**self.in_flight_plan(), **options.pop('plan_changes', {})}
+        journal = Mock()
+        journal.load.return_value = plan
+        journal.listing = ReleaseListing(release_count=1, journaled=frozenset({plan['batch_tag']}))
+        repository = Mock()
+        repository.recover_intent.return_value = None
+        pub = Mock()
+        pub.get.return_value = self.catalog
+        return {'journal': journal, 'repository': repository, 'pub': pub, 'operation': 'resume',
+                'scheduled': True, 'dry_run': False, **options}
+
+    # Purpose: Represent a pre-pin planning journal independently of SDK-selection logic.
+    # /**
+    #  * @param self The toolchain fixture with deterministic release identities.
+    #  * @returns A durable in-flight plan whose missing SDK intent must block recovery.
+    #  * @throws Nothing; all fields are literal fixture values.
+    #  */
+    def in_flight_plan(self):
+        return {'schema': 1, 'journal_id': 9, 'batch_tag': 'sz-release-batch-9', 'source_sha': 'd' * 40,
+                'prepared_sha': None, 'status': 'planning', 'phase': 'planning', 'not_before': 0,
+                'error': None, 'files': {}, 'packages': []}
+
+    # Purpose: Reproduce invalid immutable provenance without replacing selection behavior.
+    # /**
+    #  * @param self The toolchain fixture with controlled external boundaries.
+    #  * @param options Named selection flags and an optional orphan-intent failure cause.
+    #  * @returns A context whose repository rejects missing or malformed SDK provenance.
+    #  * @throws Nothing; the blocker is raised only when selection reads the repository.
+    #  */
+    def sdk_step_with_provenance_blocker(self, **options):
+        orphan_error = options.pop('orphan_error', None)
+        context = self.sdk_step(**options)
+        error = Blocked(orphan_error or 'Immutable SDK intent is missing or malformed')
+        if orphan_error:
+            context['repository'].recover_intent.side_effect = error
+        else:
+            context['repository'].intent_sdk.side_effect = error
+        return context
+
+    # Purpose: Ensure unattended blocked batches cause neither network reads nor journal rewrites.
+    # /**
+    #  * @param self The toolchain assertion fixture.
+    #  * @param context A scheduled blocked batch with controlled external boundaries.
+    #  * @returns None; asserts selection finishes before catalog, intent or persistence work.
+    #  * @throws AssertionError if the quiet path performs recovery or release-state work.
+    #  */
+    def assert_quiet_sdk_step(self, context):
+        self.assertIsNone(self.module.select_workflow_sdk_and_record_blockers(context))
+        context['pub'].get.assert_not_called()
+        context['repository'].recover_intent.assert_not_called()
+        context['journal'].save.assert_not_called()
+
+    # Purpose: Make hourly resumes go quiet after the SDK step blocks an in-flight batch (UNFY-402).
+    # /**
+    #  * @param self The toolchain fixture with a pre-pin planning journal.
+    #  * @returns None; asserts the journal durably records the blocker without a cooldown.
+    #  * @throws AssertionError if the step fails without recording why.
+    #  */
+    def test_sdk_step_blocker_is_persisted_on_the_in_flight_journal(self):
+        context = self.sdk_step_with_provenance_blocker()
+        plan = context['journal'].load.return_value
+        with self.assertRaises(SystemExit) as stop:
+            self.module.select_workflow_sdk_and_record_blockers(context)
+        self.assertEqual(stop.exception.code, 1)
+        context['journal'].save.assert_called_once_with(plan)
+        self.assertEqual((plan['status'], plan['not_before'], plan['error']),
+                         ('blocked', 0, 'Immutable SDK intent is missing or malformed'))
+
+    # Purpose: Keep dry runs free of release-state writes even when the SDK step blocks.
+    # /**
+    #  * @param self The toolchain fixture with a pre-pin planning journal.
+    #  * @returns None; asserts the step still fails but the journal is untouched.
+    #  * @throws AssertionError if a preview persists a blocker.
+    #  */
+    def test_dry_run_sdk_step_blocker_leaves_the_journal_unchanged(self):
+        context = self.sdk_step_with_provenance_blocker(dry_run=True, scheduled=False)
+        plan = context['journal'].load.return_value
+        with self.assertRaises(SystemExit):
+            self.module.select_workflow_sdk_and_record_blockers(context)
+        context['journal'].save.assert_not_called()
+        self.assertEqual(plan['status'], 'planning')
+
+    # Purpose: Never rewrite a terminal journal because a newer orphan tag is unusable.
+    # /**
+    #  * @param self The toolchain fixture with a complete journal and a refused orphan.
+    #  * @returns None; asserts the step fails without touching the completed batch.
+    #  * @throws AssertionError if a complete journal is marked blocked.
+    #  */
+    def test_sdk_step_blocker_never_rewrites_a_complete_journal(self):
+        context = self.sdk_step_with_provenance_blocker(
+            plan_changes={'status': 'complete', 'phase': 'complete'},
+            orphan_error='Orphan batch intent sz-release-batch-10 predates the packaging SDK pin')
+        plan = context['journal'].load.return_value
+        with self.assertRaises(SystemExit):
+            self.module.select_workflow_sdk_and_record_blockers(context)
+        context['journal'].save.assert_not_called()
+        self.assertEqual(plan['status'], 'complete')
+
+    # Purpose: Keep a recovered orphan from hiding the in-flight journal that needs the blocker.
+    # /**
+    #  * @param self The fixture whose valid recovered intent fails official SDK provenance checks.
+    #  * @returns None; asserts the original journal becomes blocked while the orphan stays unchanged.
+    #  * @throws AssertionError if selection loses the original journal's persistence identity.
+    #  */
+    def test_orphan_sdk_failure_blocks_original_journal_without_mutating_orphan(self):
+        context = self.sdk_step()
+        original = context['journal'].load.return_value
+        orphan = {'schema': 1, 'batch_tag': 'sz-release-batch-10', 'source_sha': 'e' * 40,
+                  'prepared_sha': None, 'status': 'planning', 'phase': 'planning', 'not_before': 0,
+                  'error': None, 'files': {}, 'packages': [], 'packaging_sdk': self.original}
+        context['repository'].recover_intent.return_value = orphan
+        context['repository'].intent_sdk.return_value = self.original
+        context['pub'].get.return_value = {
+            'current_release': {'stable': 'b' * 40},
+            'releases': [{'version': '3.50.0', 'hash': 'b' * 40, 'channel': 'stable'}]}
+        before = {**orphan}
+        with self.assertRaises(SystemExit):
+            self.module.select_workflow_sdk_and_record_blockers(context)
+        self.assertEqual((original['status'], original['not_before'], original['error']),
+                         ('blocked', 0, 'Packaging SDK has no unique official stable release'))
+        context['journal'].save.assert_called_once_with(original)
+        self.assertEqual(orphan, before)
+
+    # Purpose: Let unattended blocked batches finish without catalog or SDK setup.
+    # /**
+    #  * @param self The toolchain fixture with a blocked journal.
+    #  * @returns None; asserts selection does not contact release services or rewrite history.
+    #  * @throws AssertionError if the quiet path installs an SDK or writes the journal.
+    #  */
+    def test_scheduled_run_on_a_blocked_batch_needs_no_catalog_or_sdk(self):
+        context = self.sdk_step(plan_changes={'status': 'blocked', 'error': 'Analyzer error',
+                                              'packaging_sdk': self.original})
+        self.assert_quiet_sdk_step(context)
+
+    # Purpose: Preserve operator-directed recovery even after unattended retries become quiet.
+    # /**
+    #  * @param self The toolchain fixture with a blocked batch and valid frozen SDK evidence.
+    #  * @returns None; asserts a manual resume still selects the original batch SDK.
+    #  * @throws AssertionError if the scheduled quiet path suppresses manual recovery.
+    #  */
+    def test_manual_run_on_a_blocked_batch_still_selects_its_sdk(self):
+        context = self.sdk_step(scheduled=False, plan_changes={
+            'status': 'blocked', 'error': 'Analyzer error', 'packaging_sdk': self.original})
+        context['repository'].intent_sdk.return_value = self.original
+        manual = self.module.select_workflow_sdk_and_record_blockers(context)
+        self.assertEqual((manual['current'], manual['batch']), (self.original, self.original))
+
+    # Purpose: Exercise workflow wiring without allowing test credentials to reach live services.
+    # /**
+    #  * @param self The toolchain fixture invoking the real CLI entry point.
+    #  * @param context Controlled repository, journal and environment inputs.
+    #  * @returns The number of catalog requests issued by the CLI.
+    #  * @throws SystemExit if CLI recovery cannot complete safely.
+    #  */
+    def execute_scheduled_sdk_main(self, context):
+        with patch.dict(os.environ, context['environment'], clear=True), patch.object(sys, 'argv', ['release_toolchain.py']), patch.object(self.module, 'PubClient') as pub:
+            with patch('release_repository.Repository', return_value=context['repository']), patch('release_github.GitHubClient', return_value=context['journal']):
+                self.module.main()
+        return pub.return_value.get.call_count
+
+    # Purpose: Observe the installer outputs that determine whether the workflow sets up an SDK.
+    # /**
+    #  * @param self The toolchain fixture invoking an isolated scheduled CLI run.
+    #  * @param context Controlled release-service boundaries for the blocked batch.
+    #  * @returns The emitted SDK outputs, environment-file presence and catalog request count.
+    #  * @throws OSError if the CLI cannot emit or read its temporary workflow outputs.
+    #  */
+    def scheduled_sdk_main_evidence(self, context):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            output, environment_file = root / 'output', root / 'env'
+            environment = {'GITHUB_OUTPUT': f'{output}', 'GITHUB_ENV': f'{environment_file}',
+                           'GITHUB_REPOSITORY': 'owner/repo', 'GH_TOKEN': 'fixture', 'EVENT_NAME': 'schedule'}
+            requests = self.execute_scheduled_sdk_main({**context, 'environment': environment})
+            return (output.read_text(), environment_file.exists(), requests)
+
+    # Purpose: Prevent the workflow from installing an SDK for an unattended blocked retry.
+    # /**
+    #  * @param self The toolchain fixture with a persisted blocked batch.
+    #  * @returns None; asserts the CLI emits empty SDK outputs without catalog access or env writes.
+    #  * @throws AssertionError if the workflow would install an SDK or mutate SDK environment.
+    #  */
+    def test_scheduled_main_on_a_blocked_batch_emits_no_sdk_setup(self):
+        context = self.sdk_step(plan_changes={'status': 'blocked', 'error': 'Analyzer error',
+                                              'packaging_sdk': self.original})
+        self.assertEqual(self.scheduled_sdk_main_evidence(context),
+                         ('current_version=\nbatch_version=\n', False, 0))
 
     # Purpose: Exercise the workflow entry point when stable has advanced after a tag.
     # /**
