@@ -31,7 +31,7 @@ class QueryHostApiImpl(
 
     private val scope = CoroutineScope(SupervisorJob() + ioDispatcher)
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val streamManager = StreamManager(context, flutterApi, mainHandler)
+    private val streamManager = StreamManager(context)
     private val observerRegistry = ObserverRegistry(context, flutterApi, mainHandler)
 
     private val contentResolver get() = context.contentResolver

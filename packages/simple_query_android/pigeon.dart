@@ -335,21 +335,6 @@ class StreamDescriptor {
   final int? size;
 }
 
-/// Error during streaming.
-class StreamError {
-  StreamError({
-    required this.streamId,
-    required this.contentUri,
-    required this.message,
-    this.bytesTransferred,
-  });
-
-  final String streamId;
-  final String contentUri;
-  final String message;
-  final int? bytesTransferred;
-}
-
 // ============================================================================
 // Data Classes - Observers
 // ============================================================================
@@ -544,7 +529,4 @@ abstract class QueryHostApi {
 abstract class QueryFlutterApi {
   /// Called when observed content changes.
   void onContentChange(ContentChangeEvent event);
-
-  /// Called when a stream encounters an error.
-  void onStreamError(StreamError error);
 }

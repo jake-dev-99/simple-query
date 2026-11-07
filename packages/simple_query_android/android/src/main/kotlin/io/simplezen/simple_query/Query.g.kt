@@ -548,37 +548,6 @@ data class StreamDescriptor (
 }
 
 /**
- * Error during streaming.
- *
- * Generated class from Pigeon that represents data sent in messages.
- */
-data class StreamError (
-  val streamId: String,
-  val contentUri: String,
-  val message: String,
-  val bytesTransferred: Long? = null
-)
- {
-  companion object {
-    fun fromList(pigeonVar_list: List<Any?>): StreamError {
-      val streamId = pigeonVar_list[0] as String
-      val contentUri = pigeonVar_list[1] as String
-      val message = pigeonVar_list[2] as String
-      val bytesTransferred = pigeonVar_list[3] as Long?
-      return StreamError(streamId, contentUri, message, bytesTransferred)
-    }
-  }
-  fun toList(): List<Any?> {
-    return listOf(
-      streamId,
-      contentUri,
-      message,
-      bytesTransferred,
-    )
-  }
-}
-
-/**
  * Event from ContentObserver.
  *
  * Generated class from Pigeon that represents data sent in messages.
@@ -807,30 +776,25 @@ private open class QueryPigeonCodec : StandardMessageCodec() {
       }
       145.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          StreamError.fromList(it)
+          ContentChangeEvent.fromList(it)
         }
       }
       146.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          ContentChangeEvent.fromList(it)
+          ObserverRequest.fromList(it)
         }
       }
       147.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          ObserverRequest.fromList(it)
+          TypeResponse.fromList(it)
         }
       }
       148.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          TypeResponse.fromList(it)
-        }
-      }
-      149.toByte() -> {
-        return (readValue(buffer) as? List<Any?>)?.let {
           ProviderCallRequest.fromList(it)
         }
       }
-      150.toByte() -> {
+      149.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
           ProviderCallResponse.fromList(it)
         }
@@ -904,28 +868,24 @@ private open class QueryPigeonCodec : StandardMessageCodec() {
         stream.write(144)
         writeValue(stream, value.toList())
       }
-      is StreamError -> {
+      is ContentChangeEvent -> {
         stream.write(145)
         writeValue(stream, value.toList())
       }
-      is ContentChangeEvent -> {
+      is ObserverRequest -> {
         stream.write(146)
         writeValue(stream, value.toList())
       }
-      is ObserverRequest -> {
+      is TypeResponse -> {
         stream.write(147)
         writeValue(stream, value.toList())
       }
-      is TypeResponse -> {
+      is ProviderCallRequest -> {
         stream.write(148)
         writeValue(stream, value.toList())
       }
-      is ProviderCallRequest -> {
-        stream.write(149)
-        writeValue(stream, value.toList())
-      }
       is ProviderCallResponse -> {
-        stream.write(150)
+        stream.write(149)
         writeValue(stream, value.toList())
       }
       else -> super.writeValue(stream, value)
@@ -1389,24 +1349,6 @@ class QueryFlutterApi(private val binaryMessenger: BinaryMessenger, private val 
     val channelName = "dev.flutter.pigeon.simple_query.QueryFlutterApi.onContentChange$separatedMessageChannelSuffix"
     val channel = BasicMessageChannel<Any?>(binaryMessenger, channelName, codec)
     channel.send(listOf(eventArg)) {
-      if (it is List<*>) {
-        if (it.size > 1) {
-          callback(Result.failure(QueryFlutterError(it[0] as String, it[1] as String, it[2] as String?)))
-        } else {
-          callback(Result.success(Unit))
-        }
-      } else {
-        callback(Result.failure(createConnectionError(channelName)))
-      } 
-    }
-  }
-  /** Called when a stream encounters an error. */
-  fun onStreamError(errorArg: StreamError, callback: (Result<Unit>) -> Unit)
-{
-    val separatedMessageChannelSuffix = if (messageChannelSuffix.isNotEmpty()) ".$messageChannelSuffix" else ""
-    val channelName = "dev.flutter.pigeon.simple_query.QueryFlutterApi.onStreamError$separatedMessageChannelSuffix"
-    val channel = BasicMessageChannel<Any?>(binaryMessenger, channelName, codec)
-    channel.send(listOf(errorArg)) {
       if (it is List<*>) {
         if (it.size > 1) {
           callback(Result.failure(QueryFlutterError(it[0] as String, it[1] as String, it[2] as String?)))

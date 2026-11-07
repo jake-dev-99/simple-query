@@ -15,8 +15,11 @@ PlatformException _createConnectionError(String channelName) {
   );
 }
 
-List<Object?> wrapResponse(
-    {Object? result, PlatformException? error, bool empty = false}) {
+List<Object?> wrapResponse({
+  Object? result,
+  PlatformException? error,
+  bool empty = false,
+}) {
   if (empty) {
     return <Object?>[];
   }
@@ -27,20 +30,10 @@ List<Object?> wrapResponse(
 }
 
 /// Type of content change observed by ContentObserver.
-enum ContentChangeType {
-  insert,
-  update,
-  delete,
-  unknown,
-}
+enum ContentChangeType { insert, update, delete, unknown }
 
 /// Type of batch operation in applyBatch.
-enum BatchOperationType {
-  insert,
-  update,
-  delete,
-  assertQuery,
-}
+enum BatchOperationType { insert, update, delete, assertQuery }
 
 /// Request for a query operation.
 class QueryRequest {
@@ -103,11 +96,7 @@ class QueryRequest {
 
 /// Response from a query operation.
 class QueryResponse {
-  QueryResponse({
-    required this.rows,
-    required this.rowCount,
-    this.columnNames,
-  });
+  QueryResponse({required this.rows, required this.rowCount, this.columnNames});
 
   /// List of rows, each row is a map of column name to value.
   /// BLOB columns return null; use openStream() to retrieve binary data.
@@ -122,11 +111,7 @@ class QueryResponse {
   List<String?>? columnNames;
 
   Object encode() {
-    return <Object?>[
-      rows,
-      rowCount,
-      columnNames,
-    ];
+    return <Object?>[rows, rowCount, columnNames];
   }
 
   static QueryResponse decode(Object result) {
@@ -141,10 +126,7 @@ class QueryResponse {
 
 /// Request to insert a row.
 class InsertRequest {
-  InsertRequest({
-    required this.contentUri,
-    required this.values,
-  });
+  InsertRequest({required this.contentUri, required this.values});
 
   String contentUri;
 
@@ -152,10 +134,7 @@ class InsertRequest {
   Map<String?, Object?> values;
 
   Object encode() {
-    return <Object?>[
-      contentUri,
-      values,
-    ];
+    return <Object?>[contentUri, values];
   }
 
   static InsertRequest decode(Object result) {
@@ -169,10 +148,7 @@ class InsertRequest {
 
 /// Request to insert multiple rows.
 class BulkInsertRequest {
-  BulkInsertRequest({
-    required this.contentUri,
-    required this.valuesList,
-  });
+  BulkInsertRequest({required this.contentUri, required this.valuesList});
 
   String contentUri;
 
@@ -180,10 +156,7 @@ class BulkInsertRequest {
   List<Map<String?, Object?>?> valuesList;
 
   Object encode() {
-    return <Object?>[
-      contentUri,
-      valuesList,
-    ];
+    return <Object?>[contentUri, valuesList];
   }
 
   static BulkInsertRequest decode(Object result) {
@@ -216,12 +189,7 @@ class UpdateRequest {
   List<String?>? selectionArgs;
 
   Object encode() {
-    return <Object?>[
-      contentUri,
-      values,
-      selection,
-      selectionArgs,
-    ];
+    return <Object?>[contentUri, values, selection, selectionArgs];
   }
 
   static UpdateRequest decode(Object result) {
@@ -237,11 +205,7 @@ class UpdateRequest {
 
 /// Request to delete rows.
 class DeleteRequest {
-  DeleteRequest({
-    required this.contentUri,
-    this.selection,
-    this.selectionArgs,
-  });
+  DeleteRequest({required this.contentUri, this.selection, this.selectionArgs});
 
   String contentUri;
 
@@ -252,11 +216,7 @@ class DeleteRequest {
   List<String?>? selectionArgs;
 
   Object encode() {
-    return <Object?>[
-      contentUri,
-      selection,
-      selectionArgs,
-    ];
+    return <Object?>[contentUri, selection, selectionArgs];
   }
 
   static DeleteRequest decode(Object result) {
@@ -333,10 +293,7 @@ class BatchOperation {
 
 /// Request for batch operations.
 class BatchRequest {
-  BatchRequest({
-    required this.authority,
-    required this.operations,
-  });
+  BatchRequest({required this.authority, required this.operations});
 
   /// ContentProvider authority (e.g., "sms", "com.android.contacts").
   String authority;
@@ -345,10 +302,7 @@ class BatchRequest {
   List<BatchOperation?> operations;
 
   Object encode() {
-    return <Object?>[
-      authority,
-      operations,
-    ];
+    return <Object?>[authority, operations];
   }
 
   static BatchRequest decode(Object result) {
@@ -362,10 +316,7 @@ class BatchRequest {
 
 /// Result of a single batch operation.
 class BatchOperationResult {
-  BatchOperationResult({
-    this.uri,
-    this.count,
-  });
+  BatchOperationResult({this.uri, this.count});
 
   /// URI of inserted row (for insert operations).
   String? uri;
@@ -374,10 +325,7 @@ class BatchOperationResult {
   int? count;
 
   Object encode() {
-    return <Object?>[
-      uri,
-      count,
-    ];
+    return <Object?>[uri, count];
   }
 
   static BatchOperationResult decode(Object result) {
@@ -454,10 +402,7 @@ class JoinSpec {
 
 /// Request for a query with joins.
 class JoinQueryRequest {
-  JoinQueryRequest({
-    required this.primary,
-    required this.joins,
-  });
+  JoinQueryRequest({required this.primary, required this.joins});
 
   /// The primary/parent query.
   QueryRequest primary;
@@ -466,10 +411,7 @@ class JoinQueryRequest {
   List<JoinSpec?> joins;
 
   Object encode() {
-    return <Object?>[
-      primary,
-      joins,
-    ];
+    return <Object?>[primary, joins];
   }
 
   static JoinQueryRequest decode(Object result) {
@@ -483,10 +425,7 @@ class JoinQueryRequest {
 
 /// A row with nested related data.
 class JoinedRow {
-  JoinedRow({
-    required this.data,
-    required this.related,
-  });
+  JoinedRow({required this.data, required this.related});
 
   /// Primary row data.
   /// Note: Actually `Map<Object?, Object?>` - convert keys with `.cast<String?, Object?>()`.
@@ -497,37 +436,25 @@ class JoinedRow {
   Object related;
 
   Object encode() {
-    return <Object?>[
-      data,
-      related,
-    ];
+    return <Object?>[data, related];
   }
 
   static JoinedRow decode(Object result) {
     result as List<Object?>;
-    return JoinedRow(
-      data: result[0]!,
-      related: result[1]!,
-    );
+    return JoinedRow(data: result[0]!, related: result[1]!);
   }
 }
 
 /// Response for a join query.
 class JoinQueryResponse {
-  JoinQueryResponse({
-    required this.rows,
-    required this.rowCount,
-  });
+  JoinQueryResponse({required this.rows, required this.rowCount});
 
   List<JoinedRow?> rows;
 
   int rowCount;
 
   Object encode() {
-    return <Object?>[
-      rows,
-      rowCount,
-    ];
+    return <Object?>[rows, rowCount];
   }
 
   static JoinQueryResponse decode(Object result) {
@@ -561,12 +488,7 @@ class StreamDescriptor {
   int? size;
 
   Object encode() {
-    return <Object?>[
-      streamId,
-      pipePath,
-      mimeType,
-      size,
-    ];
+    return <Object?>[streamId, pipePath, mimeType, size];
   }
 
   static StreamDescriptor decode(Object result) {
@@ -576,43 +498,6 @@ class StreamDescriptor {
       pipePath: result[1]! as String,
       mimeType: result[2] as String?,
       size: result[3] as int?,
-    );
-  }
-}
-
-/// Error during streaming.
-class StreamError {
-  StreamError({
-    required this.streamId,
-    required this.contentUri,
-    required this.message,
-    this.bytesTransferred,
-  });
-
-  String streamId;
-
-  String contentUri;
-
-  String message;
-
-  int? bytesTransferred;
-
-  Object encode() {
-    return <Object?>[
-      streamId,
-      contentUri,
-      message,
-      bytesTransferred,
-    ];
-  }
-
-  static StreamError decode(Object result) {
-    result as List<Object?>;
-    return StreamError(
-      streamId: result[0]! as String,
-      contentUri: result[1]! as String,
-      message: result[2]! as String,
-      bytesTransferred: result[3] as int?,
     );
   }
 }
@@ -645,13 +530,7 @@ class ContentChangeEvent {
   bool selfChange;
 
   Object encode() {
-    return <Object?>[
-      observerId,
-      uri,
-      changeType,
-      flags,
-      selfChange,
-    ];
+    return <Object?>[observerId, uri, changeType, flags, selfChange];
   }
 
   static ContentChangeEvent decode(Object result) {
@@ -668,10 +547,7 @@ class ContentChangeEvent {
 
 /// Request to register an observer.
 class ObserverRequest {
-  ObserverRequest({
-    required this.contentUri,
-    this.notifyForDescendants = true,
-  });
+  ObserverRequest({required this.contentUri, this.notifyForDescendants = true});
 
   String contentUri;
 
@@ -679,10 +555,7 @@ class ObserverRequest {
   bool notifyForDescendants;
 
   Object encode() {
-    return <Object?>[
-      contentUri,
-      notifyForDescendants,
-    ];
+    return <Object?>[contentUri, notifyForDescendants];
   }
 
   static ObserverRequest decode(Object result) {
@@ -696,24 +569,18 @@ class ObserverRequest {
 
 /// Response for getType().
 class TypeResponse {
-  TypeResponse({
-    this.mimeType,
-  });
+  TypeResponse({this.mimeType});
 
   /// MIME type (e.g., "vnd.android.cursor.dir/sms").
   String? mimeType;
 
   Object encode() {
-    return <Object?>[
-      mimeType,
-    ];
+    return <Object?>[mimeType];
   }
 
   static TypeResponse decode(Object result) {
     result as List<Object?>;
-    return TypeResponse(
-      mimeType: result[0] as String?,
-    );
+    return TypeResponse(mimeType: result[0] as String?);
   }
 }
 
@@ -735,12 +602,7 @@ class ProviderCallRequest {
   Map<String?, Object?>? extras;
 
   Object encode() {
-    return <Object?>[
-      authority,
-      method,
-      arg,
-      extras,
-    ];
+    return <Object?>[authority, method, arg, extras];
   }
 
   static ProviderCallRequest decode(Object result) {
@@ -756,16 +618,12 @@ class ProviderCallRequest {
 
 /// Response from provider call().
 class ProviderCallResponse {
-  ProviderCallResponse({
-    this.result,
-  });
+  ProviderCallResponse({this.result});
 
   Map<String?, Object?>? result;
 
   Object encode() {
-    return <Object?>[
-      result,
-    ];
+    return <Object?>[result];
   }
 
   static ProviderCallResponse decode(Object result) {
@@ -831,23 +689,20 @@ class _PigeonCodec extends StandardMessageCodec {
     } else if (value is StreamDescriptor) {
       buffer.putUint8(144);
       writeValue(buffer, value.encode());
-    } else if (value is StreamError) {
+    } else if (value is ContentChangeEvent) {
       buffer.putUint8(145);
       writeValue(buffer, value.encode());
-    } else if (value is ContentChangeEvent) {
+    } else if (value is ObserverRequest) {
       buffer.putUint8(146);
       writeValue(buffer, value.encode());
-    } else if (value is ObserverRequest) {
+    } else if (value is TypeResponse) {
       buffer.putUint8(147);
       writeValue(buffer, value.encode());
-    } else if (value is TypeResponse) {
+    } else if (value is ProviderCallRequest) {
       buffer.putUint8(148);
       writeValue(buffer, value.encode());
-    } else if (value is ProviderCallRequest) {
-      buffer.putUint8(149);
-      writeValue(buffer, value.encode());
     } else if (value is ProviderCallResponse) {
-      buffer.putUint8(150);
+      buffer.putUint8(149);
       writeValue(buffer, value.encode());
     } else {
       super.writeValue(buffer, value);
@@ -892,16 +747,14 @@ class _PigeonCodec extends StandardMessageCodec {
       case 144:
         return StreamDescriptor.decode(readValue(buffer)!);
       case 145:
-        return StreamError.decode(readValue(buffer)!);
-      case 146:
         return ContentChangeEvent.decode(readValue(buffer)!);
-      case 147:
+      case 146:
         return ObserverRequest.decode(readValue(buffer)!);
-      case 148:
+      case 147:
         return TypeResponse.decode(readValue(buffer)!);
-      case 149:
+      case 148:
         return ProviderCallRequest.decode(readValue(buffer)!);
-      case 150:
+      case 149:
         return ProviderCallResponse.decode(readValue(buffer)!);
       default:
         return super.readValueOfType(type, buffer);
@@ -913,11 +766,13 @@ class QueryHostApi {
   /// Constructor for [QueryHostApi].  The [binaryMessenger] named argument is
   /// available for dependency injection.  If it is left null, the default
   /// BinaryMessenger will be used which routes to the host platform.
-  QueryHostApi(
-      {BinaryMessenger? binaryMessenger, String messageChannelSuffix = ''})
-      : pigeonVar_binaryMessenger = binaryMessenger,
-        pigeonVar_messageChannelSuffix =
-            messageChannelSuffix.isNotEmpty ? '.$messageChannelSuffix' : '';
+  QueryHostApi({
+    BinaryMessenger? binaryMessenger,
+    String messageChannelSuffix = '',
+  }) : pigeonVar_binaryMessenger = binaryMessenger,
+       pigeonVar_messageChannelSuffix = messageChannelSuffix.isNotEmpty
+           ? '.$messageChannelSuffix'
+           : '';
   final BinaryMessenger? pigeonVar_binaryMessenger;
 
   static const MessageCodec<Object?> pigeonChannelCodec = _PigeonCodec();
@@ -929,10 +784,10 @@ class QueryHostApi {
         'dev.flutter.pigeon.simple_query.QueryHostApi.query$pigeonVar_messageChannelSuffix';
     final BasicMessageChannel<Object?> pigeonVar_channel =
         BasicMessageChannel<Object?>(
-      pigeonVar_channelName,
-      pigeonChannelCodec,
-      binaryMessenger: pigeonVar_binaryMessenger,
-    );
+          pigeonVar_channelName,
+          pigeonChannelCodec,
+          binaryMessenger: pigeonVar_binaryMessenger,
+        );
     final List<Object?>? pigeonVar_replyList =
         await pigeonVar_channel.send(<Object?>[request]) as List<Object?>?;
     if (pigeonVar_replyList == null) {
@@ -958,10 +813,10 @@ class QueryHostApi {
         'dev.flutter.pigeon.simple_query.QueryHostApi.queryWithJoins$pigeonVar_messageChannelSuffix';
     final BasicMessageChannel<Object?> pigeonVar_channel =
         BasicMessageChannel<Object?>(
-      pigeonVar_channelName,
-      pigeonChannelCodec,
-      binaryMessenger: pigeonVar_binaryMessenger,
-    );
+          pigeonVar_channelName,
+          pigeonChannelCodec,
+          binaryMessenger: pigeonVar_binaryMessenger,
+        );
     final List<Object?>? pigeonVar_replyList =
         await pigeonVar_channel.send(<Object?>[request]) as List<Object?>?;
     if (pigeonVar_replyList == null) {
@@ -988,10 +843,10 @@ class QueryHostApi {
         'dev.flutter.pigeon.simple_query.QueryHostApi.insert$pigeonVar_messageChannelSuffix';
     final BasicMessageChannel<Object?> pigeonVar_channel =
         BasicMessageChannel<Object?>(
-      pigeonVar_channelName,
-      pigeonChannelCodec,
-      binaryMessenger: pigeonVar_binaryMessenger,
-    );
+          pigeonVar_channelName,
+          pigeonChannelCodec,
+          binaryMessenger: pigeonVar_binaryMessenger,
+        );
     final List<Object?>? pigeonVar_replyList =
         await pigeonVar_channel.send(<Object?>[request]) as List<Object?>?;
     if (pigeonVar_replyList == null) {
@@ -1013,10 +868,10 @@ class QueryHostApi {
         'dev.flutter.pigeon.simple_query.QueryHostApi.bulkInsert$pigeonVar_messageChannelSuffix';
     final BasicMessageChannel<Object?> pigeonVar_channel =
         BasicMessageChannel<Object?>(
-      pigeonVar_channelName,
-      pigeonChannelCodec,
-      binaryMessenger: pigeonVar_binaryMessenger,
-    );
+          pigeonVar_channelName,
+          pigeonChannelCodec,
+          binaryMessenger: pigeonVar_binaryMessenger,
+        );
     final List<Object?>? pigeonVar_replyList =
         await pigeonVar_channel.send(<Object?>[request]) as List<Object?>?;
     if (pigeonVar_replyList == null) {
@@ -1043,10 +898,10 @@ class QueryHostApi {
         'dev.flutter.pigeon.simple_query.QueryHostApi.update$pigeonVar_messageChannelSuffix';
     final BasicMessageChannel<Object?> pigeonVar_channel =
         BasicMessageChannel<Object?>(
-      pigeonVar_channelName,
-      pigeonChannelCodec,
-      binaryMessenger: pigeonVar_binaryMessenger,
-    );
+          pigeonVar_channelName,
+          pigeonChannelCodec,
+          binaryMessenger: pigeonVar_binaryMessenger,
+        );
     final List<Object?>? pigeonVar_replyList =
         await pigeonVar_channel.send(<Object?>[request]) as List<Object?>?;
     if (pigeonVar_replyList == null) {
@@ -1073,10 +928,10 @@ class QueryHostApi {
         'dev.flutter.pigeon.simple_query.QueryHostApi.delete$pigeonVar_messageChannelSuffix';
     final BasicMessageChannel<Object?> pigeonVar_channel =
         BasicMessageChannel<Object?>(
-      pigeonVar_channelName,
-      pigeonChannelCodec,
-      binaryMessenger: pigeonVar_binaryMessenger,
-    );
+          pigeonVar_channelName,
+          pigeonChannelCodec,
+          binaryMessenger: pigeonVar_binaryMessenger,
+        );
     final List<Object?>? pigeonVar_replyList =
         await pigeonVar_channel.send(<Object?>[request]) as List<Object?>?;
     if (pigeonVar_replyList == null) {
@@ -1103,10 +958,10 @@ class QueryHostApi {
         'dev.flutter.pigeon.simple_query.QueryHostApi.applyBatch$pigeonVar_messageChannelSuffix';
     final BasicMessageChannel<Object?> pigeonVar_channel =
         BasicMessageChannel<Object?>(
-      pigeonVar_channelName,
-      pigeonChannelCodec,
-      binaryMessenger: pigeonVar_binaryMessenger,
-    );
+          pigeonVar_channelName,
+          pigeonChannelCodec,
+          binaryMessenger: pigeonVar_binaryMessenger,
+        );
     final List<Object?>? pigeonVar_replyList =
         await pigeonVar_channel.send(<Object?>[request]) as List<Object?>?;
     if (pigeonVar_replyList == null) {
@@ -1135,10 +990,10 @@ class QueryHostApi {
         'dev.flutter.pigeon.simple_query.QueryHostApi.openStream$pigeonVar_messageChannelSuffix';
     final BasicMessageChannel<Object?> pigeonVar_channel =
         BasicMessageChannel<Object?>(
-      pigeonVar_channelName,
-      pigeonChannelCodec,
-      binaryMessenger: pigeonVar_binaryMessenger,
-    );
+          pigeonVar_channelName,
+          pigeonChannelCodec,
+          binaryMessenger: pigeonVar_binaryMessenger,
+        );
     final List<Object?>? pigeonVar_replyList =
         await pigeonVar_channel.send(<Object?>[contentUri]) as List<Object?>?;
     if (pigeonVar_replyList == null) {
@@ -1166,10 +1021,10 @@ class QueryHostApi {
         'dev.flutter.pigeon.simple_query.QueryHostApi.extractToFile$pigeonVar_messageChannelSuffix';
     final BasicMessageChannel<Object?> pigeonVar_channel =
         BasicMessageChannel<Object?>(
-      pigeonVar_channelName,
-      pigeonChannelCodec,
-      binaryMessenger: pigeonVar_binaryMessenger,
-    );
+          pigeonVar_channelName,
+          pigeonChannelCodec,
+          binaryMessenger: pigeonVar_binaryMessenger,
+        );
     final List<Object?>? pigeonVar_replyList =
         await pigeonVar_channel.send(<Object?>[contentUri]) as List<Object?>?;
     if (pigeonVar_replyList == null) {
@@ -1191,10 +1046,10 @@ class QueryHostApi {
         'dev.flutter.pigeon.simple_query.QueryHostApi.closeStream$pigeonVar_messageChannelSuffix';
     final BasicMessageChannel<Object?> pigeonVar_channel =
         BasicMessageChannel<Object?>(
-      pigeonVar_channelName,
-      pigeonChannelCodec,
-      binaryMessenger: pigeonVar_binaryMessenger,
-    );
+          pigeonVar_channelName,
+          pigeonChannelCodec,
+          binaryMessenger: pigeonVar_binaryMessenger,
+        );
     final List<Object?>? pigeonVar_replyList =
         await pigeonVar_channel.send(<Object?>[streamId]) as List<Object?>?;
     if (pigeonVar_replyList == null) {
@@ -1216,10 +1071,10 @@ class QueryHostApi {
         'dev.flutter.pigeon.simple_query.QueryHostApi.registerObserver$pigeonVar_messageChannelSuffix';
     final BasicMessageChannel<Object?> pigeonVar_channel =
         BasicMessageChannel<Object?>(
-      pigeonVar_channelName,
-      pigeonChannelCodec,
-      binaryMessenger: pigeonVar_binaryMessenger,
-    );
+          pigeonVar_channelName,
+          pigeonChannelCodec,
+          binaryMessenger: pigeonVar_binaryMessenger,
+        );
     final List<Object?>? pigeonVar_replyList =
         await pigeonVar_channel.send(<Object?>[request]) as List<Object?>?;
     if (pigeonVar_replyList == null) {
@@ -1246,10 +1101,10 @@ class QueryHostApi {
         'dev.flutter.pigeon.simple_query.QueryHostApi.unregisterObserver$pigeonVar_messageChannelSuffix';
     final BasicMessageChannel<Object?> pigeonVar_channel =
         BasicMessageChannel<Object?>(
-      pigeonVar_channelName,
-      pigeonChannelCodec,
-      binaryMessenger: pigeonVar_binaryMessenger,
-    );
+          pigeonVar_channelName,
+          pigeonChannelCodec,
+          binaryMessenger: pigeonVar_binaryMessenger,
+        );
     final List<Object?>? pigeonVar_replyList =
         await pigeonVar_channel.send(<Object?>[observerId]) as List<Object?>?;
     if (pigeonVar_replyList == null) {
@@ -1271,10 +1126,10 @@ class QueryHostApi {
         'dev.flutter.pigeon.simple_query.QueryHostApi.unregisterAllObservers$pigeonVar_messageChannelSuffix';
     final BasicMessageChannel<Object?> pigeonVar_channel =
         BasicMessageChannel<Object?>(
-      pigeonVar_channelName,
-      pigeonChannelCodec,
-      binaryMessenger: pigeonVar_binaryMessenger,
-    );
+          pigeonVar_channelName,
+          pigeonChannelCodec,
+          binaryMessenger: pigeonVar_binaryMessenger,
+        );
     final List<Object?>? pigeonVar_replyList =
         await pigeonVar_channel.send(null) as List<Object?>?;
     if (pigeonVar_replyList == null) {
@@ -1296,10 +1151,10 @@ class QueryHostApi {
         'dev.flutter.pigeon.simple_query.QueryHostApi.getType$pigeonVar_messageChannelSuffix';
     final BasicMessageChannel<Object?> pigeonVar_channel =
         BasicMessageChannel<Object?>(
-      pigeonVar_channelName,
-      pigeonChannelCodec,
-      binaryMessenger: pigeonVar_binaryMessenger,
-    );
+          pigeonVar_channelName,
+          pigeonChannelCodec,
+          binaryMessenger: pigeonVar_binaryMessenger,
+        );
     final List<Object?>? pigeonVar_replyList =
         await pigeonVar_channel.send(<Object?>[contentUri]) as List<Object?>?;
     if (pigeonVar_replyList == null) {
@@ -1326,10 +1181,10 @@ class QueryHostApi {
         'dev.flutter.pigeon.simple_query.QueryHostApi.canonicalize$pigeonVar_messageChannelSuffix';
     final BasicMessageChannel<Object?> pigeonVar_channel =
         BasicMessageChannel<Object?>(
-      pigeonVar_channelName,
-      pigeonChannelCodec,
-      binaryMessenger: pigeonVar_binaryMessenger,
-    );
+          pigeonVar_channelName,
+          pigeonChannelCodec,
+          binaryMessenger: pigeonVar_binaryMessenger,
+        );
     final List<Object?>? pigeonVar_replyList =
         await pigeonVar_channel.send(<Object?>[contentUri]) as List<Object?>?;
     if (pigeonVar_replyList == null) {
@@ -1351,10 +1206,10 @@ class QueryHostApi {
         'dev.flutter.pigeon.simple_query.QueryHostApi.uncanonicalize$pigeonVar_messageChannelSuffix';
     final BasicMessageChannel<Object?> pigeonVar_channel =
         BasicMessageChannel<Object?>(
-      pigeonVar_channelName,
-      pigeonChannelCodec,
-      binaryMessenger: pigeonVar_binaryMessenger,
-    );
+          pigeonVar_channelName,
+          pigeonChannelCodec,
+          binaryMessenger: pigeonVar_binaryMessenger,
+        );
     final List<Object?>? pigeonVar_replyList =
         await pigeonVar_channel.send(<Object?>[contentUri]) as List<Object?>?;
     if (pigeonVar_replyList == null) {
@@ -1376,10 +1231,10 @@ class QueryHostApi {
         'dev.flutter.pigeon.simple_query.QueryHostApi.call$pigeonVar_messageChannelSuffix';
     final BasicMessageChannel<Object?> pigeonVar_channel =
         BasicMessageChannel<Object?>(
-      pigeonVar_channelName,
-      pigeonChannelCodec,
-      binaryMessenger: pigeonVar_binaryMessenger,
-    );
+          pigeonVar_channelName,
+          pigeonChannelCodec,
+          binaryMessenger: pigeonVar_binaryMessenger,
+        );
     final List<Object?>? pigeonVar_replyList =
         await pigeonVar_channel.send(<Object?>[request]) as List<Object?>?;
     if (pigeonVar_replyList == null) {
@@ -1410,12 +1265,13 @@ class QueryHostApi {
         'dev.flutter.pigeon.simple_query.QueryHostApi.hasPermission$pigeonVar_messageChannelSuffix';
     final BasicMessageChannel<Object?> pigeonVar_channel =
         BasicMessageChannel<Object?>(
-      pigeonVar_channelName,
-      pigeonChannelCodec,
-      binaryMessenger: pigeonVar_binaryMessenger,
-    );
-    final List<Object?>? pigeonVar_replyList = await pigeonVar_channel
-        .send(<Object?>[permissionName]) as List<Object?>?;
+          pigeonVar_channelName,
+          pigeonChannelCodec,
+          binaryMessenger: pigeonVar_binaryMessenger,
+        );
+    final List<Object?>? pigeonVar_replyList =
+        await pigeonVar_channel.send(<Object?>[permissionName])
+            as List<Object?>?;
     if (pigeonVar_replyList == null) {
       throw _createConnectionError(pigeonVar_channelName);
     } else if (pigeonVar_replyList.length > 1) {
@@ -1442,10 +1298,10 @@ class QueryHostApi {
         'dev.flutter.pigeon.simple_query.QueryHostApi.getAndroidSdkInt$pigeonVar_messageChannelSuffix';
     final BasicMessageChannel<Object?> pigeonVar_channel =
         BasicMessageChannel<Object?>(
-      pigeonVar_channelName,
-      pigeonChannelCodec,
-      binaryMessenger: pigeonVar_binaryMessenger,
-    );
+          pigeonVar_channelName,
+          pigeonChannelCodec,
+          binaryMessenger: pigeonVar_binaryMessenger,
+        );
     final List<Object?>? pigeonVar_replyList =
         await pigeonVar_channel.send(null) as List<Object?>?;
     if (pigeonVar_replyList == null) {
@@ -1473,34 +1329,36 @@ abstract class QueryFlutterApi {
   /// Called when observed content changes.
   void onContentChange(ContentChangeEvent event);
 
-  /// Called when a stream encounters an error.
-  void onStreamError(StreamError error);
-
   static void setUp(
     QueryFlutterApi? api, {
     BinaryMessenger? binaryMessenger,
     String messageChannelSuffix = '',
   }) {
-    messageChannelSuffix =
-        messageChannelSuffix.isNotEmpty ? '.$messageChannelSuffix' : '';
+    messageChannelSuffix = messageChannelSuffix.isNotEmpty
+        ? '.$messageChannelSuffix'
+        : '';
     {
-      final BasicMessageChannel<
-          Object?> pigeonVar_channel = BasicMessageChannel<
-              Object?>(
-          'dev.flutter.pigeon.simple_query.QueryFlutterApi.onContentChange$messageChannelSuffix',
-          pigeonChannelCodec,
-          binaryMessenger: binaryMessenger);
+      final BasicMessageChannel<Object?>
+      pigeonVar_channel = BasicMessageChannel<Object?>(
+        'dev.flutter.pigeon.simple_query.QueryFlutterApi.onContentChange$messageChannelSuffix',
+        pigeonChannelCodec,
+        binaryMessenger: binaryMessenger,
+      );
       if (api == null) {
         pigeonVar_channel.setMessageHandler(null);
       } else {
         pigeonVar_channel.setMessageHandler((Object? message) async {
-          assert(message != null,
-              'Argument for dev.flutter.pigeon.simple_query.QueryFlutterApi.onContentChange was null.');
+          assert(
+            message != null,
+            'Argument for dev.flutter.pigeon.simple_query.QueryFlutterApi.onContentChange was null.',
+          );
           final List<Object?> args = (message as List<Object?>?)!;
           final ContentChangeEvent? arg_event =
               (args[0] as ContentChangeEvent?);
-          assert(arg_event != null,
-              'Argument for dev.flutter.pigeon.simple_query.QueryFlutterApi.onContentChange was null, expected non-null ContentChangeEvent.');
+          assert(
+            arg_event != null,
+            'Argument for dev.flutter.pigeon.simple_query.QueryFlutterApi.onContentChange was null, expected non-null ContentChangeEvent.',
+          );
           try {
             api.onContentChange(arg_event!);
             return wrapResponse(empty: true);
@@ -1508,36 +1366,8 @@ abstract class QueryFlutterApi {
             return wrapResponse(error: e);
           } catch (e) {
             return wrapResponse(
-                error: PlatformException(code: 'error', message: e.toString()));
-          }
-        });
-      }
-    }
-    {
-      final BasicMessageChannel<
-          Object?> pigeonVar_channel = BasicMessageChannel<
-              Object?>(
-          'dev.flutter.pigeon.simple_query.QueryFlutterApi.onStreamError$messageChannelSuffix',
-          pigeonChannelCodec,
-          binaryMessenger: binaryMessenger);
-      if (api == null) {
-        pigeonVar_channel.setMessageHandler(null);
-      } else {
-        pigeonVar_channel.setMessageHandler((Object? message) async {
-          assert(message != null,
-              'Argument for dev.flutter.pigeon.simple_query.QueryFlutterApi.onStreamError was null.');
-          final List<Object?> args = (message as List<Object?>?)!;
-          final StreamError? arg_error = (args[0] as StreamError?);
-          assert(arg_error != null,
-              'Argument for dev.flutter.pigeon.simple_query.QueryFlutterApi.onStreamError was null, expected non-null StreamError.');
-          try {
-            api.onStreamError(arg_error!);
-            return wrapResponse(empty: true);
-          } on PlatformException catch (e) {
-            return wrapResponse(error: e);
-          } catch (e) {
-            return wrapResponse(
-                error: PlatformException(code: 'error', message: e.toString()));
+              error: PlatformException(code: 'error', message: e.toString()),
+            );
           }
         });
       }
