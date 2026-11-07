@@ -77,8 +77,14 @@ class StreamManagerTest {
         }
     }
 
-    /** Provider content that records whether it was read and closed. */
-    private class TrackedStream(bytes: ByteArray) : ByteArrayInputStream(bytes) {
+    /**
+     * Provider content that records whether it was read and closed. A
+     * non-null [closeFailure] makes its close fail after recording it.
+     */
+    private class TrackedStream(
+        bytes: ByteArray,
+        private val closeFailure: String? = null,
+    ) : ByteArrayInputStream(bytes) {
         var reads = 0
         var closed = false
 
@@ -89,6 +95,7 @@ class StreamManagerTest {
 
         override fun close() {
             closed = true
+            closeFailure?.let { throw IOException(it) }
         }
     }
 
@@ -209,14 +216,53 @@ class StreamManagerTest {
     }
 
     @Test
-    fun aSuccessfulCopyClosesTheWriteEndWithoutAnError() {
-        register(CONTENT) { ByteArrayInputStream(byteArrayOf(1, 2, 3)) }
+    fun aDisposeRacingTheOpenKeepsAFailedInputCloseAsSuppressed() {
+        val content = TrackedStream(byteArrayOf(1), closeFailure = "provider close failed")
+        register(CONTENT) {
+            manager.dispose()
+            content
+        }
+
+        val error = assertFailsWith<IllegalStateException> { manager.openStream(CONTENT) }
+
+        assertEquals("provider close failed", error.suppressed.single().message)
+        assertTrue(content.closed)
+        assertFalse(readEnd().fileDescriptor.valid())
+        assertFalse(writeEnd().fileDescriptor.valid())
+    }
+
+    @Test
+    fun aSuccessfulCopyClosesBothTheInputAndTheWriteEndWithoutAnError() {
+        val content = TrackedStream(byteArrayOf(1, 2, 3))
+        register(CONTENT) { content }
 
         manager.openStream(CONTENT)
         idle()
 
+        assertTrue(content.reads > 0)
+        assertTrue(content.closed)
         assertFalse(writeEnd().fileDescriptor.valid())
         assertTrue(sentChannels.isEmpty())
+    }
+
+    @Test
+    fun aFailedCopyStillClosesTheInputAndReportsAStreamError() {
+        var closed = false
+        register(CONTENT) {
+            object : InputStream() {
+                override fun read(): Int = throw IOException("disk read failed")
+                override fun close() {
+                    closed = true
+                }
+            }
+        }
+
+        manager.openStream(CONTENT)
+        idle()
+
+        assertTrue(closed)
+        assertFalse(writeEnd().fileDescriptor.valid())
+        assertEquals(listOf(STREAM_ERROR_CHANNEL), sentChannels)
     }
 
     @Test
