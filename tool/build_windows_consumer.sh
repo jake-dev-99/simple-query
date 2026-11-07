@@ -16,7 +16,11 @@ case "$(uname -s)" in
 esac
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-flutter_executable="${FLUTTER_ROOT:+${FLUTTER_ROOT}/bin/}flutter"
+# FLUTTER_ROOT arrives as a Windows path; cygpath gives Git Bash a POSIX one.
+flutter_executable="flutter"
+if [[ -n "${FLUTTER_ROOT:-}" ]]; then
+  flutter_executable="$(cygpath -u "${FLUTTER_ROOT}")/bin/flutter"
+fi
 fixture_root="$(mktemp -d "${TMPDIR:-/tmp}/simple-query-windows-consumer.XXXXXX")"
 trap 'rm -rf "${fixture_root}"' EXIT
 
