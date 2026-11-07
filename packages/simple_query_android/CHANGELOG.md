@@ -1,5 +1,6 @@
 ## Unreleased
 
+- **Behavior change (Android):** `openBinary()` now opens the provider content before it returns, so a failure to open it (`permissionDenied`, `unavailable`, or `unavailable` with `reason: noStream`) throws from `openBinary()` instead of yielding an empty stream (UNFY-364).
 - A host query with a `limit` and no sort order now sorts by `_id ASC`, instead of sending the provider invalid SQL that failed as `invalidQuery`. This fixes `queryWithJoins` with a `limit` and no `sortOrder` (UNFY-301).
 
 ## 0.3.0

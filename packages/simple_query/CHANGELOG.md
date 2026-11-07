@@ -1,3 +1,7 @@
+## Unreleased
+
+- **Behavior change (Android):** `openBinary()` now opens the provider content before it returns, so a failure to open it (`permissionDenied`, `unavailable`, or `unavailable` with `reason: noStream`) throws from `openBinary()` instead of yielding an empty stream (UNFY-364).
+
 ## 0.3.0
 
 - **Behavior change (Android):** every API call now reports a host failure as `SimpleQueryError`, never a raw `PlatformException`. A provider `SecurityException` becomes `permissionDenied`, an `IllegalArgumentException` becomes `invalidQuery`, and unlisted failures become `transientFailure`; see `docs/ERROR_MAPPING.md`. `observe()` streams now emit a failed registration as a stream error. Callers that caught `PlatformException` must catch `SimpleQueryError`. This ships in the same minor release (0.3.0) as UNFY-284 (UNFY-300).
