@@ -49,6 +49,7 @@ code to a `SimpleQueryError`.
 | `FileNotFoundException` | `unavailable` |
 | `RemoteException` (incl. `DeadObjectException`) | `unavailable` |
 | Null cursor from `ContentResolver.query(...)` | `unavailable` |
+| No stream from `openInputStream(...)` when `openBinary()` opens content | `unavailable` |
 | No provider installed for a write, batch or provider call | `unavailable` |
 | Pigeon `channel-error` (no host answered) | `unavailable` |
 | Pigeon `null-error`, or any other failure or code (including a `java.lang.Error`) | `transientFailure` |
@@ -62,6 +63,9 @@ noProvider`), never the `invalidQuery` its `Unknown URL` exception would
 classify as. A provider that dies mid-write is a `RemoteException` and so
 also `unavailable`, where `ContentResolver` would silently have
 returned `null` (insert) or `-1` (update, delete).
+
+`openBinary()` reports a provider that returns no stream with details
+`reason: noStream`.
 
 Each mapped error carries:
 

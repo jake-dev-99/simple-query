@@ -5,6 +5,7 @@ import android.net.Uri
 import android.os.Handler
 import android.os.ParcelFileDescriptor
 import android.util.Log
+import java.io.Closeable
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -59,22 +60,34 @@ class StreamManager(
         val released: AtomicBoolean = AtomicBoolean(false),
         /** Claims the single close of [writePipe]. */
         val writeClosed: AtomicBoolean = AtomicBoolean(false),
-        /** The provider stream being copied, so a release can unblock a stalled read. */
+        /**
+         * The provider stream openStream opened, until the copy or a release
+         * closes it; a release closes it to unblock a stalled read or a copy
+         * that never runs.
+         */
         val activeInput: AtomicReference<InputStream?> = AtomicReference(null),
     )
 
     /**
      * Purpose: Open a streaming pipe for reading binary content.
      *
-     * The copy runs in the background; read the content from the returned
-     * pipePath (`File(pipePath).inputStream()`) and call
-     * closeStream(streamId) when done.
+     * The provider content is opened before the pipe is returned, so a
+     * failure to open it fails this call (UNFY-364); only the copy runs in
+     * the background. Read the content from the returned pipePath
+     * (`File(pipePath).inputStream()`) and call closeStream(streamId) when
+     * done.
      *
      * @param contentUri the content to stream.
      * @return the stream's id and pipe path.
-     * @throws IllegalStateException when this manager is disposed.
+     * @throws Exception whatever opening the content raises, so the host
+     *   boundary classifies it ([HostErrors]).
+     * @throws QueryFlutterError with [HostErrors.UNAVAILABLE] and details
+     *   `{reason: noStream, contentUri}` when the provider returns no stream.
+     * @throws IllegalStateException when this manager is disposed before or
+     *   during the open.
      * @throws RejectedExecutionException when the executor refuses the
-     *   copy. Either way the stream's pipes are released before throwing.
+     *   copy. In every case the stream's pipes and any opened input are
+     *   released before throwing.
      */
     fun openStream(contentUri: String): StreamDescriptor {
         val streamId = UUID.randomUUID().toString()
@@ -97,13 +110,28 @@ class StreamManager(
         // either sees and releases this stream or this check sees it disposed.
         activeStreams[streamId] = streamInfo
 
-        if (disposed.get()) {
-            throw abandon(
-                streamId,
-                streamInfo,
-                IllegalStateException("simple_query: stream manager is disposed"),
-            )
+        // A disposed manager never opens the provider.
+        if (disposed.get()) throw abandon(streamId, streamInfo, disposedError())
+
+        val input = try {
+            contentResolver.openInputStream(Uri.parse(contentUri))
+        } catch (e: Throwable) {
+            throw abandon(streamId, streamInfo, e)
+        } ?: throw abandon(streamId, streamInfo, noStreamError(contentUri))
+        streamInfo.activeInput.set(input)
+        // A dispose() during the open released the stream before there was
+        // an input to close. Both closers take the input with getAndSet, so
+        // it closes exactly once.
+        if (streamInfo.released.get()) {
+            val error = disposedError()
+            try {
+                streamInfo.activeInput.getAndSet(null)?.close()
+            } catch (e: IOException) {
+                error.addSuppressed(e)
+            }
+            throw abandon(streamId, streamInfo, error)
         }
+
         try {
             executor.execute { runCopy(streamId, streamInfo) }
         } catch (e: RejectedExecutionException) {
@@ -190,6 +218,31 @@ class StreamManager(
     }
 
     /**
+     * Purpose: Build the failure openStream raises once this manager is
+     * disposed.
+     *
+     * @return a new [IllegalStateException].
+     * @throws Nothing.
+     */
+    private fun disposedError() = IllegalStateException("simple_query: stream manager is disposed")
+
+    /**
+     * Purpose: Build the failure openStream raises when the provider returns
+     * no stream for [contentUri], so it reaches Dart as `unavailable`, the
+     * same code a null cursor gets (`docs/ERROR_MAPPING.md`).
+     *
+     * @param contentUri the content the provider returned no stream for.
+     * @return a [QueryFlutterError] with [HostErrors.UNAVAILABLE] and details
+     *   `{reason: noStream, contentUri}`.
+     * @throws Nothing.
+     */
+    private fun noStreamError(contentUri: String) = QueryFlutterError(
+        HostErrors.UNAVAILABLE,
+        "simple_query: content provider returned no stream for $contentUri",
+        mapOf("reason" to "noStream", "contentUri" to contentUri),
+    )
+
+    /**
      * Purpose: Release a stream whose copy will never run.
      *
      * @param streamId the stream.
@@ -271,13 +324,14 @@ class StreamManager(
     }
 
     private fun copyContentToPipe(streamInfo: StreamInfo, streamId: String) {
-        val uri = Uri.parse(streamInfo.contentUri)
-
+        // Null when a release already closed the input openStream opened.
+        val input = streamInfo.activeInput.get() ?: return
         try {
-            contentResolver.openInputStream(uri)?.use { input ->
-                // Published so a release can close it; a release that came
-                // first is seen by the loop's released check.
-                streamInfo.activeInput.set(input)
+            // Closes the input as `input.use` would, keeping a copy failure
+            // over a close failure. The input stays in activeInput during the
+            // copy, so a release can close it to unblock a stalled read;
+            // whichever takes it out closes it.
+            Closeable { streamInfo.activeInput.getAndSet(null)?.close() }.use {
                 // Not closed itself: the write end closes only through
                 // closeWriteEndOnce, so a release on another thread can close
                 // it without a second close here.
@@ -291,8 +345,6 @@ class StreamManager(
                     output.write(buffer, 0, bytesRead)
                     streamInfo.bytesTransferred.addAndGet(bytesRead.toLong())
                 }
-            } ?: run {
-                notifyError(streamId, streamInfo, "Failed to open input stream for URI")
             }
         } catch (e: IOException) {
             // Don't report broken pipe - it usually means reader closed early (expected)
