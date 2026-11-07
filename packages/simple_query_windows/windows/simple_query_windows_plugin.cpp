@@ -13,6 +13,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <flutter/plugin_registrar_windows.h>
@@ -1046,7 +1047,7 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
 
       EncodableMap response;
       response[EncodableValue("stores")] = EncodableValue(stores);
-      return response;
+      return std::optional<EncodableMap>(std::move(response));
     }
 
     if (namespaze == "windows.calendar" && method == "listCalendars") {
@@ -1069,7 +1070,7 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
       }
       EncodableMap response;
       response[EncodableValue("calendars")] = EncodableValue(calendars);
-      return response;
+      return std::optional<EncodableMap>(std::move(response));
     }
 
     if (namespaze == "windows.storage" && method == "resolveKnownFolders") {
@@ -1102,7 +1103,7 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
 
       EncodableMap response;
       response[EncodableValue("folders")] = EncodableValue(folders);
-      return response;
+      return std::optional<EncodableMap>(std::move(response));
     }
 
     if (namespaze == "windows.storage" && method == "listLibraries") {
@@ -1119,7 +1120,7 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
 
       EncodableMap response;
       response[EncodableValue("libraries")] = EncodableValue(libraries);
-      return response;
+      return std::optional<EncodableMap>(std::move(response));
     }
 
     return FlutterError("not-supported",
@@ -1152,8 +1153,6 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
   std::map<std::string, std::unique_ptr<ObserverState>> observers_;
   std::mutex observers_mutex_;
 };
-
-}  // namespace
 
 void SimpleQueryWindowsPlugin::RegisterWithRegistrar(
     flutter::PluginRegistrarWindows* registrar) {
