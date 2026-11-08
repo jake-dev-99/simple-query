@@ -122,6 +122,17 @@ FlutterError StoppedMutation(int64_t affected) {
   return WithAffected({FlutterError("unavailable", kReadStoppedError), affected});
 }
 
+// Purpose: Turn a requested stop into a failure with already confirmed effects.
+// @param stop_requested reports cancellation; empty means never.
+// @param affected is the confirmed effect count before stopping.
+// @returns A stopped error, or no failure while the mutation remains active.
+// @throws std::exception from the stop callback or error allocation.
+std::optional<FlutterError> CheckMutationStop(const StopRequested& stop_requested,
+                                             int64_t affected = 0) {
+  if (IsStopRequested(stop_requested)) return StoppedMutation(affected);
+  return std::nullopt;
+}
+
 // Purpose: Read the last Windows filesystem failure.
 // @param none.
 // @returns The captured system error.
@@ -434,7 +445,7 @@ struct StageCreation {
 // @throws std::exception during preparation; acquired resources remain scope-owned.
 std::optional<FlutterError> CreateStage(const StageCreation& creation) {
   while (true) {
-    if (IsStopRequested(creation.stop_requested)) return StoppedMutation(0);
+    if (auto stopped = CheckMutationStop(creation.stop_requested)) return stopped;
     const auto error = creation.stage.Create(ShortSibling(creation.destination, ".tmp"));
     if (!error) return std::nullopt;
     if (error.value() != static_cast<int>(ERROR_FILE_EXISTS)) {
@@ -459,7 +470,7 @@ struct StageOperation {
 // @throws std::exception from effects or allocation; staging remains scope-owned.
 std::optional<FlutterError> WriteStage(const StageOperation& operation) {
   const auto& write = operation.write;
-  if (IsStopRequested(write.mutation.stop_requested)) return StoppedMutation(0);
+  if (auto stopped = CheckMutationStop(write.mutation.stop_requested)) return stopped;
   const auto error = write.mutation.write_effects.write
       ? write.mutation.write_effects.write(operation.stage.handle(), write.bytes)
       : WriteAll({.handle = operation.stage.handle(), .bytes = write.bytes,
@@ -469,16 +480,24 @@ std::optional<FlutterError> WriteStage(const StageOperation& operation) {
   return std::nullopt;
 }
 
+// Purpose: Flush one owned native stage through the injected or real boundary.
+// @param operation supplies the owned handle and flush effect.
+// @returns The native flush error, or no error.
+// @throws std::exception from an injected flush callback; ownership remains with the stage.
+std::error_code FlushNative(const StageOperation& operation) {
+  const auto& effect = operation.write.mutation.write_effects.flush;
+  return effect ? effect(operation.stage.handle())
+      : (FlushFileBuffers(operation.stage.handle()) ? std::error_code{} : LastFileError());
+}
+
 // Purpose: Flush and close a complete stage before publishing its path.
 // @param operation supplies the owner, stop check and flush effect.
 // @returns No failure, a stopped error or a native flush/close error.
 // @throws std::exception from effects or allocation; staging remains scope-owned.
 std::optional<FlutterError> FlushStage(const StageOperation& operation) {
   const auto& mutation = operation.write.mutation;
-  if (IsStopRequested(mutation.stop_requested)) return StoppedMutation(0);
-  const auto error = mutation.write_effects.flush
-      ? mutation.write_effects.flush(operation.stage.handle())
-      : (FlushFileBuffers(operation.stage.handle()) ? std::error_code{} : LastFileError());
+  if (auto stopped = CheckMutationStop(mutation.stop_requested)) return stopped;
+  const auto error = FlushNative(operation);
   if (error) return FilesystemError({"flush staging file", operation.stage.path(), error});
   if (const auto close = operation.stage.Close()) {
     return FilesystemError({"close staging file", operation.stage.path(), close});
@@ -549,49 +568,140 @@ struct FilePublication {
   const FileWrite& write;
 };
 
-// Purpose: Replace an existing file while preserving metadata and recoverable originals.
-// @param publication names the complete stage, destination and request.
-// @returns No failure, a stop, a reservation error or a disclosed recovery error.
-// @throws std::exception from effects/diagnostics; originals remain scope-retained.
-std::optional<FlutterError> PublishReplacement(const FilePublication& publication) {
-  RecoveryDirectory recovery(ShortSibling(publication.destination, ".recovery"));
-  const fs::path backup = recovery.path() / "original";
-  const auto native_destination = NativeFilePath(publication.destination);
-  const auto native_backup = NativeFilePath(backup);
+// Purpose: Hold prepared native replacement paths without changing public diagnostics.
+// @param destination is the native original-file path.
+// @param backup is the logical recovery path used in diagnostics.
+// @param native_backup is the API-adapted backup path.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
+struct ReplacementPaths {
+  fs::path destination;
+  fs::path backup;
+  fs::path native_backup;
+};
+
+// Purpose: Prepare all replacement path allocations before recovery acquisition.
+// @param publication names the logical destination.
+// @param recovery names the prepared recovery owner.
+// @returns The logical backup and API-adapted replacement paths.
+// @throws std::exception during path conversion or allocation, before reserving recovery.
+ReplacementPaths PrepareReplacement(const FilePublication& publication,
+                                     const RecoveryDirectory& recovery) {
+  auto backup = recovery.path() / "original";
+  auto destination = NativeFilePath(publication.destination);
+  auto native_backup = NativeFilePath(backup);
+  return {std::move(destination), std::move(backup), std::move(native_backup)};
+}
+
+// Purpose: Construct a scope owner before reserving an independent recovery name.
+// @param destination supplies the parent for the short recovery component.
+// @returns A prepared, unacquired recovery owner using guaranteed copy elision.
+// @throws std::exception during path/log preparation, before native acquisition.
+RecoveryDirectory CreateRecovery(const fs::path& destination) {
+  return RecoveryDirectory(ShortSibling(destination, ".recovery"));
+}
+
+// Purpose: Reserve recovery exclusively and stop before any original can enter it.
+// @param recovery owns any successful reservation immediately.
+// @param stop_requested reports cancellation before replacement starts.
+// @returns No failure, a reservation failure or a stopped error.
+// @throws std::exception from stop checks or diagnostics; the empty directory is scope-owned.
+std::optional<FlutterError> PrepareRecovery(RecoveryDirectory& recovery,
+                                          const StopRequested& stop_requested) {
   if (const auto error = recovery.Reserve()) {
     return FilesystemError({"reserve recovery directory", recovery.path(), error});
   }
-  if (IsStopRequested(publication.write.mutation.stop_requested)) return StoppedMutation(0);
-  const FileReplacement replacement{.original = native_destination,
-      .replacement = publication.stage.native_path(), .backup = native_backup};
-  recovery.Retain();
-  const auto& effects = publication.write.mutation.write_effects;
-  const auto error = effects.replace ? effects.replace(replacement)
+  return CheckMutationStop(stop_requested);
+}
+
+// Purpose: Name a native replacement whose recovery is already retained by its caller.
+// @param publication owns the stage and supplies the replacement effect.
+// @param paths are the prepared native API paths.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
+struct NativeReplacement {
+  const FilePublication& publication;
+  const ReplacementPaths& paths;
+};
+
+// Purpose: Perform only the injected or native replacement boundary.
+// @param native names the stage, prepared paths and replacement effect.
+// @returns The native replacement error, or no error.
+// @throws std::exception from effects; caller-owned recovery already retains originals.
+std::error_code RunReplacement(const NativeReplacement& native) {
+  const FileReplacement replacement{.original = native.paths.destination,
+      .replacement = native.publication.stage.native_path(), .backup = native.paths.native_backup};
+  const auto& effect = native.publication.write.mutation.write_effects.replace;
+  return effect ? effect(replacement)
       : (ReplaceFileW(replacement.original.c_str(), replacement.replacement.c_str(),
                       replacement.backup.c_str(), 0, nullptr, nullptr)
              ? std::error_code{} : LastFileError());
-  if (error) {
-    return RecoveryError({FilesystemError({"replace staged file", publication.destination,
-                                           error}), recovery.path(), 0});
-  }
-  publication.stage.Published();
-  return CleanupReplacement({recovery, backup});
 }
 
-// Purpose: Publish exclusively for insert or preserve metadata during replacement.
-// @param publication names the owned stage and request.
-// @returns No failure or a stop/native/recovery error.
-// @throws std::exception from effects or diagnostics; resources remain scope-owned.
-std::optional<FlutterError> PublishStage(const FilePublication& publication) {
-  if (IsStopRequested(publication.write.mutation.stop_requested)) return StoppedMutation(0);
-  if (!publication.write.exclusive) return PublishReplacement(publication);
-  const auto native_destination = NativeFilePath(publication.destination);
-  if (!MoveFileExW(publication.stage.native_path().c_str(), native_destination.c_str(),
+// Purpose: Name replacement outcome processing while both scope owners remain alive.
+// @param publication owns the stage and names the logical destination.
+// @param recovery retains any original copy until explicit successful cleanup.
+// @param paths name the original backup.
+// @param error is the native replacement outcome.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
+struct ReplacementCompletion {
+  const FilePublication& publication;
+  RecoveryDirectory& recovery;
+  const ReplacementPaths& paths;
+  std::error_code error;
+};
+
+// Purpose: Disclose failed recovery or clean up an original after successful replacement.
+// @param completion keeps both scope owners alive throughout outcome processing.
+// @returns No failure or a disclosed recovery/cleanup failure.
+// @throws std::exception during diagnostics; retained originals are never scope-deleted.
+std::optional<FlutterError> FinishReplacement(const ReplacementCompletion& completion) {
+  if (completion.error) {
+    return RecoveryError({FilesystemError({"replace staged file", completion.publication.destination,
+                                           completion.error}), completion.recovery.path(), 0});
+  }
+  completion.publication.stage.Published();
+  return CleanupReplacement({completion.recovery, completion.paths.backup});
+}
+
+// Purpose: Orchestrate a replacement while retaining recovery throughout the native boundary.
+// @param publication names the owned stage, logical destination and request.
+// @returns No failure or a reservation/stop/recovery failure.
+// @throws std::exception after scope-owned cleanup or intentional original retention.
+std::optional<FlutterError> PublishReplacement(const FilePublication& publication) {
+  auto recovery = CreateRecovery(publication.destination);
+  const auto paths = PrepareReplacement(publication, recovery);
+  if (auto failure = PrepareRecovery(recovery, publication.write.mutation.stop_requested)) {
+    return failure;
+  }
+  recovery.Retain();
+  const auto error = RunReplacement({publication, paths});
+  return FinishReplacement({.publication = publication, .recovery = recovery,
+                             .paths = paths, .error = error});
+}
+
+// Purpose: Publish a new file without replacing any destination that won a race.
+// @param publication names the completed stage and exclusive destination.
+// @returns No failure or a native publication error.
+// @throws std::exception from native-path preparation or diagnostics; the stage remains owned.
+std::optional<FlutterError> PublishInsert(const FilePublication& publication) {
+  const auto destination = NativeFilePath(publication.destination);
+  if (!MoveFileExW(publication.stage.native_path().c_str(), destination.c_str(),
                    MOVEFILE_WRITE_THROUGH)) {
     return FilesystemError({"publish staged file", publication.destination, LastFileError()});
   }
   publication.stage.Published();
   return std::nullopt;
+}
+
+// Purpose: Dispatch active publication according to its exclusive or replacement policy.
+// @param publication owns the stage and supplies its publication policy.
+// @returns No failure or a stop/native/recovery error.
+// @throws std::exception from effects/diagnostics; resources remain scope-owned.
+std::optional<FlutterError> PublishStage(const FilePublication& publication) {
+  if (auto stopped = CheckMutationStop(publication.write.mutation.stop_requested)) return stopped;
+  return publication.write.exclusive ? PublishInsert(publication) : PublishReplacement(publication);
 }
 
 // Purpose: Name explicit staging cleanup and the outcome it must preserve.
@@ -617,21 +727,45 @@ std::optional<FlutterError> FinishStage(const StageCompletion& completion) {
       "; staging cleanup failed: " + cleanup.message(), completion.failure->details());
 }
 
-// Purpose: Stage complete bytes, then publish, with scope ownership covering every exit.
+// Purpose: Name one staged write's preparation, content and publication sequence.
+// @param stage owns acquired staging resources through every operation.
+// @param destination is the already resolved logical destination.
+// @param write supplies validated contents, effects and cancellation.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
+struct StagedWrite {
+  StagingFile& stage;
+  const fs::path& destination;
+  const FileWrite& write;
+};
+
+// Purpose: Run focused creation, write, flush and publication steps in order.
+// @param staged keeps the scope owner alive while operations may throw.
+// @returns The first failure, or no failure after publication.
+// @throws std::exception from effects or diagnostics; caller retains staging ownership.
+std::optional<FlutterError> RunStagedWrite(const StagedWrite& staged) {
+  auto failure = CreateStage({.destination = staged.destination, .stage = staged.stage,
+                              .stop_requested = staged.write.mutation.stop_requested});
+  if (!failure.has_value()) failure = WriteStage({staged.stage, staged.write});
+  if (!failure.has_value()) failure = FlushStage({staged.stage, staged.write});
+  if (!failure.has_value()) {
+    failure = PublishStage({.stage = staged.stage, .destination = staged.destination,
+                            .write = staged.write});
+  }
+  return failure;
+}
+
+// Purpose: Resolve and scope-own one staged write through publication and explicit cleanup.
 // @param write names the destination, bytes and publication policy.
-// @returns No failure or a stop/filesystem error; recovery paths are disclosed when retained.
-// @throws std::exception from effects/diagnostics after scope-owned staging cleanup.
+// @returns No failure or a stop/filesystem error, disclosing retained recovery.
+// @throws std::exception after scope-owned staging cleanup or intentional recovery retention.
 std::optional<FlutterError> WriteBytes(const FileWrite& write) {
-  if (IsStopRequested(write.mutation.stop_requested)) return StoppedMutation(0);
+  if (auto stopped = CheckMutationStop(write.mutation.stop_requested)) return stopped;
   auto destination = ContentDestination(write);
   if (const auto* error = std::get_if<FlutterError>(&destination)) return *error;
-  const auto& path = std::get<fs::path>(destination);
   StagingFile stage;
-  auto failure = CreateStage({.destination = path, .stage = stage,
-                              .stop_requested = write.mutation.stop_requested});
-  if (!failure.has_value()) failure = WriteStage({stage, write});
-  if (!failure.has_value()) failure = FlushStage({stage, write});
-  if (!failure.has_value()) failure = PublishStage({.stage = stage, .destination = path, .write = write});
+  auto failure = RunStagedWrite({.stage = stage, .destination = std::get<fs::path>(destination),
+                                 .write = write});
   return FinishStage({stage, failure});
 }
 
@@ -679,28 +813,48 @@ std::optional<FlutterError> InsertEntry(const FileWrite& write) {
   return WriteBytes(write);
 }
 
-// Purpose: Validate and create one file or directory.
-// @param mutation is the insert request; values.path names the target.
-// @returns The affected count and insertedId, or an error.
-// @throws std::exception from effects or diagnostics after scope-owned cleanup.
+// Purpose: Name an insert whose path text and contents have already been validated.
+// @param mutation supplies effects and cancellation.
+// @param path_text is the required target path.
+// @param contents are validated bytes or absent for an empty-file insert.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
+struct PreparedInsert {
+  const FileMutation& mutation;
+  const std::string& path_text;
+  const std::optional<std::string>& contents;
+};
+
+// Purpose: Execute one validated insert and construct its successful result.
+// @param insert names the validated path, contents and mutation.
+// @returns An inserted result or a stop/filesystem failure.
+// @throws std::exception after scope-owned cleanup.
+ErrorOr<EncodableMap> InsertPrepared(const PreparedInsert& insert) {
+  if (auto stopped = CheckMutationStop(insert.mutation.stop_requested)) return *stopped;
+  const fs::path path = PathFromUtf8(insert.path_text);
+  const std::string bytes = insert.contents.value_or(std::string());
+  if (auto failure = InsertEntry({.path = path, .bytes = bytes, .exclusive = true,
+                                   .mutation = insert.mutation})) return *failure;
+  EncodableMap result = AffectedResult(1);
+  result[EncodableValue("insertedId")] = EncodableValue(insert.path_text);
+  return result;
+}
+
+// Purpose: Validate required insert values before any filesystem effect.
+// @param mutation is the insert request.
+// @returns The inserted result or a validation/filesystem failure.
+// @throws std::exception after scope-owned cleanup.
 ErrorOr<EncodableMap> Insert(const FileMutation& mutation) {
   const EncodableMap* values = MapAt(mutation.request, "values");
   if (values == nullptr) return FlutterError("invalid-query", "simple_query: insert requires values");
-  const auto path_text = StringAt(*values, "path");
-  if (!path_text.has_value() || path_text->empty()) {
+  const auto path = StringAt(*values, "path");
+  if (!path.has_value() || path->empty()) {
     return FlutterError("invalid-query", "simple_query: insert requires values.path");
   }
   auto contents = NewContents(*values);
   if (auto* invalid = std::get_if<FlutterError>(&contents)) return *invalid;
-  if (IsStopRequested(mutation.stop_requested)) return StoppedMutation(0);
-  const fs::path path = PathFromUtf8(*path_text);
-  const auto& text = std::get<std::optional<std::string>>(contents);
-  const std::string bytes = text.value_or(std::string());
-  if (auto failure = InsertEntry({.path = path, .bytes = bytes, .exclusive = true,
-                                   .mutation = mutation})) return *failure;
-  EncodableMap result = AffectedResult(1);
-  result[EncodableValue("insertedId")] = EncodableValue(*path_text);
-  return result;
+  return InsertPrepared({.mutation = mutation, .path_text = *path,
+                          .contents = std::get<std::optional<std::string>>(contents)});
 }
 
 // Purpose: Find the paths a filtered delete or update targets.
@@ -746,9 +900,7 @@ ErrorOr<EncodableMap> Delete(const FileMutation& mutation) {
   }
   int64_t deleted = 0;
   for (const auto& target : targets.value()) {
-    if (IsStopRequested(mutation.stop_requested)) {
-      return StoppedMutation(deleted);
-    }
+    if (auto stopped = CheckMutationStop(mutation.stop_requested, deleted)) return *stopped;
     std::error_code error;
     // A target inside a folder deleted earlier is already gone, and
     // removes nothing.
@@ -788,16 +940,12 @@ ErrorOr<bool> MoveTarget(const TargetMove& move) {
   if (new_path == *target) {
     return false;
   }
-  if (IsStopRequested(move.stop_requested)) {
-    return StoppedMutation(0);
-  }
+  if (auto stopped = CheckMutationStop(move.stop_requested)) return *stopped;
   if (auto failed = CreateParent(new_path)) {
     return *failed;
   }
   std::error_code error;
-  if (IsStopRequested(move.stop_requested)) {
-    return StoppedMutation(0);
-  }
+  if (auto stopped = CheckMutationStop(move.stop_requested)) return *stopped;
   fs::rename(*target, new_path, error);
   if (error) {
     return FilesystemError({"rename", *target, error});
@@ -856,7 +1004,7 @@ ErrorOr<bool> FinishTargetUpdate(const TargetContents& contents) {
 // @throws std::exception from effects/diagnostics after scope-owned staging cleanup.
 ErrorOr<bool> UpdateOne(const TargetUpdate& update) {
   const auto& mutation = update.mutation;
-  if (IsStopRequested(mutation.stop_requested)) return StoppedMutation(0);
+  if (auto stopped = CheckMutationStop(mutation.stop_requested)) return *stopped;
   std::error_code error;
   const bool exists = fs::exists(update.original, error);
   if (error) return FilesystemError({"metadata read", update.original, error});
@@ -881,39 +1029,80 @@ ErrorOr<std::vector<fs::path>> UpdateTargets(const FileMutation& mutation) {
   return FilteredTargets(mutation);
 }
 
-// Purpose: Update the targets an update names: values.path, values.id, or
-// else the rows its filters match.
-// @param mutation names the request, its domain and its root.
-// @returns How many targets changed, or an error.
-// @throws std::system_error when the root cannot be read or a path is not
-// valid Unicode.
-ErrorOr<EncodableMap> Update(const FileMutation& mutation) {
-  const EncodableMap* values = MapAt(mutation.request, "values");
-  if (values == nullptr) {
-    return FlutterError("invalid-query", "simple_query: update requires values");
-  }
-  auto contents = NewContents(*values);
-  if (auto* invalid = std::get_if<FlutterError>(&contents)) {
-    return *invalid;
-  }
-  const auto& text = std::get<std::optional<std::string>>(contents);
-  auto targets = UpdateTargets(mutation);
-  if (targets.has_error()) return targets.error();
+// Purpose: Name the validated targets and contents of one update.
+// @param mutation supplies request values, effects and cancellation.
+// @param targets names the selected paths.
+// @param contents are validated replacement bytes or absent for moves only.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
+struct SelectedUpdate {
+  const FileMutation& mutation;
+  const std::vector<fs::path>& targets;
+  const std::optional<std::string>& contents;
+};
 
+// Purpose: Apply selected updates until failure or cancellation, reporting confirmed effects.
+// @param update names the validated targets, contents and mutation.
+// @returns The affected result or the first failure with prior confirmed effects.
+// @throws std::exception after scope-owned cleanup.
+ErrorOr<EncodableMap> UpdateSelected(const SelectedUpdate& update) {
   int64_t updated = 0;
-  for (const auto& target : targets.value()) {
-    if (IsStopRequested(mutation.stop_requested)) {
-      return StoppedMutation(updated);
-    }
-    auto changed = UpdateOne({.original = target, .contents = text, .mutation = mutation});
-    if (changed.has_error()) {
-      return WithAffected({changed.error(), updated});
-    }
-    if (changed.value()) {
-      ++updated;
-    }
+  for (const auto& target : update.targets) {
+    if (auto stopped = CheckMutationStop(update.mutation.stop_requested, updated)) return *stopped;
+    auto changed = UpdateOne({.original = target, .contents = update.contents,
+                              .mutation = update.mutation});
+    if (changed.has_error()) return WithAffected({changed.error(), updated});
+    if (changed.value()) ++updated;
   }
   return AffectedResult(updated);
+}
+
+// Purpose: Validate update values and select targets before applying any changes.
+// @param mutation names the request, its domain and its root.
+// @returns The affected result or a validation/discovery/filesystem failure.
+// @throws std::exception after scope-owned cleanup.
+ErrorOr<EncodableMap> Update(const FileMutation& mutation) {
+  const EncodableMap* values = MapAt(mutation.request, "values");
+  if (values == nullptr) return FlutterError("invalid-query", "simple_query: update requires values");
+  auto contents = NewContents(*values);
+  if (auto* invalid = std::get_if<FlutterError>(&contents)) return *invalid;
+  auto targets = UpdateTargets(mutation);
+  if (targets.has_error()) return targets.error();
+  return UpdateSelected({.mutation = mutation, .targets = targets.value(),
+                          .contents = std::get<std::optional<std::string>>(contents)});
+}
+
+// Purpose: Validate filters and cancellation before selecting any mutation target.
+// @param mutation names the decoded request and stop check.
+// @returns No failure, an invalid-filter error or a stopped error.
+// @throws std::exception from cancellation or allocation before mutation effects.
+std::optional<FlutterError> ValidateMutation(const FileMutation& mutation) {
+  auto filters = ParseFilters(mutation.request);
+  if (auto* invalid = std::get_if<std::string>(&filters)) return FlutterError("invalid-query", *invalid);
+  return CheckMutationStop(mutation.stop_requested);
+}
+
+// Purpose: Dispatch one validated mutation and attach partial-effect details to failures.
+// @param mutation names the decoded request and filesystem effects.
+// @param type is the validated request's wire operation, or absent.
+// @returns The operation outcome or an unknown-type error.
+// @throws std::exception after scope-owned cleanup.
+ErrorOr<EncodableMap> DispatchMutation(const FileMutation& mutation,
+                                      const std::optional<std::string>& type) {
+  if (type == "insert") return MutationOutcome(Insert(mutation));
+  if (type == "delete") return MutationOutcome(Delete(mutation));
+  if (type == "update") return MutationOutcome(Update(mutation));
+  return FlutterError("invalid-query",
+                      "simple_query: unknown mutation type " + type.value_or("(none)"));
+}
+
+// Purpose: Describe a thrown filesystem diagnostic without asserting rollback.
+// @param error is the original filesystem exception.
+// @returns An unavailable error with a confirmed lower bound and partial-effects flag.
+// @throws std::exception when diagnostic conversion or allocation fails.
+FlutterError MutationException(const std::system_error& error) {
+  return WithAffected({FlutterError("unavailable",
+      std::string("simple_query: windows filesystem mutation failed - ") + ExceptionText(error)), 0});
 }
 
 }  // namespace
@@ -930,32 +1119,11 @@ ErrorOr<EncodableMap> Update(const FileMutation& mutation) {
 ErrorOr<EncodableMap> MutateFiles(const FileMutation& mutation) {
   const auto type = StringAt(mutation.request, "type");
   try {
-    // Explicit path/id updates must validate filters just like filtered targets.
-    auto filters = ParseFilters(mutation.request);
-    if (auto* invalid = std::get_if<std::string>(&filters)) {
-      return FlutterError("invalid-query", *invalid);
-    }
-    if (IsStopRequested(mutation.stop_requested)) {
-      return StoppedMutation(0);
-    }
-    if (type == "insert") {
-      return MutationOutcome(Insert(mutation));
-    }
-    if (type == "delete") {
-      return MutationOutcome(Delete(mutation));
-    }
-    if (type == "update") {
-      return MutationOutcome(Update(mutation));
-    }
+    if (auto failure = ValidateMutation(mutation)) return *failure;
+    return DispatchMutation(mutation, type);
   } catch (const std::system_error& error) {
-    // Raised by a path that is not valid Unicode or an unreadable working
-    // directory.
-    return WithAffected({FlutterError("unavailable",
-                        std::string("simple_query: windows filesystem mutation failed - ") +
-                            ExceptionText(error)), 0});
+    return MutationException(error);
   }
-  return FlutterError("invalid-query",
-                      "simple_query: unknown mutation type " + type.value_or("(none)"));
 }
 
 }  // namespace simple_query_windows
