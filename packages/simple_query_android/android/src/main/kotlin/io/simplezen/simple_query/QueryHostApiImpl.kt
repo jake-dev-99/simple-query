@@ -461,13 +461,14 @@ class QueryHostApiImpl(
      * name (UNFY-300).
      *
      * @param callback the Pigeon reply callback of the call.
-     * @param body the blocking work; its return value is the reply.
+     * @param body the work, which may block or suspend; its return value is
+     *   the reply.
      * @return Nothing; the reply is posted to the main looper.
      * @throws Nothing. Once [dispose] cancelled the scope the engine is
-     *   detached, and no reply is sent. A `CancellationException` the
-     *   blocking [body] raises is a failure like any other.
+     *   detached, and no reply is sent, including for a [body] that the
+     *   cancellation stopped while it was suspended.
      */
-    private fun <T> launchHostCall(callback: (Result<T>) -> Unit, body: () -> T) {
+    private fun <T> launchHostCall(callback: (Result<T>) -> Unit, body: suspend () -> T) {
         scope.launch {
             val result = try {
                 Result.success(body())

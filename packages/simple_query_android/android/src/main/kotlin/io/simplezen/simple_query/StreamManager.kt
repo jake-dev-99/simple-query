@@ -10,13 +10,13 @@ import java.io.IOException
 import java.io.InputStream
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Manages streaming of binary content via named pipes.
@@ -36,8 +36,9 @@ import java.util.concurrent.atomic.AtomicReference
  * A copy that fails is not reported on its own: the failure is recorded
  * and raised by closeStream (UNFY-365), so a reader that saw end-of-stream
  * learns from closeStream whether the content is complete. closeStream
- * waits for a running copy to finish first, so a failure the copy records
- * while the reader is already closing is still raised.
+ * waits for a running copy to finish first, without blocking a thread, so a
+ * failure the copy records while the reader is already closing is still
+ * raised. After dispose(), a copy that finishes later logs its own failure.
  */
 class StreamManager(
     private val context: Context,
@@ -81,8 +82,13 @@ class StreamManager(
          * starts; a copy claimed by a release never runs.
          */
         val copyClaimed: AtomicBoolean = AtomicBoolean(false),
-        /** Counted down when a started copy has finished, including its write-end close. */
-        val copyFinished: CountDownLatch = CountDownLatch(1),
+        /** Completed when a started copy has finished, including its write-end close. */
+        val copyFinished: CompletableDeferred<Unit> = CompletableDeferred(),
+        /**
+         * Set by dispose(): no caller remains to raise a copy failure, so a
+         * copy that finishes later logs it.
+         */
+        val logFailureOnFinish: AtomicBoolean = AtomicBoolean(false),
     )
 
     /**
@@ -150,7 +156,7 @@ class StreamManager(
         }
 
         try {
-            executor.execute { runCopy(streamInfo) }
+            executor.execute { runCopy(streamId, streamInfo) }
         } catch (e: RejectedExecutionException) {
             throw abandon(streamId, streamInfo, e)
         }
@@ -201,7 +207,8 @@ class StreamManager(
      * stopped reading; closing the provider stream unblocks one stuck in a
      * stalled provider read. A copy this release stops raises nothing.
      * Waiting for the copy means a failure it records after the reader saw
-     * end-of-stream, such as a failed write-end close, is still raised.
+     * end-of-stream, such as a failed write-end close, is still raised. The
+     * wait suspends; it does not block the calling thread.
      *
      * @param streamId the stream to release; an unknown id is a no-op.
      * @return Nothing.
@@ -213,10 +220,10 @@ class StreamManager(
      *   earlier failure applies, after both ends were attempted (UNFY-300).
      * @throws RuntimeException when the provider stream's close fails with
      *   one and no earlier failure applies, after both ends were attempted.
-     * @throws InterruptedException when the calling thread is interrupted
-     *   while waiting for the copy.
+     * @throws kotlinx.coroutines.CancellationException when the calling
+     *   coroutine is cancelled while waiting for the copy.
      */
-    fun closeStream(streamId: String) {
+    suspend fun closeStream(streamId: String) {
         val streamInfo = claim(streamId) ?: return
         val closeFailure = releaseEnds(streamInfo)
         val stopFailure = awaitCopy(streamInfo)
@@ -233,7 +240,9 @@ class StreamManager(
      * Purpose: Release every stream on plugin detach, and refuse new ones.
      *
      * No caller remains to act on a failed close or a failed copy, so each
-     * is logged with its stream id and the rest still close.
+     * is logged with its stream id and the rest still close. This runs on
+     * the main thread, so it does not wait for running copies: a copy that
+     * finishes later logs its own failure.
      *
      * @return Nothing.
      * @throws Nothing.
@@ -243,7 +252,10 @@ class StreamManager(
         for (id in activeStreams.keys.toList()) {
             val streamInfo = claim(id) ?: continue
             releaseEnds(streamInfo)?.let { Log.e(TAG, "dispose: closing stream $id failed", it) }
-            streamInfo.copyFailure.get()?.let { Log.w(TAG, "dispose: stream $id copy failed", it) }
+            // Set before checking the copy, which checks this flag after it
+            // finishes, so one of the two logs the failure.
+            streamInfo.logFailureOnFinish.set(true)
+            if (streamInfo.copyFinished.isCompleted) logCopyFailure(id, streamInfo)
         }
         executor.shutdown()
     }
@@ -275,13 +287,14 @@ class StreamManager(
      * @return null when the copy never started or has finished; otherwise an
      *   [IOException] saying the copy did not stop within
      *   [COPY_STOP_TIMEOUT_MS], so its content may be incomplete.
-     * @throws InterruptedException when the calling thread is interrupted
-     *   while waiting.
+     * @throws kotlinx.coroutines.CancellationException when the calling
+     *   coroutine is cancelled while waiting.
      */
-    private fun awaitCopy(streamInfo: StreamInfo): IOException? {
+    private suspend fun awaitCopy(streamInfo: StreamInfo): IOException? {
         // Claiming the copy first means it never starts.
         if (streamInfo.copyClaimed.compareAndSet(false, true)) return null
-        if (streamInfo.copyFinished.await(COPY_STOP_TIMEOUT_MS, TimeUnit.MILLISECONDS)) return null
+        val finished = withTimeoutOrNull(COPY_STOP_TIMEOUT_MS) { streamInfo.copyFinished.await() }
+        if (finished != null) return null
         return IOException(
             "simple_query: the copy of ${streamInfo.contentUri} did not stop within " +
                 "${COPY_STOP_TIMEOUT_MS}ms of its release; treat the content as incomplete",
@@ -380,12 +393,14 @@ class StreamManager(
      * does not mean the copy succeeded: closeStream waits for this copy to
      * finish and raises any failure it recorded (UNFY-365).
      *
+     * @param streamId the stream, named when a failure is logged after
+     *   dispose().
      * @param streamInfo the stream's pipes and input.
      * @return Nothing.
      * @throws Error a JVM error from the copy, on the copy's own thread;
      *   other failures are recorded for closeStream.
      */
-    private fun runCopy(streamInfo: StreamInfo) {
+    private fun runCopy(streamId: String, streamInfo: StreamInfo) {
         // A release that claimed the copy first already closed everything.
         if (!streamInfo.copyClaimed.compareAndSet(false, true)) return
         try {
@@ -398,7 +413,10 @@ class StreamManager(
                 // not cause this failure; record it even after a release.
                 recordFailure(streamInfo, e)
             } finally {
-                streamInfo.copyFinished.countDown()
+                streamInfo.copyFinished.complete(Unit)
+                // dispose() sets the flag before it checks for a finished
+                // copy, so one of the two logs the failure.
+                if (streamInfo.logFailureOnFinish.get()) logCopyFailure(streamId, streamInfo)
             }
         }
     }
@@ -408,7 +426,8 @@ class StreamManager(
      * end, then close the input.
      *
      * Only [Exception]s are recorded. A JVM [Error] propagates on the copy's
-     * own thread, after the input is closed.
+     * own thread, after the input is closed. Whether a release caused a copy
+     * failure is read the moment the failure is caught.
      *
      * @param streamInfo the stream's pipes and input.
      * @return Nothing.
@@ -422,22 +441,24 @@ class StreamManager(
         try {
             copyChunks(input, streamInfo)
         } catch (e: Exception) {
-            failure = e
+            // claim() sets released before a release closes anything, so a
+            // failure caught while it is false is the copy's own. A failure
+            // after a release is the release itself (its closed input or
+            // write end). Only a release closes this manager's read end, so
+            // a broken pipe on the write end needs no special case, and a
+            // provider's own "Broken pipe" is a real copy failure.
+            if (!streamInfo.released.get()) failure = e
         } finally {
             // The input stays in activeInput during the copy, so a release
             // can close it to unblock a stalled read; whichever takes it out
-            // closes it.
+            // closes it, so a failure here is this copy's own close.
             try {
                 streamInfo.activeInput.getAndSet(null)?.close()
             } catch (e: Exception) {
                 failure = failure?.also { it.addSuppressed(e) } ?: e
             }
         }
-        // A failure after a release is the release itself (its closed input
-        // or write end). Only a release closes this manager's read end, so a
-        // broken pipe on the write end needs no special case, and a
-        // provider's own "Broken pipe" is a real copy failure.
-        if (failure != null && !streamInfo.released.get()) recordFailure(streamInfo, failure)
+        failure?.let { recordFailure(streamInfo, it) }
     }
 
     /**
@@ -461,6 +482,21 @@ class StreamManager(
             if (bytesRead == -1) break
             output.write(buffer, 0, bytesRead)
         }
+    }
+
+    /**
+     * Purpose: Log a disposed stream's copy failure, exactly once, since no
+     * caller remains to raise it.
+     *
+     * Whichever of dispose() and the copy takes the failure out logs it.
+     *
+     * @param streamId the disposed stream.
+     * @param streamInfo the disposed stream's state.
+     * @return Nothing.
+     * @throws Nothing.
+     */
+    private fun logCopyFailure(streamId: String, streamInfo: StreamInfo) {
+        streamInfo.copyFailure.getAndSet(null)?.let { Log.w(TAG, "dispose: stream $streamId copy failed", it) }
     }
 
     /**
