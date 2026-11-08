@@ -56,12 +56,10 @@ enum class EventReply {
 };
 
 // Purpose: Describe one sent message the fake Dart side may answer.
+// The references borrow Send's arguments, so build one only for that call.
 struct ReplyCandidate {
-  // The channel the message was sent on.
   const std::string& channel;
-  // The sender's reply callback; empty when none is wanted.
   const flutter::BinaryReply& reply;
-  // How observe events are being answered.
   EventReply event_reply;
 };
 
