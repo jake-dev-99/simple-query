@@ -7,6 +7,7 @@
 #include <flutter/encodable_value.h>
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -14,6 +15,7 @@
 #include <iterator>
 #include <limits>
 #include <string>
+#include <stdexcept>
 #include <system_error>
 #include <vector>
 
@@ -824,8 +826,9 @@ TEST(FileMutationsTest, BackupCleanupFailureDisclosesPublishedUpdateAndRecovery)
   EXPECT_EQ(ReadText(backup), "changed");
   const auto& details = std::get<EncodableMap>(result.error().details());
   EXPECT_EQ(std::get<int64_t>(details.at(EncodableValue("affectedCount"))), 1);
-  EXPECT_EQ(std::get<std::string>(details.at(EncodableValue("recoveryPath"))),
-            PathToUtf8(backup.parent_path()));
+  const auto recovery = PathFromUtf8(std::get<std::string>(
+      details.at(EncodableValue("recoveryPath"))));
+  EXPECT_TRUE(fs::equivalent(recovery, backup.parent_path()));
 #endif
 }
 
@@ -859,10 +862,14 @@ TEST(FileMutationsTest, InsertsFileWithMaximumLengthComponent) {
 
   const auto result = Mutate({.request = request, .domain = "files", .root = directory.path()});
 
-  ASSERT_FALSE(result.has_error()) << result.error().message();
-  EXPECT_EQ(AffectedCount(result), 1);
-  EXPECT_EQ(ReadText(target), "inserted long name");
-  EXPECT_TRUE(fs::remove(target));
+  EXPECT_FALSE(result.has_error()) << (result.has_error() ? result.error().message() : "");
+  if (!result.has_error()) {
+    EXPECT_EQ(AffectedCount(result), 1);
+    EXPECT_EQ(ReadText(target), "inserted long name");
+  }
+  std::error_code cleanup_error;
+  fs::remove(target, cleanup_error);
+  EXPECT_FALSE(cleanup_error) << cleanup_error.message();
   EXPECT_TRUE(fs::is_empty(directory.path()));
 }
 
@@ -881,11 +888,93 @@ TEST(FileMutationsTest, UpdatesFileWithMaximumLengthComponent) {
 
   const auto result = Mutate({.request = request, .domain = "files", .root = directory.path()});
 
-  ASSERT_FALSE(result.has_error()) << result.error().message();
-  EXPECT_EQ(AffectedCount(result), 1);
-  EXPECT_EQ(ReadText(target), "updated long name");
-  EXPECT_TRUE(fs::remove(target));
+  EXPECT_FALSE(result.has_error()) << (result.has_error() ? result.error().message() : "");
+  if (!result.has_error()) {
+    EXPECT_EQ(AffectedCount(result), 1);
+    EXPECT_EQ(ReadText(target), "updated long name");
+  }
+  std::error_code cleanup_error;
+  fs::remove(target, cleanup_error);
+  EXPECT_FALSE(cleanup_error) << cleanup_error.message();
   EXPECT_TRUE(fs::is_empty(directory.path()));
+}
+
+// Purpose: Exceptions after staging creation close its handle and erase only staging data.
+TEST(FileMutationsTest, ExceptionAfterStagingCreationClosesHandleAndRemovesStaging) {
+  TempDirectory directory;
+  const auto target = directory.WriteFile("original.txt");
+  const EncodableMap request{
+      {EncodableValue("type"), EncodableValue("update")},
+      {EncodableValue("values"), EncodableValue(EncodableMap{
+          {EncodableValue("path"), EncodableValue(PathToUtf8(target))},
+          {EncodableValue("content"), EncodableValue("replacement")}})}};
+  HANDLE captured_handle = INVALID_HANDLE_VALUE;
+  FileWriteEffects effects;
+  effects.write = [&](void* handle, const std::string&) -> std::error_code {
+    captured_handle = handle;
+    throw std::runtime_error("injected exception after staging acquisition");
+  };
+  EXPECT_THROW(Mutate({.request = request, .domain = "files", .root = directory.path(),
+                       .write_effects = effects}), std::runtime_error);
+  ASSERT_NE(captured_handle, INVALID_HANDLE_VALUE);
+  DWORD written = 0;
+  const bool still_open = WriteFile(captured_handle, "x", 1, &written, nullptr) != 0;
+  const DWORD handle_error = GetLastError();
+  EXPECT_FALSE(still_open);
+  if (still_open) {
+    EXPECT_TRUE(CloseHandle(captured_handle));
+  } else {
+    EXPECT_EQ(handle_error, static_cast<DWORD>(ERROR_INVALID_HANDLE));
+  }
+  EXPECT_EQ(ReadText(target), "changed");
+  EXPECT_EQ(std::distance(fs::directory_iterator(directory.path()), fs::directory_iterator()), 1);
+}
+
+// Purpose: An exception after moving an original into recovery never deletes that copy.
+TEST(FileMutationsTest, ExceptionDuringReplacementRetainsOriginalRecovery) {
+  TempDirectory directory;
+  const auto target = directory.WriteFile("original.txt");
+  const EncodableMap request{
+      {EncodableValue("type"), EncodableValue("update")},
+      {EncodableValue("values"), EncodableValue(EncodableMap{
+          {EncodableValue("path"), EncodableValue(PathToUtf8(target))},
+          {EncodableValue("content"), EncodableValue("replacement")}})}};
+  fs::path original_backup;
+  FileWriteEffects effects;
+  effects.replace = [&](const FileReplacement& replacement) -> std::error_code {
+    original_backup = replacement.backup;
+    fs::rename(replacement.original, original_backup);
+    throw std::runtime_error("injected exception after moving original to recovery");
+  };
+  EXPECT_THROW(Mutate({.request = request, .domain = "files", .root = directory.path(),
+                       .write_effects = effects}), std::runtime_error);
+  ASSERT_FALSE(original_backup.empty());
+  EXPECT_EQ(ReadText(original_backup), "changed");
+  EXPECT_FALSE(fs::exists(target));
+  EXPECT_EQ(std::distance(fs::directory_iterator(directory.path()), fs::directory_iterator()), 1);
+}
+
+// Purpose: Ordinary slash-separated paths normalize parent components before Win32 adaptation.
+TEST(FileMutationsTest, InsertsAndUpdatesOrdinaryPathsWithSlashesAndParentComponents) {
+  for (const auto* type : {"insert", "update"}) {
+    TempDirectory directory;
+    fs::create_directory(directory.path() / "existing");
+    const auto target = directory.path() / "target.txt";
+    if (std::string(type) == "update") {
+      std::ofstream(target) << "original";
+    }
+    std::string text = PathToUtf8(directory.path() / "existing" / ".." / "target.txt");
+    std::replace(text.begin(), text.end(), '\\', '/');
+    const EncodableMap request{
+        {EncodableValue("type"), EncodableValue(type)},
+        {EncodableValue("values"), EncodableValue(EncodableMap{
+            {EncodableValue("path"), EncodableValue(text)},
+            {EncodableValue("content"), EncodableValue("normalized contents")}})}};
+    const auto result = Mutate({.request = request, .domain = "files", .root = directory.path()});
+    ASSERT_FALSE(result.has_error()) << result.error().message();
+    EXPECT_EQ(AffectedCount(result), 1);
+    EXPECT_EQ(ReadText(target), "normalized contents");
+  }
 }
 
 }  // namespace

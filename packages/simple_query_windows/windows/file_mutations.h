@@ -32,7 +32,7 @@ struct FileReplacement {
 // @param replace publishes an update while preserving metadata; empty uses
 // ReplaceFileW with merge errors enforced. Failure may leave original in backup.
 // @returns Nothing; this is a data type.
-// @throws Nothing; callbacks return failures as error codes.
+// @throws Callback exceptions propagate after scope-owned staging cleanup.
 struct FileWriteEffects {
   std::function<std::error_code(void*, const std::string&)> write;
   std::function<std::error_code(void*)> flush;
@@ -70,7 +70,8 @@ struct FileMutation {
 // are not rolled back, and a failing filesystem step may have partial effects.
 // A failed replacement/backup cleanup also reports recoveryPath; its directory
 // is retained because it may hold the only original copy.
-// @throws Nothing; failures are returned as errors.
+// @throws std::exception from injected callbacks after scope-owned cleanup;
+// filesystem failures are returned as errors.
 ErrorOr<flutter::EncodableMap> MutateFiles(const FileMutation& mutation);
 
 }  // namespace simple_query_windows
