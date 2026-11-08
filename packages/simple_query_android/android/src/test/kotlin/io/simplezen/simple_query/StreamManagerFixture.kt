@@ -361,18 +361,22 @@ internal class ManualExecutor : AbstractExecutorService() {
  * failure.
  *
  * @param inner the end to wrap.
- * @throws IOException from every close.
+ * @param failure thrown by the close.
+ * @throws Exception [failure], from the close.
  */
-internal class FailingCloseEnd(private val inner: ParcelFileDescriptor) : ParcelFileDescriptor(inner) {
+internal class FailingCloseEnd(
+    private val inner: ParcelFileDescriptor,
+    private val failure: Exception = IOException("close failed"),
+) : ParcelFileDescriptor(inner) {
     /**
      * Purpose: Release the descriptor, then report a failed close.
      *
      * @return Nothing; it always throws.
-     * @throws IOException on every call.
+     * @throws Exception [failure], on every call.
      */
     override fun close() {
         inner.close()
-        throw IOException("close failed")
+        throw failure
     }
 }
 

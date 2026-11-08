@@ -1,5 +1,6 @@
 package io.simplezen.simple_query
 
+import android.util.Log
 import io.simplezen.simple_query.StreamManagerFixture.Companion.CONTENT
 import java.io.ByteArrayInputStream
 import java.io.IOException
@@ -25,6 +26,7 @@ import org.junit.Before
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowLog
 
 /**
  * Purpose: Pin that a copy failure on a real copy thread is raised or
@@ -238,6 +240,33 @@ class StreamManagerLateFailureTest {
     }
 
     /**
+     * Purpose: Pin that a closeStream cancelled while it waits for the copy
+     *   logs its close failures, since no caller is left to raise them
+     *   (UNFY-365).
+     *
+     * @return Nothing.
+     * @throws AssertionError when the read-end close failure is not logged.
+     */
+    @Test
+    fun aCancelledCloseStreamLogsItsCloseFailures() {
+        val failClose = CountDownLatch(1)
+        fixture.pipes.wrapReadEnd = { FailingCloseEnd(it, IOException("read end close failed")) }
+        val (streamId, copies) = fixture.openStreamWaitingInWriteEndClose(failClose)
+
+        runBlocking {
+            // Unconfined runs closeStream here until it suspends in its wait.
+            launch(Dispatchers.Unconfined) { fixture.manager.closeStream(streamId) }.cancelAndJoin()
+        }
+
+        val logged = ShadowLog.getLogsForTag("StreamManager").filter { it.type == Log.ERROR }
+        assertEquals(listOf("read end close failed"), logged.map { it.throwable?.message })
+        assertTrue(logged.single().msg.endsWith(": closing it failed with no caller to raise it"), logged.single().msg)
+        failClose.countDown()
+        copies.shutdown()
+        assertTrue(copies.awaitTermination(5, TimeUnit.SECONDS))
+    }
+
+    /**
      * Purpose: Pin that a copy finishing just as closeStream's wait times
      *   out has its failures raised, not logged (UNFY-365).
      *
@@ -258,20 +287,23 @@ class StreamManagerLateFailureTest {
             copyStopTimeoutMs = 100,
             content = { FailsAfterFirstChunk(IOException("disk read failed")) },
         )
+        val copyFinished = AtomicBoolean(false)
         val resumeAfterTheCopy = RunFirstOnResume {
             failClose.countDown()
             copies.shutdown()
-            assertTrue(copies.awaitTermination(5, TimeUnit.SECONDS))
+            copyFinished.set(copies.awaitTermination(5, TimeUnit.SECONDS))
         }
 
-        val outcome = runBlocking {
-            // Undispatched, so the only dispatch is the timed-out wait's resume.
-            async(resumeAfterTheCopy, CoroutineStart.UNDISPATCHED) {
-                runCatching { fixture.manager.closeStream(streamId) }.exceptionOrNull()
-            }.await()
+        val outcome = resumeAfterTheCopy.use { dispatcher ->
+            runBlocking {
+                // Undispatched, so the only dispatch is the timed-out wait's resume.
+                async(dispatcher, CoroutineStart.UNDISPATCHED) {
+                    runCatching { fixture.manager.closeStream(streamId) }.exceptionOrNull()
+                }.await()
+            }
         }
-        resumeAfterTheCopy.close()
 
+        assertTrue(copyFinished.get(), "the copy never finished")
         val error = assertIs<IOException>(outcome)
         assertEquals("disk read failed", error.message)
         val suppressed = error.suppressed.map { it.message.orEmpty() }
@@ -297,6 +329,9 @@ private class RunFirstOnResume(private val beforeFirstResume: () -> Unit) : Coro
      * Purpose: Run [block] on the dispatch thread, after [beforeFirstResume]
      * the first time.
      *
+     * [block] runs even when [beforeFirstResume] throws, so the coroutine
+     * always resumes and a test fails instead of hanging.
+     *
      * @param context the coroutine's context.
      * @param block the coroutine's next step.
      * @return Nothing.
@@ -304,8 +339,11 @@ private class RunFirstOnResume(private val beforeFirstResume: () -> Unit) : Coro
      */
     override fun dispatch(context: CoroutineContext, block: Runnable) {
         thread.execute {
-            if (pending.getAndSet(false)) beforeFirstResume()
-            block.run()
+            try {
+                if (pending.getAndSet(false)) beforeFirstResume()
+            } finally {
+                block.run()
+            }
         }
     }
 

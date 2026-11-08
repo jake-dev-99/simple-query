@@ -287,15 +287,21 @@ class StreamManager(
      * @throws RuntimeException when the provider stream's close fails with
      *   one and no earlier failure applies, after both ends were attempted.
      * @throws CancellationException when the calling coroutine is cancelled
-     *   while waiting for the copy; a failure the copy records later is
-     *   logged.
+     *   while waiting for the copy; the close failures, and a failure the
+     *   copy records later, are logged.
      */
     suspend fun closeStream(streamId: String) {
         val streamInfo = claim(streamId) ?: return
         val closeFailures = releaseEnds(streamInfo)
+        val failuresFromCopy = try {
+            copyFailures(streamId, streamInfo)
+        } catch (e: CancellationException) {
+            logCloseFailures(streamId, closeFailures)
+            throw e
+        }
         // The copy's own failure explains the content best, then a copy that
         // would not stop, then a failed close.
-        raiseFirst(copyFailures(streamId, streamInfo) + closeFailures)
+        raiseFirst(failuresFromCopy + closeFailures)
     }
 
     /**
@@ -313,7 +319,7 @@ class StreamManager(
         disposed.set(true)
         for (id in activeStreams.keys.toList()) {
             val streamInfo = claim(id) ?: continue
-            releaseEnds(streamInfo).forEach { Log.e(TAG, "dispose: closing stream $id failed", it) }
+            logCloseFailures(id, releaseEnds(streamInfo))
             logFailureWhenFinished(id, streamInfo)
         }
         executor.shutdown()
@@ -500,7 +506,7 @@ class StreamManager(
         } finally {
             try {
                 streamInfo.pipe.closeWriteEndOnce()
-            } catch (e: IOException) {
+            } catch (e: Exception) {
                 // Only this copy closed the write end here, so a release did
                 // not cause this failure; record it even after a release.
                 copy.record(e)
@@ -603,6 +609,19 @@ class StreamManager(
      */
     private fun logCopyFailure(streamId: String, copy: CopyState) {
         copy.takeFailure()?.let { Log.w(TAG, "stream $streamId: copy failed with no caller to raise it", it) }
+    }
+
+    /**
+     * Purpose: Log a released stream's close failures that no caller will
+     * raise: after dispose(), or after a cancelled closeStream.
+     *
+     * @param streamId the stream, named in the log.
+     * @param failures the close failures, each logged on its own.
+     * @return Nothing.
+     * @throws Nothing.
+     */
+    private fun logCloseFailures(streamId: String, failures: List<Exception>) {
+        failures.forEach { Log.e(TAG, "stream $streamId: closing it failed with no caller to raise it", it) }
     }
 }
 

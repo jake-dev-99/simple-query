@@ -329,6 +329,26 @@ class StreamManagerCloseTest {
     }
 
     /**
+     * Purpose: Pin that an unchecked write-end close failure at the end of a
+     *   copy is raised by closeStream, like a checked one (UNFY-365).
+     *
+     * @return Nothing.
+     * @throws AssertionError when closeStream does not raise the close
+     *   failure.
+     */
+    @Test
+    fun closeStreamRaisesAnUncheckedWriteEndCloseFailureFromTheCopy() {
+        fixture.register(CONTENT) { ByteArrayInputStream(byteArrayOf(1, 2, 3)) }
+        fixture.pipes.wrapWriteEnd = { FailingCloseEnd(it, IllegalStateException("close failed")) }
+        val descriptor = fixture.manager.openStream(CONTENT)
+        fixture.executor.runQueued()
+
+        val error = assertFailsWith<IllegalStateException> { fixture.manager.closeStreamBlocking(descriptor.streamId) }
+
+        assertEquals("close failed", error.message)
+    }
+
+    /**
      * Purpose: Pin that a copy failing partway through makes closeStream
      *   raise that failure after releasing both ends (UNFY-365).
      *
