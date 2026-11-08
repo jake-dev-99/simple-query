@@ -2,10 +2,13 @@
 set -euo pipefail
 
 # Purpose: Prove the current Windows plugin compiles through Flutter's generated
-# consumer runner, registrar, and CMake integration without editing the checkout.
+# consumer runner, registrar, and CMake integration without editing the checkout,
+# then build and run the plugin's native tests in that consumer.
 # Inputs: FLUTTER_ROOT optionally selects the SDK; otherwise flutter comes from
-# PATH. Returns: zero only after a real Windows debug consumer build succeeds.
-# Throws: exits nonzero on fixture creation, dependency, or compiler failure.
+# PATH. Returns: zero only after a real Windows debug consumer build succeeds
+# and every native test passes.
+# Throws: exits nonzero on fixture creation, dependency, compiler, or native
+# test failure.
 
 case "$(uname -s)" in
   MINGW* | MSYS* | CYGWIN*) ;;
@@ -48,10 +51,27 @@ shared_package_path="$(windows_yaml_path "${repository_root}/packages/simple_que
     "simple_query_windows:{path: ${windows_package_path}}" \
     "override:simple_query_platform_interface:{path: ${interface_package_path}}" \
     "override:simple_query_shared:{path: ${shared_package_path}}"
+  # The plugin builds its GoogleTest runner only for a host app that asks.
+  # The flag must precede the include that adds the plugin's CMake project.
+  # No end anchor: the generated file may use CRLF line endings.
+  sed -i 's|^include(flutter/generated_plugins\.cmake)|set(include_simple_query_windows_tests TRUE)\n&|' \
+    windows/CMakeLists.txt
+  if ! grep -Fxq 'set(include_simple_query_windows_tests TRUE)' windows/CMakeLists.txt; then
+    echo "Could not enable the Simple Query Windows native tests in the fixture." >&2
+    exit 1
+  fi
+
   "${flutter_executable}" build windows --debug
   if ! grep -Fq 'SimpleQueryWindowsPluginCApiRegisterWithRegistrar' \
       windows/flutter/generated_plugin_registrant.cc; then
     echo "Flutter did not register the local Simple Query Windows plugin." >&2
     exit 1
   fi
+
+  test_runner="$(find build/windows -type f -name 'simple_query_windows_test.exe' -print -quit)"
+  if [[ -z "${test_runner}" ]]; then
+    echo "The build did not produce the Simple Query Windows native test runner." >&2
+    exit 1
+  fi
+  "${test_runner}"
 )

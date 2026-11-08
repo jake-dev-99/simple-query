@@ -13,6 +13,11 @@
 extern "C" {
 #endif
 
+// Purpose: Register the plugin with an engine; Flutter's generated plugin
+// registrant calls this by name.
+// @param registrar is the engine's C plugin registrar.
+// @returns Nothing.
+// @throws Nothing.
 FLUTTER_PLUGIN_EXPORT void SimpleQueryWindowsPluginCApiRegisterWithRegistrar(
     FlutterDesktopPluginRegistrarRef registrar);
 

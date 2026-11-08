@@ -122,7 +122,7 @@ jobs:
         with:
           channel: stable
 
-      - name: Build Flutter Windows consumer fixture
+      - name: Build Flutter Windows consumer fixture and run native tests
         shell: bash
         run: bash tool/build_windows_consumer.sh
 

@@ -74,6 +74,17 @@ so the example builds the workspace plugin):
 CI runs the same steps in the path-gated `.github/workflows/verify-native.yml`
 on every PR that touches the native side (UNFY-198).
 
+**When you touch `packages/simple_query_windows/windows/` (C++), run the
+Windows gate on a Windows machine.** `flutter test` never compiles that C++.
+The script builds a throwaway consumer app, then builds and runs the plugin's
+GoogleTest runner inside it (UNFY-381):
+
+```sh
+bash tool/build_windows_consumer.sh   # Git Bash on Windows
+```
+
+CI runs it in the `windows-consumer` job of `.github/workflows/verify.yml`.
+
 ## Conventions that have teeth
 
 - **The platform-interface contract is versioned.** A breaking change to

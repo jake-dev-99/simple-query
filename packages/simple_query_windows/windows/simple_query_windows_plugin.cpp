@@ -1,25 +1,22 @@
 #include "include/simple_query_windows/simple_query_windows_plugin.h"
 
 #include <algorithm>
-#include <atomic>
 #include <chrono>
 #include <cctype>
 #include <cstdlib>
-#include <deque>
 #include <filesystem>
 #include <fstream>
-#include <functional>
+#include <iostream>
 #include <mutex>
 #include <optional>
 #include <set>
 #include <sstream>
 #include <string>
-#include <thread>
+#include <system_error>
 #include <utility>
 #include <vector>
 
 #include <flutter/plugin_registrar_windows.h>
-#include <windows.h>
 #include <winrt/Windows.ApplicationModel.Appointments.h>
 #include <winrt/Windows.ApplicationModel.Contacts.h>
 #include <winrt/Windows.Foundation.Collections.h>
@@ -27,6 +24,7 @@
 #include <winrt/base.h>
 
 #include "native_query.g.h"
+#include "polling_observers.h"
 
 namespace simple_query_windows {
 
@@ -373,8 +371,22 @@ std::filesystem::path ResolveRootPath(const EncodableMap& request) {
   return std::filesystem::current_path();
 }
 
-std::vector<EncodableMap> ListRecords(const std::filesystem::path& root,
-                                      bool media_only) {
+// Purpose: Select what ListRecords walks and when it gives up.
+struct ListRecordsOptions {
+  std::filesystem::path root;
+  // Lists only image, video and audio files, as media rows.
+  bool media_only = false;
+  // Ends the walk early when it returns true. Empty means never.
+  StopRequested stop_requested;
+};
+
+// Purpose: List the files under a root directory as query rows.
+// @param options selects the root, the row shape and an early stop.
+// @returns One row per entry found, or the rows found before a stop.
+// @throws Nothing; unreadable entries are skipped.
+std::vector<EncodableMap> ListRecords(const ListRecordsOptions& options) {
+  const std::filesystem::path& root = options.root;
+  const bool media_only = options.media_only;
   std::vector<EncodableMap> rows;
   std::error_code ec;
   if (!std::filesystem::exists(root, ec)) {
@@ -384,6 +396,10 @@ std::vector<EncodableMap> ListRecords(const std::filesystem::path& root,
   for (auto it = std::filesystem::recursive_directory_iterator(
            root, std::filesystem::directory_options::skip_permission_denied, ec);
        it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+    // A recursive walk of a large tree can outlast an observer's teardown.
+    if (options.stop_requested && options.stop_requested()) {
+      break;
+    }
     if (ec) {
       ec.clear();
       continue;
@@ -539,15 +555,26 @@ EncodableList ApplyProjection(const std::vector<EncodableMap>& rows,
   return projected_rows;
 }
 
-using Snapshot = std::map<std::string, int64_t>;
+// Purpose: Name what one observer snapshot covers.
+struct SnapshotRequest {
+  const EncodableMap& request;
+  const std::string& domain;
+  const StopRequested& stop_requested;
+};
 
-Snapshot BuildSnapshotForDomain(const EncodableMap& request,
-                                const std::string& domain) {
+// Purpose: Take one observer snapshot of a domain's records.
+// @param source names the observe request, its domain and the stop check.
+// @returns Each record's id mapped to its modification time.
+// @throws Nothing; unreadable records are left out.
+Snapshot BuildSnapshotForDomain(const SnapshotRequest& source) {
+  const std::string& domain = source.domain;
   Snapshot snapshot;
   std::vector<EncodableMap> rows;
 
   if (domain == "files" || domain == "media") {
-    rows = ListRecords(ResolveRootPath(request), domain == "media");
+    rows = ListRecords({.root = ResolveRootPath(source.request),
+                        .media_only = domain == "media",
+                        .stop_requested = source.stop_requested});
   } else if (domain == "contacts") {
     rows = ListContactRecords().rows;
   } else if (domain == "calendar") {
@@ -568,126 +595,24 @@ Snapshot BuildSnapshotForDomain(const EncodableMap& request,
   return snapshot;
 }
 
-EncodableList ChangedIds(const Snapshot& lhs, const Snapshot& rhs) {
-  std::set<std::string> ids;
-  for (const auto& [id, _] : lhs) {
-    const auto it = rhs.find(id);
-    if (it == rhs.end() || it->second != lhs.at(id)) {
-      ids.insert(id);
-    }
-  }
-  for (const auto& [id, _] : rhs) {
-    const auto it = lhs.find(id);
-    if (it == lhs.end()) {
-      ids.insert(id);
-    }
-  }
-
-  EncodableList values;
-  for (const auto& id : ids) {
-    values.push_back(EncodableValue(id));
-  }
-  return values;
-}
-
-struct ObserverState {
-  std::atomic<bool> active{true};
-  std::thread worker;
-};
-
-// Purpose: Run tasks from worker threads on the thread that created it.
-// Flutter's Windows embedder accepts channel messages only on the platform
-// thread, so observer workers post their events here instead of sending them.
-// The dispatcher owns a message-only window; the platform thread's message
-// loop drains queued tasks through that window's procedure. Tasks still
-// queued when the dispatcher is destroyed are dropped without running.
-class PlatformThreadDispatcher {
- public:
-  PlatformThreadDispatcher() {
-    WNDCLASSEXW window_class{};
-    window_class.cbSize = sizeof(window_class);
-    window_class.lpfnWndProc = &PlatformThreadDispatcher::WindowProc;
-    window_class.hInstance = GetModuleHandleW(nullptr);
-    window_class.lpszClassName = kWindowClassName;
-    // A second engine registers the same class; that failure is expected.
-    RegisterClassExW(&window_class);
-    window_ = CreateWindowExW(0, kWindowClassName, L"", 0, 0, 0, 0, 0,
-                              HWND_MESSAGE, nullptr,
-                              GetModuleHandleW(nullptr), nullptr);
-    if (window_ != nullptr) {
-      SetWindowLongPtrW(window_, GWLP_USERDATA,
-                        reinterpret_cast<LONG_PTR>(this));
-    }
-  }
-
-  ~PlatformThreadDispatcher() {
-    if (window_ != nullptr) {
-      SetWindowLongPtrW(window_, GWLP_USERDATA, 0);
-      DestroyWindow(window_);
-    }
-  }
-
-  PlatformThreadDispatcher(const PlatformThreadDispatcher&) = delete;
-  PlatformThreadDispatcher& operator=(const PlatformThreadDispatcher&) = delete;
-
-  // Purpose: Report whether queued tasks can reach the platform thread.
-  bool IsReady() const { return window_ != nullptr; }
-
-  // Purpose: Queue [task] for the platform thread. Safe from any thread.
-  // Returns false when the dispatcher has no window, so nothing will run it.
-  bool Post(std::function<void()> task) {
-    if (window_ == nullptr) {
-      return false;
-    }
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      tasks_.push_back(std::move(task));
-    }
-    return PostMessageW(window_, kRunTasksMessage, 0, 0) != 0;
-  }
-
- private:
-  static constexpr UINT kRunTasksMessage = WM_APP + 1;
-  static constexpr const wchar_t* kWindowClassName =
-      L"SimpleQueryWindowsPlatformThreadDispatcher";
-
-  static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam,
-                                     LPARAM lparam) {
-    if (message == kRunTasksMessage) {
-      auto* dispatcher = reinterpret_cast<PlatformThreadDispatcher*>(
-          GetWindowLongPtrW(window, GWLP_USERDATA));
-      if (dispatcher != nullptr) {
-        dispatcher->RunPendingTasks();
-      }
-      return 0;
-    }
-    return DefWindowProcW(window, message, wparam, lparam);
-  }
-
-  void RunPendingTasks() {
-    std::deque<std::function<void()>> tasks;
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      tasks.swap(tasks_);
-    }
-    for (auto& task : tasks) {
-      task();
-    }
-  }
-
-  HWND window_ = nullptr;
-  std::mutex mutex_;
-  std::deque<std::function<void()>> tasks_;
-};
-
 }  // namespace
 
+// Purpose: Answer one engine's simple_query host calls on Windows.
+// Create and destroy it on that engine's platform thread.
 class NativeQueryHostApiImpl : public NativeQueryHostApi {
  public:
+  // Purpose: Serve host calls and send observe events through one engine.
+  // @param messenger is the engine's messenger; it must outlive this object.
+  // @returns Nothing.
+  // @throws Nothing.
   explicit NativeQueryHostApiImpl(flutter::BinaryMessenger* messenger)
-      : flutter_api_(messenger) {}
-
-  ~NativeQueryHostApiImpl() override { ShutdownObservers(); }
+      : flutter_api_(messenger),
+        observers_({.send_event =
+                        [this](const std::string& observer_id,
+                               const EncodableMap& event) {
+                          SendObserveEvent(observer_id, event);
+                        },
+                    .now_epoch_ms = &EpochMsNow}) {}
 
   ErrorOr<EncodableMap> GetCapabilities() override {
     const auto contacts_probe = ListContactRecords();
@@ -736,7 +661,8 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
 
     std::vector<EncodableMap> rows;
     if (domain == "files" || domain == "media") {
-      rows = ListRecords(ResolveRootPath(request), domain == "media");
+      rows = ListRecords({.root = ResolveRootPath(request),
+                          .media_only = domain == "media"});
     } else if (domain == "contacts") {
       auto contact_rows = ListContactRecords();
       if (contact_rows.error.has_value()) {
@@ -1000,7 +926,7 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
                               " on Windows host");
     }
 
-    if (!dispatcher_.IsReady()) {
+    if (!observers_.IsReady()) {
       return FlutterError("unavailable",
                           "simple_query: windows observe could not create its "
                           "platform-thread message window");
@@ -1009,65 +935,28 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
     int64_t interval_ms = AsInt(FindValue(request, "pollingIntervalMs")).value_or(1000);
     interval_ms = std::max<int64_t>(250, interval_ms);
 
-    const std::string observer_id =
-        std::string("windows_observer_") + std::to_string(++observer_counter_);
-    auto state = std::make_unique<ObserverState>();
-    auto* state_ptr = state.get();
-
-    {
-      std::lock_guard<std::mutex> lock(observers_mutex_);
-      observers_[observer_id] = std::move(state);
+    ObserverSpec spec{
+        .domain = domain,
+        .polling_interval = std::chrono::milliseconds(interval_ms),
+        .take_snapshot =
+            [request, domain](const StopRequested& stop_requested) {
+              return BuildSnapshotForDomain({.request = request,
+                                             .domain = domain,
+                                             .stop_requested = stop_requested});
+            },
+    };
+    try {
+      return observers_.Start(std::move(spec));
+    } catch (const std::system_error& error) {
+      return FlutterError("unavailable",
+                          std::string("simple_query: windows observe could not "
+                                      "start its polling thread: ") +
+                              error.what());
     }
-
-    state_ptr->worker = std::thread(
-        [this, observer_id, domain, request, interval_ms, state_ptr]() {
-      Snapshot previous = BuildSnapshotForDomain(request, domain);
-      while (state_ptr->active.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
-        if (!state_ptr->active.load()) {
-          break;
-        }
-        Snapshot current = BuildSnapshotForDomain(request, domain);
-        if (current == previous) {
-          continue;
-        }
-
-        EncodableMap event;
-        event[EncodableValue("domain")] = EncodableValue(domain);
-        event[EncodableValue("changeType")] = EncodableValue("unknown");
-        event[EncodableValue("timestamp")] =
-            EncodableValue(std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                              std::chrono::system_clock::now().time_since_epoch())
-                                              .count()));
-        event[EncodableValue("ids")] = EncodableValue(ChangedIds(previous, current));
-        event[EncodableValue("source")] = EncodableValue("windows-host");
-        previous = std::move(current);
-
-        // Flutter accepts channel messages only on the platform thread.
-        dispatcher_.Post([this, observer_id, event = std::move(event)]() {
-          SendObserveEvent(observer_id, event);
-        });
-      }
-    });
-
-    return observer_id;
   }
 
   std::optional<FlutterError> ObserveStop(const std::string& observer_id) override {
-    std::unique_ptr<ObserverState> state;
-    {
-      std::lock_guard<std::mutex> lock(observers_mutex_);
-      auto it = observers_.find(observer_id);
-      if (it == observers_.end()) {
-        return std::nullopt;
-      }
-      state = std::move(it->second);
-      observers_.erase(it);
-    }
-    state->active.store(false);
-    if (state->worker.joinable()) {
-      state->worker.join();
-    }
+    observers_.Stop(observer_id);
     return std::nullopt;
   }
 
@@ -1225,51 +1114,34 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
   }
 
  private:
-  // Purpose: Send one observe event from the platform thread, unless the
-  // observer stopped after its worker queued the event.
+  // Purpose: Send one observe event to Dart. Runs on the platform thread.
+  // @param observer_id is the observer the event belongs to.
+  // @param event is the change event map.
+  // @returns Nothing.
+  // @throws Nothing.
   void SendObserveEvent(const std::string& observer_id, const EncodableMap& event) {
-    {
-      std::lock_guard<std::mutex> lock(observers_mutex_);
-      if (observers_.find(observer_id) == observers_.end()) {
-        return;
-      }
-    }
     flutter_api_.OnObserveEvent(
-        observer_id, event, []() {}, [](const FlutterError&) {});
-  }
-
-  void ShutdownObservers() {
-    std::vector<std::unique_ptr<ObserverState>> states;
-    {
-      std::lock_guard<std::mutex> lock(observers_mutex_);
-      for (auto& item : observers_) {
-        states.push_back(std::move(item.second));
-      }
-      observers_.clear();
-    }
-    for (auto& state : states) {
-      state->active.store(false);
-      if (state->worker.joinable()) {
-        state->worker.join();
-      }
-    }
+        observer_id, event, []() {},
+        [observer_id](const FlutterError& error) {
+          std::cerr << "simple_query_windows: Dart did not accept the observe "
+                       "event for "
+                    << observer_id << " (" << error.code() << ": "
+                    << error.message() << ").\n";
+        });
   }
 
   NativeQueryFlutterApi flutter_api_;
-  // Created on the platform thread with this object; see
-  // PlatformThreadDispatcher.
-  PlatformThreadDispatcher dispatcher_;
   int64_t handle_counter_ = 0;
-  int64_t observer_counter_ = 0;
   std::map<std::string, std::string> open_handles_;
-  std::map<std::string, std::unique_ptr<ObserverState>> observers_;
-  std::mutex observers_mutex_;
+  // Declared after flutter_api_ so it is destroyed first: its destructor
+  // stops every observer before the API it sends through goes away.
+  PollingObservers observers_;
 };
 
+// Each engine's registrar owns its own plugin and host API, so every engine's
+// events go to its own messenger.
 void SimpleQueryWindowsPlugin::RegisterWithRegistrar(
     flutter::PluginRegistrarWindows* registrar) {
-  // Each engine's registrar owns its own plugin and host API, so every
-  // engine's events go to its own messenger.
   registrar->AddPlugin(
       std::make_unique<SimpleQueryWindowsPlugin>(registrar->messenger()));
 }
