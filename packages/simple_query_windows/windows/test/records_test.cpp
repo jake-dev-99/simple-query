@@ -24,6 +24,7 @@
 #include "polling_observers.h"
 #include "stop_requested.h"
 #include "test/test_support.h"
+#include "windows_text.h"
 
 namespace simple_query_windows {
 namespace test {
@@ -92,6 +93,45 @@ TEST(FingerprintRecordsTest, ChangesWhenAMediaFileIsRewritten) {
   EXPECT_NE(before.at(PathToUtf8(photo)), list_media().at(PathToUtf8(photo)));
 }
 
+
+// Purpose: A same-size rewrite through a symlink changes file and media
+// fingerprints even when the target is outside the watched directory.
+TEST(FingerprintRecordsTest, FollowsSymlinkTargetsWhenReadingModificationTimes) {
+  TempDirectory watched;
+  TempDirectory outside;
+  const auto target = outside.WriteFile("target.jpg");
+  const auto link = watched.path() / "linked.jpg";
+  std::error_code error;
+  std::filesystem::create_symlink(target, link, error);
+  if (error == std::error_code(ERROR_PRIVILEGE_NOT_HELD, std::system_category())) {
+    GTEST_SKIP() << "Windows has not granted symbolic-link creation privilege";
+  }
+  ASSERT_FALSE(error) << ErrorCodeTextToUtf8(error);
+  const auto original_time = std::filesystem::last_write_time(target);
+  std::filesystem::last_write_time(target, original_time + 1h);
+
+  for (const bool media_only : {false, true}) {
+    const auto before = ListRecords({.root = watched.path(), .media_only = media_only});
+    ASSERT_FALSE(before.error.has_value()) << before.error.value_or("");
+    ASSERT_EQ(before.rows.size(), 1u);
+    const Snapshot original = FingerprintRecords(before.rows);
+
+    std::ofstream(target, std::ios::binary | std::ios::trunc) << "updated";
+    std::filesystem::last_write_time(target, original_time + 2h);
+    const auto after = ListRecords({.root = watched.path(), .media_only = media_only});
+    ASSERT_FALSE(after.error.has_value()) << after.error.value_or("");
+    ASSERT_EQ(after.rows.size(), 1u);
+    EXPECT_EQ(before.rows[0].at(EncodableValue("size")),
+              after.rows[0].at(EncodableValue("size")));
+    EXPECT_NE(original.at(PathToUtf8(link)),
+              FingerprintRecords(after.rows).at(PathToUtf8(link)));
+    std::filesystem::last_write_time(target, original_time + 1h);
+  }
+  std::filesystem::remove(target);
+  const auto removed = ListRecords({.root = watched.path()});
+  EXPECT_FALSE(removed.error.has_value()) << removed.error.value_or("");
+  EXPECT_TRUE(removed.rows.empty());
+}
 
 // Purpose: Changing a value inside a nested list changes the fingerprint,
 // so a contact whose second phone number changes is reported.
@@ -343,6 +383,61 @@ TEST(OwnedMessageErrorTest, KeepsItsMessageAfterItsSourceIsDestroyed) {
   }
 }
 
+// Purpose: Narrow Windows text is decoded using an explicit code page,
+// independent of the CI machine's active code page or display language.
+TEST(WindowsTextTest, ConvertsNonAsciiCodePageTextToUtf8) {
+  EXPECT_EQ(WindowsNarrowTextToUtf8("acc\xe8s refus\xe9", 1252),
+            "acc\xc3\xa8s refus\xc3\xa9");
+  EXPECT_EQ(WindowsNarrowTextToUtf8("\xe6\x8b\x92\xe7\xbb\x9d", CP_UTF8),
+            "\xe6\x8b\x92\xe7\xbb\x9d");
+  EXPECT_TRUE(WindowsNarrowTextToUtf8("", 1252).empty());
+}
+
+// Purpose: Invalid text explicitly declared as UTF-8 is rejected instead
+// of replacing it or sending malformed bytes to Dart.
+TEST(WindowsTextTest, RejectsInvalidUtf8) {
+  EXPECT_THROW(WindowsNarrowTextToUtf8("\xff", CP_UTF8), std::system_error);
+}
+
+// Purpose: Supply deterministic ANSI error text without changing the
+// process locale or Windows language.
+// @param none; the overrides describe their own parameters.
+// @returns Nothing; this is a class.
+// @throws Nothing; its members document their throws.
+class AnsiErrorCategory : public std::error_category {
+ public:
+  // Purpose: Name the test category.
+  // @returns Its stable category name.
+  // @throws Nothing.
+  const char* name() const noexcept override { return "ansi-test"; }
+
+  // Purpose: Give a non-ASCII Windows-1252 diagnostic.
+  // @param value is the error number; all fixture numbers share one text.
+  // @returns The diagnostic as Windows-1252 bytes.
+  // @throws std::bad_alloc when allocation fails.
+  std::string message(int /*value*/) const override { return "acc\xe8s refus\xe9"; }
+};
+
+// Purpose: The exception boundary converts an error code's ANSI message
+// before Dart decodes it as UTF-8, without reading a system_error's what().
+TEST(ExceptionTextTest, ConvertsSystemErrorCodeTextToUtf8) {
+  const AnsiErrorCategory category;
+  const std::error_code code(5, category);
+  EXPECT_EQ(ExceptionText(std::system_error(code), 1252),
+            "acc\xc3\xa8s refus\xc3\xa9");
+  EXPECT_EQ(ErrorCodeTextToUtf8(code, 1252), "acc\xc3\xa8s refus\xc3\xa9");
+  EXPECT_EQ(code.value(), 5);
+  EXPECT_EQ(&code.category(), &category);
+}
+
+// Purpose: UTF-8 text already owned by the plugin survives exception
+// serialization unchanged, rather than being decoded as ANSI a second time.
+TEST(ExceptionTextTest, PreservesOwnedUtf8Messages) {
+  EXPECT_EQ(ExceptionText(OwnedMessageError<std::runtime_error>(
+                "acc\xc3\xa8s refus\xc3\xa9")),
+            "acc\xc3\xa8s refus\xc3\xa9");
+}
+
 // Purpose: A std::system_error built from run-time text, then copied, reads
 // as its code's message. Under Flutter's _HAS_EXCEPTIONS=0, its what() would
 // point at the freed text.
@@ -357,7 +452,7 @@ TEST(ExceptionTextTest, GivesASystemErrorsCodeMessage) {
     copied = error;
   }
   ASSERT_TRUE(copied.has_value());
-  EXPECT_EQ(ExceptionText(*copied), code.message());
+  EXPECT_EQ(ExceptionText(*copied), WindowsNarrowTextToUtf8(code.message()));
 }
 
 // Purpose: Any other exception reads as its own what().

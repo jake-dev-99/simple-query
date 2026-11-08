@@ -674,6 +674,101 @@ TEST(SimpleQueryWindowsPluginTest, ReportsAMissingBinaryAsUnavailable) {
   EXPECT_NE(std::get<std::string>(reply.at(1)).find("Query again"), std::string::npos);
 }
 
+// Purpose: Relative mutation roots are captured on the platform thread,
+// keeping queued work tied to the caller's original directory.
+TEST(SimpleQueryWindowsPluginTest, CapturesRelativeMutationRootsBeforeQueueing) {
+  FakeMessenger messenger;
+  TempDirectory original;
+  TempDirectory later;
+  const auto original_root = original.path() / "scope";
+  const auto later_root = later.path() / "scope";
+  std::filesystem::create_directories(original_root);
+  std::filesystem::create_directories(later_root);
+  const auto original_file = original_root / "target.txt";
+  const auto later_file = later_root / "target.txt";
+  std::ofstream(original_file) << "original";
+  std::ofstream(later_file) << "later";
+  int directory_reads = 0;
+  std::thread::id resolution_thread;
+  DetachedThreadsDrain drain;
+  SimpleQueryWindowsPlugin plugin(&messenger, {
+      .current_directory = [&]() {
+        resolution_thread = std::this_thread::get_id();
+        return ++directory_reads == 1 ? original.path() : later.path();
+      }});
+  const EncodableMap request{
+      {EncodableValue("domain"), EncodableValue("files")},
+      {EncodableValue("type"), EncodableValue("update")},
+      {EncodableValue("platformData"), EncodableValue(EncodableMap{
+          {EncodableValue("rootPath"), EncodableValue("scope")}})},
+      {EncodableValue("filters"), EncodableValue(EncodableList{EncodableValue(EncodableMap{
+          {EncodableValue("field"), EncodableValue("name")},
+          {EncodableValue("operator"), EncodableValue("equals")},
+          {EncodableValue("value"), EncodableValue("target.txt")}})})},
+      {EncodableValue("values"), EncodableValue(EncodableMap{
+          {EncodableValue("content"), EncodableValue("replaced")}})}};
+
+  const auto reply = messenger.CallHost("mutate", EncodableList{EncodableValue(request)});
+  ASSERT_EQ(reply.size(), 1u);
+  EXPECT_EQ(resolution_thread, std::this_thread::get_id());
+  EXPECT_EQ(directory_reads, 1);
+  std::string original_text;
+  std::string later_text;
+  std::ifstream(original_file) >> original_text;
+  std::ifstream(later_file) >> later_text;
+  EXPECT_EQ(original_text, "replaced");
+  EXPECT_EQ(later_text, "later");
+}
+
+// Purpose: Observer filters cover the baseline and later polls, so unrelated
+// files never appear in a filtered subscription's event ids.
+TEST(SimpleQueryWindowsPluginTest, ObservesOnlyRecordsMatchingItsFilters) {
+  FakeMessenger messenger;
+  TempDirectory directory;
+  const auto watched = directory.WriteFile("watched.txt");
+  directory.WriteFile("existing-other.txt");
+  DetachedThreadsDrain drain;
+  SimpleQueryWindowsPlugin plugin(&messenger);
+  const EncodableMap request{
+      {EncodableValue("domain"), EncodableValue("files")},
+      {EncodableValue("pollingIntervalMs"), EncodableValue(kPluginFastPollMs)},
+      {EncodableValue("platformData"), EncodableValue(EncodableMap{
+          {EncodableValue("rootPath"), EncodableValue(PathToUtf8(directory.path()))}})},
+      {EncodableValue("filters"), EncodableValue(EncodableList{EncodableValue(EncodableMap{
+          {EncodableValue("field"), EncodableValue("name")},
+          {EncodableValue("operator"), EncodableValue("equals")},
+          {EncodableValue("value"), EncodableValue("watched.txt")}})})}};
+  const auto reply = messenger.CallHost("observeStart", EncodableList{EncodableValue(request)});
+  ASSERT_EQ(reply.size(), 1u);
+  const auto observer_id = std::get<std::string>(reply[0]);
+  directory.WriteFile("new-other.txt");
+  std::ofstream(watched, std::ios::app) << "larger";
+
+  ASSERT_TRUE(PumpUntil([&]() { return !messenger.ObserveEvents().empty(); }, kDeliveryTimeout));
+  const auto events = messenger.ObserveEvents();
+  ASSERT_EQ(events.size(), 1u);
+  EXPECT_EQ(IdsOf(events[0].event), (std::vector<std::string>{PathToUtf8(watched)}));
+  messenger.CallHost("observeStop", EncodableList{EncodableValue(observer_id)});
+}
+
+// Purpose: Invalid observer filters fail before starting any observer.
+TEST(SimpleQueryWindowsPluginTest, RejectsMalformedObserverFilters) {
+  FakeMessenger messenger;
+  TempDirectory directory;
+  DetachedThreadsDrain drain;
+  SimpleQueryWindowsPlugin plugin(&messenger);
+  EncodableMap request = FilesQuery(directory.path());
+  request[EncodableValue("filters")] = EncodableValue("not a list");
+
+  const auto reply = messenger.CallHost("observeStart", EncodableList{EncodableValue(request)});
+
+  EXPECT_EQ(ErrorCodeOf(reply), "invalid-query");
+  const auto observer_id = StartFileObserver({.messenger = messenger,
+      .root = directory.path(), .polling_interval_ms = kPluginLongPollMs});
+  EXPECT_EQ(observer_id, "windows_observer_1");
+  messenger.CallHost("observeStop", EncodableList{EncodableValue(observer_id)});
+}
+
 }  // namespace
 }  // namespace test
 }  // namespace simple_query_windows

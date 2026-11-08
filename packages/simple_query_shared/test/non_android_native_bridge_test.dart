@@ -94,4 +94,53 @@ void main() {
     expect(filter.containsKey('value'), isTrue);
     expect(filter['value'], isNull);
   });
+  // Purpose: Projected native records contain only requested fields, and
+  // required fields are still checked when requested or unprojected.
+  test('queryOrNull validates required keys in projection context', () async {
+    TestWidgetsFlutterBinding.ensureInitialized();
+    final bridge = NonAndroidNativeBridge(
+      isCurrentPlatform: () => true,
+      setupFlutterApi: () {},
+      getCapabilities: () async => <String?, Object?>{},
+      query: (_) async => <String?, Object?>{
+        'records': <Object?>[
+          <String, Object?>{'name': 'notes.txt'},
+        ],
+      },
+      mutate: (_) async => <String?, Object?>{},
+      batch: (_) async => <String?, Object?>{},
+      observeStart: (_) async => 'subscription',
+      observeStop: (_) async {},
+      openBinary: (_) async => <String?, Object?>{},
+      closeBinary: (_) async {},
+      callExtension: (_, __, ___) async => null,
+      nativeDomainSupported: (_) => true,
+    );
+
+    final result = await bridge.queryOrNull(const QueryRequest(
+      domain: QueryDomain.files,
+      projection: <String>['name'],
+    ));
+    expect(result!.records, <QueryRecord>[
+      <String, Object?>{'name': 'notes.txt'},
+    ]);
+
+    for (final projection in <List<String>?>[
+      null,
+      <String>[],
+      <String>['name', 'id'],
+    ]) {
+      await expectLater(
+        bridge.queryOrNull(QueryRequest(
+          domain: QueryDomain.files,
+          projection: projection,
+        )),
+        throwsA(isA<SimpleQueryError>().having(
+          (error) => error.code,
+          'code',
+          SimpleQueryErrorCode.unavailable,
+        )),
+      );
+    }
+  });
 }

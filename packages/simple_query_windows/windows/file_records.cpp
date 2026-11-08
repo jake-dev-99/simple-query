@@ -21,10 +21,10 @@ using flutter::EncodableMap;
 using flutter::EncodableValue;
 
 // Purpose: Hold the creation and last write times of one entry.
-// @param created is the creation time from GetFileAttributesExW. The
+// @param created is the target creation time from GetFileTime. The
 // standard library cannot read it.
 // @param modified is the last write time from the same Windows call, so
-// both times share one epoch.
+// both times share one epoch and follow symbolic links just like size.
 // @returns Nothing; this is a data type.
 // @throws Nothing.
 struct EntryTimes {
@@ -113,13 +113,30 @@ std::chrono::system_clock::time_point TimeFromFileTime(const FILETIME& time) {
 // @throws Nothing.
 std::optional<EntryTimes> ReadEntryTimes(const std::filesystem::path& path,
                                          std::error_code& error) {
-  WIN32_FILE_ATTRIBUTE_DATA data{};
-  if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data) == 0) {
+  // Omit FILE_FLAG_OPEN_REPARSE_POINT so metadata follows a symbolic
+  // link, matching directory_entry::file_size and is_directory. Backup
+  // semantics permits opening a directory for its timestamps as well.
+  const HANDLE handle = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES,
+                                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                    nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS,
+                                    nullptr);
+  if (handle == INVALID_HANDLE_VALUE) {
     error = std::error_code(static_cast<int>(GetLastError()), std::system_category());
     return std::nullopt;
   }
-  return EntryTimes{.created = TimeFromFileTime(data.ftCreationTime),
-                    .modified = TimeFromFileTime(data.ftLastWriteTime)};
+  FILETIME created{};
+  FILETIME modified{};
+  const bool read = GetFileTime(handle, &created, nullptr, &modified) != 0;
+  const DWORD read_error = read ? ERROR_SUCCESS : GetLastError();
+  const bool closed = CloseHandle(handle) != 0;
+  if (!read || !closed) {
+    error = std::error_code(static_cast<int>(read ? GetLastError() : read_error),
+                            std::system_category());
+    return std::nullopt;
+  }
+  error.clear();
+  return EntryTimes{.created = TimeFromFileTime(created),
+                    .modified = TimeFromFileTime(modified)};
 }
 
 // Purpose: Build the media row for one entry.

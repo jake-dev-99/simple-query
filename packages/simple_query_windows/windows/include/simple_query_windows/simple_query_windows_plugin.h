@@ -15,6 +15,7 @@ class NativeQueryHostApiImpl;
 // Purpose: Give the plugin its reads of the process environment, so tests
 // can supply their own.
 // @param current_directory returns the process working directory.
+// @param absolute_path captures an absolute path on the platform thread.
 // @returns Nothing; this is a data type.
 // @throws Nothing; callbacks document what they throw.
 struct PluginEffects {
@@ -23,6 +24,9 @@ struct PluginEffects {
   std::function<std::filesystem::path()> current_directory = []() {
     return std::filesystem::current_path();
   };
+  // Resolves drive-relative and ordinary paths before work is queued.
+  std::function<std::filesystem::path(const std::filesystem::path&)> absolute_path =
+      [](const std::filesystem::path& path) { return std::filesystem::absolute(path); };
 };
 
 // Purpose: Serve simple_query's Windows host API for one Flutter engine.

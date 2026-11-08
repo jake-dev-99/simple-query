@@ -20,6 +20,7 @@
 #include <flutter/plugin_registrar_windows.h>
 
 #include "background_calls.h"
+#include "deferred_host_call.h"
 #include "host_call_work.h"
 #include "boundary_formats.h"
 #include "detached_threads.h"
@@ -62,22 +63,25 @@ int64_t EpochMsNow() {
 // UTF-8, so the path is converted explicitly rather than through the system
 // code page.
 // @param request is the request; platformData.rootPath names the directory.
-// @param current_directory reads the working directory, used when the
-// request names none.
+// @param effects reads the working directory and captures absolute paths.
 // @returns The named directory, or the working directory.
 // @throws std::system_error when the named path is not valid UTF-8 or the
 // working directory cannot be read.
 std::filesystem::path ResolveRootPath(
     const EncodableMap& request,
-    const std::function<std::filesystem::path()>& current_directory) {
+    const PluginEffects& effects) {
   const EncodableMap* platform_data = MapAt(request, "platformData");
   if (platform_data != nullptr) {
     const auto root = StringAt(*platform_data, "rootPath");
     if (root.has_value() && !root->empty()) {
-      return PathFromUtf8(*root);
+      const auto path = PathFromUtf8(*root);
+      if (path.is_absolute()) {
+        return path;
+      }
+      return effects.absolute_path(effects.current_directory() / path);
     }
   }
-  return current_directory();
+  return effects.absolute_path(effects.current_directory());
 }
 
 // Purpose: Reject arguments for an extension method that takes none.
@@ -213,23 +217,6 @@ FlutterError NotQueuedError(EnqueueResult result) {
   throw std::logic_error("simple_query_windows: a queued call has no refusal error");
 }
 
-// Purpose: Describe one host call split between the background worker and
-// the platform thread.
-// @param work runs on the background worker. It must not throw, and must
-// hold by copy everything it reads, because the plugin can be destroyed
-// while it runs.
-// @param finish runs on the platform thread with work's value and builds the
-// reply.
-// @param result is Pigeon's reply callback. It runs on the platform thread.
-// @returns Nothing; this is a data type.
-// @throws Nothing.
-template <typename Value, typename Reply>
-struct BackgroundCall {
-  std::function<Value(const StopRequested&)> work;
-  std::function<ErrorOr<Reply>(Value)> finish;
-  std::function<void(ErrorOr<Reply>)> result;
-};
-
 }  // namespace
 
 // Purpose: Answer one engine's simple_query host calls on Windows.
@@ -248,7 +235,7 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
   // @throws Nothing.
   NativeQueryHostApiImpl(flutter::BinaryMessenger* messenger,
                          PluginEffects effects)
-      : current_directory_(std::move(effects.current_directory)),
+      : effects_(std::move(effects)),
         event_sender_(messenger),
         observers_({.send_event =
                         [this](ObserveEvent event) { event_sender_.Send(std::move(event)); },
@@ -303,8 +290,9 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
   void Mutate(const EncodableMap& request,
               std::function<void(ErrorOr<EncodableMap> reply)> result) override {
     RunInBackground<EncodableMap>(
-        [request, root = ResolveRoot(request)](const StopRequested&) {
-          return MutateRequest(request, root);
+        [request, root = ResolveRoot(request)](const StopRequested& stop_requested) {
+          return MutateRequest({.request = request, .root = root,
+                                .stop_requested = stop_requested});
         },
         std::move(result));
   }
@@ -459,7 +447,7 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
           std::move(result));
     }
     if (qualified == "windows.storage.resolveKnownFolders") {
-      return result(ResolveKnownFolders(args, current_directory_));
+      return result(ResolveKnownFolders(args, effects_.current_directory));
     }
     if (qualified == "windows.storage.listLibraries") {
       if (auto rejected = RejectArguments(args, qualified)) {
@@ -482,14 +470,7 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
   template <typename Value, typename Reply>
   void RunInBackground(BackgroundCall<Value, Reply> call) {
     std::function<void(ErrorOr<Reply>)> refused = call.result;
-    BackgroundJob job = [work = std::move(call.work), finish = std::move(call.finish),
-                         result = std::move(call.result)](
-                            const StopRequested& stop_requested) -> std::function<void()> {
-      Value value = work(stop_requested);
-      return [finish, result, value = std::move(value)]() mutable {
-        result(finish(std::move(value)));
-      };
-    };
+    BackgroundJob job = MakeBackgroundJob(std::move(call));
     const EnqueueResult queued = background_calls_.Enqueue(
         std::move(job), [result = refused]() {
           result(FlutterError(
@@ -523,7 +504,7 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
   // @throws Nothing.
   ResolvedRoot ResolveRoot(const EncodableMap& request) {
     try {
-      return {.path = ResolveRootPath(request, current_directory_), .error = std::nullopt};
+      return {.path = ResolveRootPath(request, effects_), .error = std::nullopt};
     } catch (const std::system_error& error) {
       return {.path = std::nullopt, .error = error};
     }
@@ -550,6 +531,11 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
     if (auto* invalid = std::get_if<FlutterError>(&interval)) {
       return *invalid;
     }
+    auto parsed_filters = ParseFilters(request);
+    if (auto* invalid = std::get_if<std::string>(&parsed_filters)) {
+      return FlutterError("invalid-query", *invalid);
+    }
+    auto filters = std::get<std::vector<QueryFilter>>(std::move(parsed_filters));
     // Only files and media read a root. It is resolved once, here, so the
     // worker keeps only what its snapshots read.
     std::filesystem::path root;
@@ -568,9 +554,10 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
         .domain = *domain,
         .polling_interval = std::get<std::chrono::milliseconds>(interval),
         .take_snapshot =
-            [root, domain = *domain](const StopRequested& stop_requested) {
+            [root, domain = *domain, filters = std::move(filters)](const StopRequested& stop_requested) {
               return BuildSnapshotForDomain(
-                  {.root = root, .domain = domain, .stop_requested = stop_requested});
+                  {.root = root, .domain = domain, .stop_requested = stop_requested,
+                   .filters = &filters});
             },
     };
   }
@@ -622,7 +609,7 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
   }
 
   // Read only on the platform thread.
-  const std::function<std::filesystem::path()> current_directory_;
+  const PluginEffects effects_;
   ObserveEventSender event_sender_;
   int64_t handle_counter_ = 0;
   std::map<std::string, std::filesystem::path> open_handles_;

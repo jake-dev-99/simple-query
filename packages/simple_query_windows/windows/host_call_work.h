@@ -101,13 +101,24 @@ struct ValidatedQuery {
 // @throws Nothing.
 ErrorOr<flutter::EncodableMap> RunQuery(const ValidatedQuery& query, const StopRequested& stop_requested);
 
+// Purpose: Borrow one validated mutation and its cancellation signal.
+// @param request is retained by the caller throughout execution.
+// @param root was resolved before the call entered the background queue.
+// @param stop_requested prevents subsequent targets once teardown or timeout starts.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
+struct HostMutation {
+  const flutter::EncodableMap& request;
+  const ResolvedRoot& root;
+  const StopRequested& stop_requested;
+};
+
 // Purpose: Run one files or media mutation request.
-// @param request names the domain, the mutation type and its values.
-// @param root is the request's root, resolved on the platform thread.
+// @param mutation names the request, captured root and stop signal.
 // @returns The affected count, or an error for an invalid request, another
 // domain, or a filesystem step that failed.
 // @throws Nothing.
-ErrorOr<flutter::EncodableMap> MutateRequest(const flutter::EncodableMap& request, const ResolvedRoot& root);
+ErrorOr<flutter::EncodableMap> MutateRequest(const HostMutation& mutation);
 
 // Purpose: Hold one batch operation and its root.
 // @param request is owned by the operation. It is built from one batch
@@ -132,7 +143,7 @@ ErrorOr<flutter::EncodableMap> RunBatch(const std::vector<BatchOperation>& opera
 // handle.
 // @param path is the file's path.
 // @returns The UTF-8 path, MIME type, size and metadata, or unavailable when
-// the file is missing or its metadata cannot be read.
+// the path is not a regular file or its metadata cannot be read.
 // @throws Nothing.
 ErrorOr<flutter::EncodableMap> DescribeBinaryFile(const std::filesystem::path& path);
 

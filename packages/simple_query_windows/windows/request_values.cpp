@@ -1,5 +1,6 @@
 #include "request_values.h"
 
+#include <cmath>
 #include <variant>
 
 namespace simple_query_windows {
@@ -58,7 +59,7 @@ std::optional<std::string> AsString(const EncodableValue* value) {
 // Purpose: Read a numeric request value as an integer.
 // @param value is the value, or null.
 // @returns The value, truncated when it is a double, or nothing when it is
-// absent or not a number.
+// absent, not finite, outside int64 range, or not a number.
 // @throws Nothing.
 std::optional<int64_t> AsInt(const EncodableValue* value) {
   if (value == nullptr) {
@@ -71,6 +72,12 @@ std::optional<int64_t> AsInt(const EncodableValue* value) {
     return *i64;
   }
   if (const auto* number = std::get_if<double>(value)) {
+    // double(INT64_MAX) is 2^63, so the upper bound must be exclusive.
+    const bool safely_representable =
+        std::isfinite(*number) && *number >= -0x1p63 && *number < 0x1p63;
+    if (!safely_representable) {
+      return std::nullopt;
+    }
     return static_cast<int64_t>(*number);
   }
   return std::nullopt;

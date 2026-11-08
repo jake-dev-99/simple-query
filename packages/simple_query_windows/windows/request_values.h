@@ -33,7 +33,7 @@ std::optional<std::string> AsString(const flutter::EncodableValue* value);
 // Purpose: Read a numeric request value as an integer.
 // @param value is the value, or null.
 // @returns The value, truncated when it is a double, or nothing when it is
-// absent or not a number.
+// absent, not finite, outside int64 range, or not a number.
 // @throws Nothing.
 std::optional<int64_t> AsInt(const flutter::EncodableValue* value);
 

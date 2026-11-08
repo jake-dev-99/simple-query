@@ -59,7 +59,7 @@ struct FilesystemFailure {
 // @param failure names the step, the path and the system error.
 // @returns The error text.
 // @throws std::system_error when the path holds UTF-16 that is not valid
-// Unicode.
+// Unicode or Windows cannot convert the error diagnostic.
 std::string DescribeFilesystemFailure(const FilesystemFailure& failure);
 
 }  // namespace simple_query_windows

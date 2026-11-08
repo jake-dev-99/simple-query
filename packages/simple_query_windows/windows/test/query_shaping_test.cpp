@@ -7,6 +7,7 @@
 #include <flutter/encodable_value.h>
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -14,6 +15,8 @@
 #include <variant>
 #include <utility>
 #include <vector>
+
+#include "request_values.h"
 
 namespace simple_query_windows {
 namespace test {
@@ -359,6 +362,116 @@ TEST(QueryShapingTest, ProjectsFieldsAndRejectsNonTextNames) {
   EXPECT_TRUE(record.at(EncodableValue("size")).IsNull());
   EXPECT_TRUE(std::holds_alternative<std::string>(ParseQueryShape(
       {{EncodableValue("projection"), EncodableValue(EncodableList{EncodableValue(7)})}})));
+}
+
+// Purpose: Mixed integer/double comparisons keep integers above 2^53 exact.
+TEST(QueryShapingTest, OrdersMixedNumbersWithoutRoundingIntegers) {
+  const std::vector<EncodableMap> rows{
+      Row("integer", {"size", EncodableValue(int64_t{9007199254740993})}),
+      Row("double", {"size", EncodableValue(9007199254740992.0)}),
+      Row("smaller", {"size", EncodableValue(int64_t{9007199254740992})})};
+  const EncodableMap sort{{EncodableValue("field"), EncodableValue("size")}};
+  const EncodableMap request{{EncodableValue("sort"), EncodableValue(EncodableList{EncodableValue(sort)})}};
+  EXPECT_EQ(IdsOf(Shape(rows, request)), (std::vector<std::string>{"double", "smaller", "integer"}));
+  EXPECT_EQ(IdsOf(Shape(rows, RequestWithFilter({.field = "size", .op = "equals", .value = EncodableValue(9007199254740992.0)}))),
+            (std::vector<std::string>{"double", "smaller"}));
+  EXPECT_EQ(IdsOf(Shape(rows, RequestWithFilter({.field = "size", .op = "greaterThan", .value = EncodableValue(9007199254740992.0)}))),
+            (std::vector<std::string>{"integer"}));
+}
+
+// Purpose: Mixed numbers compare at int64 boundaries and across fractions.
+TEST(QueryShapingTest, ComparesMixedNumbersAtBoundsAndFractions) {
+  const std::vector<EncodableMap> rows{
+      Row("max", {"size", EncodableValue(std::numeric_limits<int64_t>::max())}),
+      Row("min", {"size", EncodableValue(std::numeric_limits<int64_t>::min())}),
+      Row("negative", {"size", EncodableValue(int64_t{-1})}),
+      Row("positive", {"size", EncodableValue(int64_t{1})})};
+  EXPECT_TRUE(IdsOf(Shape(rows, RequestWithFilter({.field = "size", .op = "equals", .value = EncodableValue(0x1p63)}))).empty());
+  EXPECT_EQ(IdsOf(Shape(rows, RequestWithFilter({.field = "size", .op = "equals", .value = EncodableValue(-0x1p63)}))),
+            (std::vector<std::string>{"min"}));
+  EXPECT_EQ(IdsOf(Shape(rows, RequestWithFilter({.field = "size", .op = "lessThan", .value = EncodableValue(-1.5)}))),
+            (std::vector<std::string>{"min"}));
+  EXPECT_EQ(IdsOf(Shape(rows, RequestWithFilter({.field = "size", .op = "greaterThan", .value = EncodableValue(1.5)}))),
+            (std::vector<std::string>{"max"}));
+}
+
+// Purpose: Equality and membership never coerce strings, numbers or bools.
+TEST(QueryShapingTest, KeepsScalarKindsDistinctForEqualityAndMembership) {
+  const std::vector<EncodableMap> rows{
+      Row("text", {"value", EncodableValue("1")}),
+      Row("integer", {"value", EncodableValue(int64_t{1})}),
+      Row("double", {"value", EncodableValue(1.0)}),
+      Row("bool", {"value", EncodableValue(true)}),
+      Row("bool_text", {"value", EncodableValue("true")})};
+  for (const std::string op : {"equals", "inList"}) {
+    const EncodableValue expected = op == "inList"
+        ? EncodableValue(EncodableList{EncodableValue("1")}) : EncodableValue("1");
+    EXPECT_EQ(IdsOf(Shape(rows, RequestWithFilter({.field = "value", .op = op, .value = expected}))),
+              (std::vector<std::string>{"text"}));
+  }
+  EXPECT_EQ(IdsOf(Shape(rows, RequestWithFilter({.field = "value", .op = "equals", .value = EncodableValue(true)}))),
+            (std::vector<std::string>{"bool"}));
+  EXPECT_EQ(IdsOf(Shape(rows, RequestWithFilter({.field = "value", .op = "inList", .value = EncodableValue(EncodableList{EncodableValue(1.0)})}))),
+            (std::vector<std::string>{"integer", "double"}));
+}
+
+// Purpose: Every sort key breaks ties in request order before paging.
+TEST(QueryShapingTest, AppliesEverySortKeyBeforePaging) {
+  const std::vector<EncodableMap> rows{
+      {{EncodableValue("id"), EncodableValue("a")}, {EncodableValue("group"), EncodableValue(1)}, {EncodableValue("rank"), EncodableValue(1)}},
+      {{EncodableValue("id"), EncodableValue("b")}, {EncodableValue("group"), EncodableValue(1)}, {EncodableValue("rank"), EncodableValue(2)}},
+      {{EncodableValue("id"), EncodableValue("c")}, {EncodableValue("group"), EncodableValue(0)}, {EncodableValue("rank"), EncodableValue(1)}}};
+  const EncodableList sort{
+      EncodableValue(EncodableMap{{EncodableValue("field"), EncodableValue("group")}}),
+      EncodableValue(EncodableMap{{EncodableValue("field"), EncodableValue("rank")}, {EncodableValue("direction"), EncodableValue("descending")}})};
+  const EncodableMap page{{EncodableValue("offset"), EncodableValue(1)}, {EncodableValue("limit"), EncodableValue(1)}};
+  EXPECT_EQ(IdsOf(Shape(rows, {{EncodableValue("sort"), EncodableValue(sort)}, {EncodableValue("page"), EncodableValue(page)}})),
+            (std::vector<std::string>{"b"}));
+  EncodableList invalid = sort;
+  invalid.push_back(EncodableValue(EncodableMap{{EncodableValue("field"), EncodableValue("id")}, {EncodableValue("direction"), EncodableValue("sideways")}}));
+  EXPECT_TRUE(std::holds_alternative<std::string>(ParseQueryShape({{EncodableValue("sort"), EncodableValue(invalid)}})));
+}
+
+// Purpose: Page numbers reject fractions and doubles outside int64 safely.
+TEST(QueryShapingTest, RejectsFractionalAndOutOfRangePages) {
+  const std::vector<double> invalid{0.5, -0.5, 0x1p63, -0x1.0000000000001p63,
+      std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity(),
+      -std::numeric_limits<double>::infinity()};
+  for (const std::string key : {"offset", "limit"}) {
+    for (const double value : invalid) {
+      SCOPED_TRACE(key + ": " + std::to_string(value));
+      const EncodableMap page{{EncodableValue(key), EncodableValue(value)}};
+      EXPECT_TRUE(std::holds_alternative<std::string>(ParseQueryShape({{EncodableValue("page"), EncodableValue(page)}})));
+    }
+  }
+}
+
+// Purpose: Empty pages with zero or negative limits cannot repeat a token.
+TEST(QueryShapingTest, OmitsNonAdvancingPageTokens) {
+  const std::vector<EncodableMap> rows{Row("a", {"size", EncodableValue(1)}), Row("b", {"size", EncodableValue(2)})};
+  for (const int limit : {0, -1}) {
+    const EncodableMap page{{EncodableValue("offset"), EncodableValue(1)}, {EncodableValue("limit"), EncodableValue(limit)}};
+    const auto result = Shape(rows, {{EncodableValue("page"), EncodableValue(page)}});
+    EXPECT_TRUE(IdsOf(result).empty());
+    EXPECT_EQ(result.count(EncodableValue("nextOffset")), 0u);
+  }
+}
+
+// Purpose: Integer conversion rejects unsafe doubles without a cast overflow.
+TEST(QueryShapingTest, ConvertsOnlyFiniteDoublesInInt64Range) {
+  const std::vector<double> invalid{0x1p63, -0x1.0000000000001p63,
+      std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity(),
+      -std::numeric_limits<double>::infinity()};
+  for (const double number : invalid) {
+    const EncodableValue value(number);
+    EXPECT_FALSE(AsInt(&value).has_value());
+  }
+  const EncodableValue minimum(-0x1p63);
+  const EncodableValue below_maximum(std::nextafter(0x1p63, 0.0));
+  const EncodableValue fraction(-1.75);
+  EXPECT_EQ(AsInt(&minimum), std::numeric_limits<int64_t>::min());
+  EXPECT_EQ(AsInt(&below_maximum), int64_t{9223372036854774784});
+  EXPECT_EQ(AsInt(&fraction), int64_t{-1});
 }
 
 }  // namespace

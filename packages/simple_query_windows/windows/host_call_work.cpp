@@ -276,12 +276,12 @@ ErrorOr<EncodableMap> RunQuery(const ValidatedQuery& query, const StopRequested&
 }
 
 // Purpose: Run one files or media mutation request.
-// @param request names the domain, the mutation type and its values.
-// @param root is the request's root, resolved on the platform thread.
+// @param mutation names the request, captured root and stop signal.
 // @returns The affected count, or an error for an invalid request, another
 // domain, or a filesystem step that failed.
 // @throws Nothing.
-ErrorOr<EncodableMap> MutateRequest(const EncodableMap& request, const ResolvedRoot& root) {
+ErrorOr<EncodableMap> MutateRequest(const HostMutation& mutation) {
+  const EncodableMap& request = mutation.request;
   const std::optional<std::string> domain = StringAt(request, "domain");
   if (!domain.has_value()) {
     return MissingDomainError();
@@ -289,8 +289,9 @@ ErrorOr<EncodableMap> MutateRequest(const EncodableMap& request, const ResolvedR
   if (!IsFileDomain(*domain)) {
     return NotSupportedError("mutate", *domain);
   }
-  const std::function<std::filesystem::path()> resolve_root = RootResolver(root);
-  return MutateFiles({.request = request, .domain = *domain, .resolve_root = resolve_root});
+  const std::function<std::filesystem::path()> resolve_root = RootResolver(mutation.root);
+  return MutateFiles({.request = request, .domain = *domain, .resolve_root = resolve_root,
+                      .stop_requested = mutation.stop_requested});
 }
 
 // Purpose: Run batch operations in order, stopping at the first failure.
@@ -305,7 +306,8 @@ ErrorOr<EncodableMap> RunBatch(const std::vector<BatchOperation>& operations,
     if (IsStopRequested(stop_requested)) {
       return FlutterError("unavailable", kReadStoppedError);
     }
-    ErrorOr<EncodableMap> result = MutateRequest(operation.request, operation.root);
+    ErrorOr<EncodableMap> result = MutateRequest({.request = operation.request, .root = operation.root,
+                                      .stop_requested = stop_requested});
     if (result.has_error()) {
       return result.error();
     }
@@ -320,7 +322,7 @@ ErrorOr<EncodableMap> RunBatch(const std::vector<BatchOperation>& operations,
 // handle.
 // @param path is the file's path.
 // @returns The UTF-8 path, MIME type, size and metadata, or unavailable when
-// the file is missing or its metadata cannot be read.
+// the path is not a regular file or its metadata cannot be read.
 // @throws Nothing.
 ErrorOr<EncodableMap> DescribeBinaryFile(const std::filesystem::path& path) {
   try {
@@ -331,16 +333,19 @@ ErrorOr<EncodableMap> DescribeBinaryFile(const std::filesystem::path& path) {
                           "simple_query: openBinary found no file at " + PathToUtf8(path) +
                               ". Query again for its current path.");
     }
-    EncodableMap result;
-    if (std::filesystem::is_regular_file(status)) {
-      const auto size = std::filesystem::file_size(path, error);
-      if (error) {
-        return FlutterError("unavailable", "simple_query: openBinary could not read the "
-                                           "size of " + PathToUtf8(path) + " - " +
-                                               error.message());
-      }
-      result[EncodableValue("size")] = EncodableValue(static_cast<int64_t>(size));
+    if (!std::filesystem::is_regular_file(status)) {
+      return FlutterError("unavailable",
+                          "simple_query: openBinary requires a regular file at " +
+                              PathToUtf8(path) + ". Query again for a readable file.");
     }
+    const auto size = std::filesystem::file_size(path, error);
+    if (error) {
+      return FlutterError("unavailable", "simple_query: openBinary could not read the "
+                                         "size of " + PathToUtf8(path) + " - " +
+                                             ErrorCodeTextToUtf8(error));
+    }
+    EncodableMap result;
+    result[EncodableValue("size")] = EncodableValue(static_cast<int64_t>(size));
     result[EncodableValue("localPath")] = EncodableValue(PathToUtf8(path));
     result[EncodableValue("mimeType")] = EncodableValue(MimeFromPath(path));
     EncodableMap metadata;

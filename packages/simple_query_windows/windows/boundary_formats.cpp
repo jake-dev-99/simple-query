@@ -2,6 +2,8 @@
 
 #include <cstdio>
 
+#include "windows_text.h"
+
 namespace simple_query_windows {
 
 namespace {
@@ -72,10 +74,10 @@ std::string FormatIsoUtc(std::chrono::system_clock::time_point instant) {
 // @param failure names the step, the path and the system error.
 // @returns The error text.
 // @throws std::system_error when the path holds UTF-16 that is not valid
-// Unicode.
+// Unicode or Windows cannot convert the error diagnostic.
 std::string DescribeFilesystemFailure(const FilesystemFailure& failure) {
   return "simple_query: windows filesystem " + std::string(failure.operation) +
-         " failed for " + PathToUtf8(failure.path) + " - " + failure.error.message();
+         " failed for " + PathToUtf8(failure.path) + " - " + ErrorCodeTextToUtf8(failure.error);
 }
 
 }  // namespace simple_query_windows

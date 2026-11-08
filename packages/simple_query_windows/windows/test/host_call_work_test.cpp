@@ -13,7 +13,9 @@
 #include <utility>
 #include <variant>
 
+#include "boundary_formats.h"
 #include "rows_result.h"
+#include "test/test_support.h"
 
 namespace simple_query_windows {
 namespace test {
@@ -87,6 +89,31 @@ TEST(HostCallWorkTest, ReturnsAReadableBaseline) {
 
   ASSERT_TRUE(std::holds_alternative<Snapshot>(baseline));
   EXPECT_EQ(std::get<Snapshot>(baseline), expected);
+}
+
+// Purpose: A directory cannot be consumed by Dart File.readAsBytes, so
+// openBinary rejects it before the plugin registers a binary handle.
+TEST(HostCallWorkTest, RejectsADirectoryAsABinaryFile) {
+  TempDirectory directory;
+
+  const auto result = DescribeBinaryFile(directory.path());
+
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(result.error().code(), "unavailable");
+  EXPECT_NE(result.error().message().find("regular file"), std::string::npos);
+}
+
+// Purpose: A regular file keeps its path and byte size for Dart's reader.
+TEST(HostCallWorkTest, DescribesARegularBinaryFile) {
+  TempDirectory directory;
+  const auto path = directory.WriteFile("file.bin");
+
+  const auto result = DescribeBinaryFile(path);
+
+  ASSERT_FALSE(result.has_error()) << result.error().message();
+  EXPECT_EQ(std::get<int64_t>(result.value().at(EncodableValue("size"))), 7);
+  EXPECT_EQ(std::get<std::string>(result.value().at(EncodableValue("localPath"))),
+            PathToUtf8(path));
 }
 
 }  // namespace

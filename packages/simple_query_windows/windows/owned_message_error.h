@@ -6,6 +6,8 @@
 #include <system_error>
 #include <utility>
 
+#include "windows_text.h"
+
 namespace simple_query_windows {
 
 // Purpose: Raise a standard exception whose message the exception itself
@@ -41,12 +43,16 @@ class OwnedMessageError : public Base {
 // With _HAS_EXCEPTIONS=0, std::system_error's what() points at a string
 // destroyed while the error is built, so its code's message is used instead.
 // @param error is the caught exception.
-// @returns The error code's message for a std::system_error, otherwise
+// @param code_page is the encoding of system-error messages; CP_ACP uses
+// the machine's active ANSI code page. Plugin-owned what() text is UTF-8.
+// @returns The error code's UTF-8 message for a std::system_error, otherwise
 // what(), which this plugin's own errors and literal messages keep valid.
-// @throws std::bad_alloc when memory runs out.
-inline std::string ExceptionText(const std::exception& error) {
+// @throws std::system_error for conversion failure, std::length_error for
+// oversized system text, and std::bad_alloc when memory runs out.
+inline std::string ExceptionText(const std::exception& error,
+                                 unsigned int code_page = CP_ACP) {
   if (const auto* system_error = dynamic_cast<const std::system_error*>(&error)) {
-    return system_error->code().message();
+    return ErrorCodeTextToUtf8(system_error->code(), code_page);
   }
   return error.what();
 }

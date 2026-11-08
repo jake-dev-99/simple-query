@@ -99,3 +99,11 @@ always be interrupted: an operation already running may still change files
 after its timeout reply. A timeout does not roll back a mutation. Check its
 effect before retrying, then restart the app. Queued operations that never
 started are dropped; late replies are suppressed.
+
+Windows file mutations validate filters and contents before changing targets.
+File inserts never replace existing destinations. Content updates follow symbolic
+links and stage replacement bytes before publication, preserving existing file
+metadata through Windows replacement semantics. An `unavailable` mutation error
+includes `affectedCount` for confirmed effects and `partialEffectsPossible`.
+A `recoveryPath` identifies a retained recovery directory after replacement or
+backup-cleanup failure. These errors do not promise rollback of earlier effects.

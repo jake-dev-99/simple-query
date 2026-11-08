@@ -1,6 +1,7 @@
 #include "domain_snapshots.h"
 
 #include <stdexcept>
+#include <utility>
 
 #include "file_records.h"
 #include "owned_message_error.h"
@@ -8,6 +9,23 @@
 #include "winrt_records.h"
 
 namespace simple_query_windows {
+
+namespace {
+
+// Purpose: Apply the subscription's filters before calculating its snapshot.
+// @param rows are the complete records read for this poll.
+// @param source optionally supplies borrowed, validated subscription filters.
+// @returns Fingerprints of matching records only.
+// @throws std::invalid_argument for a record that cannot be fingerprinted.
+Snapshot FilteredSnapshot(std::vector<flutter::EncodableMap> rows,
+                          const SnapshotRequest& source) {
+  if (source.filters != nullptr) {
+    rows = ApplyFilters(std::move(rows), *source.filters);
+  }
+  return FingerprintRecords(rows);
+}
+
+}  // namespace
 
 // Purpose: Take one observer snapshot of a domain's records.
 // @param source names the domain, its root directory and the stop check.
@@ -18,14 +36,14 @@ namespace simple_query_windows {
 Snapshot BuildSnapshotForDomain(const SnapshotRequest& source) {
   const std::string& domain = source.domain;
   if (domain == "files" || domain == "media") {
-    return FingerprintRecords(RowsOrThrow(ListRecords({.root = source.root,
+    return FilteredSnapshot(RowsOrThrow(ListRecords({.root = source.root,
                                                        .media_only = domain == "media",
-                                                       .stop_requested = source.stop_requested})));
+                                                       .stop_requested = source.stop_requested})), source);
   }
   if (domain == "contacts" || domain == "calendar") {
-    return FingerprintRecords(RowsOrThrow(domain == "contacts"
+    return FilteredSnapshot(RowsOrThrow(domain == "contacts"
                                               ? ListContactRecords(source.stop_requested)
-                                              : ListCalendarRecords(source.stop_requested)));
+                                              : ListCalendarRecords(source.stop_requested)), source);
   }
   throw OwnedMessageError<std::invalid_argument>(
       "simple_query: windows observe has no snapshot for domain " + domain);

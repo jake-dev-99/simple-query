@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 import 'package:simple_query_platform_interface/simple_query_platform_interface.dart';
 
+import 'query_result_validation.dart';
+
 typedef SimpleQueryErrorBuilder = SimpleQueryError Function({
   required SimpleQueryErrorCode code,
   required String message,
@@ -86,8 +88,9 @@ class LocalFileSystemFallback {
         final paged = applyPaging(sorted, request.page);
         final projected = applyProjection(paged.records, request.projection);
 
-        return RuntimeContractValidation.validateQueryResult(
+        return validateProjectedQueryResult(
           domain: request.domain,
+          projection: request.projection,
           result: QueryResult(
             records: projected,
             totalCount: filtered.length,

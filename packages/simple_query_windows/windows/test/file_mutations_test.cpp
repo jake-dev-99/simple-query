@@ -61,17 +61,21 @@ std::string ReadText(const fs::path& path) {
   return std::string(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
 }
 
-// Purpose: Name one mutation to run against a folder. Every field is
-// borrowed, so it must not outlive the call that builds it.
+// Purpose: Name one mutation to run against a folder. The request, domain
+// and root are borrowed, so it must not outlive the call that builds it.
 // @param request is the request as Dart would send it.
 // @param domain is "files" or "media".
 // @param root is the folder a filtered mutation searches.
+// @param stop_requested ends subsequent mutation steps.
+// @param write_effects inject native write/flush failures.
 // @returns Nothing; this is a data type.
 // @throws Nothing.
 struct FolderMutation {
   const EncodableMap& request;
   const std::string& domain;
   const fs::path& root;
+  StopRequested stop_requested = {};
+  FileWriteEffects write_effects = {};
 };
 
 // Purpose: Run one mutation against a folder.
@@ -81,7 +85,8 @@ struct FolderMutation {
 ErrorOr<EncodableMap> Mutate(const FolderMutation& mutation) {
   const std::function<fs::path()> resolve_root = [root = mutation.root]() { return root; };
   return MutateFiles(
-      {.request = mutation.request, .domain = mutation.domain, .resolve_root = resolve_root});
+      {.request = mutation.request, .domain = mutation.domain, .resolve_root = resolve_root,
+       .stop_requested = mutation.stop_requested, .write_effects = mutation.write_effects});
 }
 
 // Purpose: Read a successful mutation's affected count.
@@ -382,6 +387,446 @@ TEST(FileMutationsTest, FailsWhenTheFolderCannotBeResolved) {
 
   ASSERT_TRUE(result.has_error());
   EXPECT_EQ(result.error().code(), "unavailable");
+}
+
+// Purpose: Recursive deletes count every removed entry without counting overlaps twice.
+TEST(FileMutationsTest, CountsRecursiveDeletesIncludingOverlappingSelectedDescendants) {
+  TempDirectory directory;
+  const fs::path selected = directory.path() / "selected";
+  fs::create_directories(selected / "selected_child");
+  std::ofstream(selected / "selected_child" / "file.txt") << "keep count";
+  const EncodableMap request{
+      {EncodableValue("type"), EncodableValue("delete")},
+      {EncodableValue("filters"),
+       OneFilter({.field = "name", .op = "contains", .value = EncodableValue("selected")})}};
+
+  const auto result = Mutate({.request = request, .domain = "files", .root = directory.path()});
+
+  ASSERT_FALSE(result.has_error()) << result.error().message();
+  EXPECT_EQ(AffectedCount(result), 3);
+  EXPECT_FALSE(fs::exists(selected));
+}
+
+// Purpose: Invalid bytes cannot move a file before the request is rejected.
+TEST(FileMutationsTest, ValidatesBytesBeforeMovingAnExplicitTarget) {
+  TempDirectory directory;
+  const auto original = directory.WriteFile("original.txt");
+  const auto destination = directory.path() / "new_parent" / "moved.txt";
+  const EncodableMap request{
+      {EncodableValue("type"), EncodableValue("update")},
+      {EncodableValue("values"), EncodableValue(EncodableMap{
+          {EncodableValue("path"), EncodableValue(PathToUtf8(original))},
+          {EncodableValue("newPath"), EncodableValue(PathToUtf8(destination))},
+          {EncodableValue("bytes"), EncodableValue("invalid bytes")}})}};
+
+  const auto result = Mutate({.request = request, .domain = "files", .root = directory.path()});
+
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(result.error().code(), "invalid-query");
+  EXPECT_EQ(ReadText(original), "changed");
+  EXPECT_FALSE(fs::exists(destination.parent_path()));
+}
+
+// Purpose: Explicit path and id targets cannot bypass malformed or NaN filters.
+TEST(FileMutationsTest, ValidatesFiltersBeforeExplicitPathOrIdUpdates) {
+  TempDirectory directory;
+  const auto target = directory.WriteFile("original.txt");
+  const std::vector<EncodableValue> invalid_filters{
+      EncodableValue("invalid filters"),
+      OneFilter({.field = "size", .op = "equals",
+                 .value = EncodableValue(std::numeric_limits<double>::quiet_NaN())})};
+  for (const auto* key : {"path", "id"}) {
+    for (const auto& filters : invalid_filters) {
+      const EncodableMap request{
+          {EncodableValue("type"), EncodableValue("update")},
+          {EncodableValue("filters"), filters},
+          {EncodableValue("values"), EncodableValue(EncodableMap{
+              {EncodableValue(key), EncodableValue(PathToUtf8(target))},
+              {EncodableValue("content"), EncodableValue("replaced")}})}};
+      const auto result = Mutate({.request = request, .domain = "files", .root = directory.path()});
+      ASSERT_TRUE(result.has_error());
+      EXPECT_EQ(result.error().code(), "invalid-query");
+      EXPECT_EQ(ReadText(target), "changed");
+    }
+  }
+}
+
+// Purpose: Insert never overwrites an existing file, even without new contents.
+TEST(FileMutationsTest, ExistingInsertPreservesOriginalWithAndWithoutContent) {
+  TempDirectory directory;
+  const auto target = directory.WriteFile("existing.txt");
+  for (const bool provide_content : {false, true}) {
+    EncodableMap values{{EncodableValue("path"), EncodableValue(PathToUtf8(target))}};
+    if (provide_content) {
+      values[EncodableValue("content")] = EncodableValue("replacement");
+    }
+    const EncodableMap request{{EncodableValue("type"), EncodableValue("insert")},
+                               {EncodableValue("values"), EncodableValue(values)}};
+    const auto result = Mutate({.request = request, .domain = "files", .root = directory.path()});
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(result.error().code(), "unavailable");
+    EXPECT_EQ(ReadText(target), "changed");
+    EXPECT_EQ(std::distance(fs::directory_iterator(directory.path()), fs::directory_iterator()), 1);
+  }
+}
+
+// Purpose: A destination created after staging wins over an exclusive insert.
+TEST(FileMutationsTest, ConcurrentInsertCannotOverwriteTheWinningFile) {
+  TempDirectory directory;
+  const auto target = directory.path() / "new.txt";
+  const EncodableMap request{
+      {EncodableValue("type"), EncodableValue("insert")},
+      {EncodableValue("values"), EncodableValue(EncodableMap{
+          {EncodableValue("path"), EncodableValue(PathToUtf8(target))},
+          {EncodableValue("content"), EncodableValue("losing insert")}})}};
+  FileWriteEffects effects;
+  effects.flush = [&](void*) {
+    std::ofstream(target) << "winning insert";
+    return std::error_code{};
+  };
+
+  const auto result = Mutate({.request = request, .domain = "files", .root = directory.path(),
+                              .write_effects = effects});
+
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(result.error().code(), "unavailable");
+  EXPECT_EQ(ReadText(target), "winning insert");
+  EXPECT_EQ(std::distance(fs::directory_iterator(directory.path()), fs::directory_iterator()), 1);
+}
+
+// Purpose: Partial write and flush failures cannot truncate the existing file.
+TEST(FileMutationsTest, PreservesOriginalOnPartialWriteAndFlushFailures) {
+  for (const bool fail_flush : {false, true}) {
+    TempDirectory directory;
+    const auto target = directory.WriteFile("original.txt");
+    const EncodableMap request{
+        {EncodableValue("type"), EncodableValue("update")},
+        {EncodableValue("values"), EncodableValue(EncodableMap{
+            {EncodableValue("path"), EncodableValue(PathToUtf8(target))},
+            {EncodableValue("content"), EncodableValue("replacement bytes")}})}};
+    FileWriteEffects effects;
+    if (fail_flush) {
+      effects.flush = [](void*) { return std::make_error_code(std::errc::io_error); };
+    } else {
+      effects.write = [](void* handle, const std::string& bytes) {
+        DWORD written = 0;
+        if (!WriteFile(handle, bytes.data(), 2, &written, nullptr)) {
+          return std::error_code(static_cast<int>(GetLastError()), std::system_category());
+        }
+        EXPECT_EQ(written, 2u);
+        return std::make_error_code(std::errc::no_space_on_device);
+      };
+    }
+    const auto result = Mutate({.request = request, .domain = "files", .root = directory.path(),
+                                .write_effects = effects});
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(result.error().code(), "unavailable");
+    EXPECT_NE(result.error().message().find(fail_flush ? "flush staging" : "write staging"),
+              std::string::npos);
+    EXPECT_EQ(ReadText(target), "changed");
+    EXPECT_EQ(std::distance(fs::directory_iterator(directory.path()), fs::directory_iterator()), 1);
+  }
+}
+
+// Purpose: Cancellation after one update stops later targets and reports completed work.
+TEST(FileMutationsTest, StopsBetweenUpdateTargetsAndReportsConfirmedCount) {
+  TempDirectory directory;
+  const auto first = directory.WriteFile("a.txt");
+  const auto second = directory.WriteFile("b.txt");
+  const EncodableMap request{
+      {EncodableValue("type"), EncodableValue("update")},
+      {EncodableValue("values"), EncodableValue(EncodableMap{
+          {EncodableValue("content"), EncodableValue("replaced")}})}};
+  const auto stop = [&]() { return ReadText(first) == "replaced" || ReadText(second) == "replaced"; };
+
+  const auto result = Mutate({.request = request, .domain = "files", .root = directory.path(),
+                              .stop_requested = stop});
+
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(result.error().code(), "unavailable");
+  EXPECT_NE(result.error().message().find("stopped"), std::string::npos);
+  const auto& details = std::get<EncodableMap>(result.error().details());
+  EXPECT_EQ(std::get<int64_t>(details.at(EncodableValue("affectedCount"))), 1);
+  EXPECT_NE(ReadText(first) == "replaced", ReadText(second) == "replaced");
+  EXPECT_NE(ReadText(first) == "changed", ReadText(second) == "changed");
+}
+
+// Purpose: Cancellation after one delete stops later targets and reports completed work.
+TEST(FileMutationsTest, StopsBetweenDeleteTargetsAndReportsConfirmedCount) {
+  TempDirectory directory;
+  const auto first = directory.WriteFile("a.txt");
+  const auto second = directory.WriteFile("b.txt");
+  const EncodableMap request{{EncodableValue("type"), EncodableValue("delete")}};
+  const auto stop = [&]() { return !fs::exists(first) || !fs::exists(second); };
+
+  const auto result = Mutate({.request = request, .domain = "files", .root = directory.path(),
+                              .stop_requested = stop});
+
+  ASSERT_TRUE(result.has_error());
+  const auto& details = std::get<EncodableMap>(result.error().details());
+  EXPECT_EQ(std::get<int64_t>(details.at(EncodableValue("affectedCount"))), 1);
+  EXPECT_NE(fs::exists(first), fs::exists(second));
+}
+
+// Purpose: Cancellation before publication preserves the original and removes staging data.
+TEST(FileMutationsTest, StopsAfterFlushWithoutPublishingReplacement) {
+  TempDirectory directory;
+  const auto target = directory.WriteFile("original.txt");
+  const EncodableMap request{
+      {EncodableValue("type"), EncodableValue("update")},
+      {EncodableValue("values"), EncodableValue(EncodableMap{
+          {EncodableValue("path"), EncodableValue(PathToUtf8(target))},
+          {EncodableValue("content"), EncodableValue("replacement")}})}};
+  bool stopped = false;
+  FileWriteEffects effects;
+  effects.flush = [&](void*) { stopped = true; return std::error_code{}; };
+  const auto result = Mutate({.request = request, .domain = "files", .root = directory.path(),
+                              .stop_requested = [&]() { return stopped; },
+                              .write_effects = effects});
+
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(ReadText(target), "changed");
+  const auto& details = std::get<EncodableMap>(result.error().details());
+  EXPECT_EQ(std::get<int64_t>(details.at(EncodableValue("affectedCount"))), 0);
+  EXPECT_EQ(std::distance(fs::directory_iterator(directory.path()), fs::directory_iterator()), 1);
+}
+
+// Purpose: A completed move is disclosed when the following replacement fails.
+TEST(FileMutationsTest, ReportsMoveCompletedBeforeWriteFailure) {
+  TempDirectory directory;
+  const auto original = directory.WriteFile("original.txt");
+  const auto moved = directory.path() / "moved.txt";
+  const EncodableMap request{
+      {EncodableValue("type"), EncodableValue("update")},
+      {EncodableValue("values"), EncodableValue(EncodableMap{
+          {EncodableValue("path"), EncodableValue(PathToUtf8(original))},
+          {EncodableValue("newPath"), EncodableValue(PathToUtf8(moved))},
+          {EncodableValue("content"), EncodableValue("replacement")}})}};
+  FileWriteEffects effects;
+  effects.write = [](void*, const std::string&) {
+    return std::make_error_code(std::errc::no_space_on_device);
+  };
+
+  const auto result = Mutate({.request = request, .domain = "files", .root = directory.path(),
+                              .write_effects = effects});
+
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(result.error().code(), "unavailable");
+  EXPECT_FALSE(fs::exists(original));
+  EXPECT_EQ(ReadText(moved), "changed");
+  const auto& details = std::get<EncodableMap>(result.error().details());
+  EXPECT_EQ(std::get<int64_t>(details.at(EncodableValue("affectedCount"))), 1);
+  EXPECT_TRUE(std::get<bool>(details.at(EncodableValue("partialEffectsPossible"))));
+}
+
+// Purpose: Cancellation during target discovery prevents every mutation.
+TEST(FileMutationsTest, StopsDuringTargetDiscovery) {
+  TempDirectory directory;
+  const auto target = directory.WriteFile("original.txt");
+  const EncodableMap request{{EncodableValue("type"), EncodableValue("delete")}};
+  const std::string domain = "files";
+  bool stopped = false;
+  const std::function<fs::path()> root = [&]() {
+    stopped = true;
+    return directory.path();
+  };
+  const auto result = MutateFiles({.request = request, .domain = domain, .resolve_root = root,
+                                   .stop_requested = [&]() { return stopped; }});
+
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(result.error().code(), "unavailable");
+  EXPECT_NE(result.error().message().find("stopped"), std::string::npos);
+  EXPECT_EQ(ReadText(target), "changed");
+  const auto& details = std::get<EncodableMap>(result.error().details());
+  EXPECT_EQ(std::get<int64_t>(details.at(EncodableValue("affectedCount"))), 0);
+}
+
+// Purpose: Content updates follow a symbolic link while retaining the link itself.
+TEST(FileMutationsTest, UpdatesSymbolicLinkTargetWithoutReplacingTheLink) {
+  TempDirectory directory;
+  const auto target = directory.WriteFile("target.txt");
+  const auto link = directory.path() / "link.txt";
+  std::error_code error;
+  fs::create_symlink(target, link, error);
+  if (error == std::errc::operation_not_permitted || error == std::errc::permission_denied) {
+    GTEST_SKIP() << "OS symbolic-link permission unavailable: " << error.message();
+  }
+  ASSERT_FALSE(error) << error.message();
+  const EncodableMap request{
+      {EncodableValue("type"), EncodableValue("update")},
+      {EncodableValue("values"), EncodableValue(EncodableMap{
+          {EncodableValue("path"), EncodableValue(PathToUtf8(link))},
+          {EncodableValue("content"), EncodableValue("updated target")}})}};
+
+  const auto result = Mutate({.request = request, .domain = "files", .root = directory.path()});
+
+  ASSERT_FALSE(result.has_error()) << result.error().message();
+  EXPECT_EQ(AffectedCount(result), 1);
+  EXPECT_TRUE(fs::is_symlink(fs::symlink_status(link)));
+  EXPECT_EQ(ReadText(target), "updated target");
+  EXPECT_EQ(ReadText(link), "updated target");
+}
+
+// Purpose: Exclusive inserts reject both existing and dangling symbolic links.
+TEST(FileMutationsTest, InsertRejectsExistingAndDanglingSymbolicLinks) {
+  TempDirectory directory;
+  const auto target = directory.WriteFile("target.txt");
+  for (const bool dangling : {false, true}) {
+    const auto link = directory.path() / (dangling ? "dangling.txt" : "link.txt");
+    const auto destination = dangling ? directory.path() / "missing.txt" : target;
+    std::error_code error;
+    fs::create_symlink(destination, link, error);
+    if (error == std::errc::operation_not_permitted || error == std::errc::permission_denied) {
+      GTEST_SKIP() << "OS symbolic-link permission unavailable: " << error.message();
+    }
+    ASSERT_FALSE(error) << error.message();
+    const EncodableMap request{
+        {EncodableValue("type"), EncodableValue("insert")},
+        {EncodableValue("values"), EncodableValue(EncodableMap{
+            {EncodableValue("path"), EncodableValue(PathToUtf8(link))},
+            {EncodableValue("content"), EncodableValue("must not replace link")}})}};
+    const auto result = Mutate({.request = request, .domain = "files", .root = directory.path()});
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(result.error().code(), "unavailable");
+    EXPECT_TRUE(fs::is_symlink(fs::symlink_status(link)));
+    EXPECT_EQ(ReadText(target), "changed");
+    if (dangling) {
+      EXPECT_FALSE(fs::exists(destination));
+    }
+  }
+}
+
+// Purpose: Missing explicit update targets remain successful zero-effect updates.
+TEST(FileMutationsTest, MissingUpdateTargetDoesNotCreateAFile) {
+  TempDirectory directory;
+  const auto target = directory.path() / "missing.txt";
+  const EncodableMap request{
+      {EncodableValue("type"), EncodableValue("update")},
+      {EncodableValue("values"), EncodableValue(EncodableMap{
+          {EncodableValue("path"), EncodableValue(PathToUtf8(target))},
+          {EncodableValue("content"), EncodableValue("must not create")}})}};
+  const auto result = Mutate({.request = request, .domain = "files", .root = directory.path()});
+  ASSERT_FALSE(result.has_error()) << result.error().message();
+  EXPECT_EQ(AffectedCount(result), 0);
+  EXPECT_FALSE(fs::exists(target));
+  EXPECT_TRUE(fs::is_empty(directory.path()));
+}
+
+// Purpose: Replacement failures retain an original at its name or a disclosed recovery path.
+TEST(FileMutationsTest, ReplaceFailureRetainsAndDisclosesTheOriginal) {
+  for (const bool original_already_moved : {false, true}) {
+    TempDirectory directory;
+    const auto target = directory.WriteFile("original.txt");
+    const EncodableMap request{
+        {EncodableValue("type"), EncodableValue("update")},
+        {EncodableValue("values"), EncodableValue(EncodableMap{
+            {EncodableValue("path"), EncodableValue(PathToUtf8(target))},
+            {EncodableValue("content"), EncodableValue("replacement")}})}};
+    FileWriteEffects effects;
+    effects.replace = [original_already_moved](const FileReplacement& replacement) {
+      if (original_already_moved) {
+        std::error_code error;
+        fs::rename(replacement.original, replacement.backup, error);
+        if (error) {
+          return error;
+        }
+      }
+      return std::make_error_code(std::errc::io_error);
+    };
+    const auto result = Mutate({.request = request, .domain = "files", .root = directory.path(),
+                                .write_effects = effects});
+    ASSERT_TRUE(result.has_error());
+    EXPECT_EQ(result.error().code(), "unavailable");
+    const auto& details = std::get<EncodableMap>(result.error().details());
+    const auto recovery = PathFromUtf8(std::get<std::string>(
+        details.at(EncodableValue("recoveryPath"))));
+    EXPECT_TRUE(fs::is_directory(recovery));
+    EXPECT_NE(result.error().message().find(PathToUtf8(recovery)), std::string::npos);
+    EXPECT_EQ(ReadText(original_already_moved ? recovery / "original" : target), "changed");
+  }
+}
+
+// Purpose: Windows replacements preserve the original creation time and named streams.
+TEST(FileMutationsTest, ReplacementPreservesCreationTimeAndNamedStreams) {
+#if !defined(_WIN32)
+  GTEST_SKIP() << "Requires actual Windows file metadata and named streams";
+#else
+  TempDirectory directory;
+  const auto target = directory.WriteFile("original.txt");
+  fs::path stream = target;
+  stream += ":unify-preserved";
+  std::ofstream(stream) << "original stream";
+  const HANDLE before_handle = CreateFileW(target.c_str(),
+      FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  ASSERT_NE(before_handle, INVALID_HANDLE_VALUE);
+  const FILETIME creation{0, 0x01d00000};
+  const bool set_time = SetFileTime(before_handle, &creation, nullptr, nullptr) != 0;
+  EXPECT_TRUE(CloseHandle(before_handle));
+  ASSERT_TRUE(set_time);
+  const EncodableMap request{
+      {EncodableValue("type"), EncodableValue("update")},
+      {EncodableValue("values"), EncodableValue(EncodableMap{
+          {EncodableValue("path"), EncodableValue(PathToUtf8(target))},
+          {EncodableValue("content"), EncodableValue("replacement")}})}};
+  const auto result = Mutate({.request = request, .domain = "files", .root = directory.path()});
+  ASSERT_FALSE(result.has_error()) << result.error().message();
+  EXPECT_EQ(ReadText(target), "replacement");
+  EXPECT_EQ(ReadText(stream), "original stream");
+  const HANDLE after_handle = CreateFileW(target.c_str(), FILE_READ_ATTRIBUTES,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  ASSERT_NE(after_handle, INVALID_HANDLE_VALUE);
+  FILETIME actual{};
+  const bool read_time = GetFileTime(after_handle, &actual, nullptr, nullptr) != 0;
+  EXPECT_TRUE(CloseHandle(after_handle));
+  ASSERT_TRUE(read_time);
+  EXPECT_EQ(actual.dwLowDateTime, creation.dwLowDateTime);
+  EXPECT_EQ(actual.dwHighDateTime, creation.dwHighDateTime);
+#endif
+}
+
+// Purpose: Backup cleanup failure reports the published update and retains original data.
+TEST(FileMutationsTest, BackupCleanupFailureDisclosesPublishedUpdateAndRecovery) {
+#if !defined(_WIN32)
+  GTEST_SKIP() << "Requires actual Windows sharing restrictions";
+#else
+  TempDirectory directory;
+  const auto target = directory.WriteFile("original.txt");
+  const EncodableMap request{
+      {EncodableValue("type"), EncodableValue("update")},
+      {EncodableValue("values"), EncodableValue(EncodableMap{
+          {EncodableValue("path"), EncodableValue(PathToUtf8(target))},
+          {EncodableValue("content"), EncodableValue("replacement")}})}};
+  FileWriteEffects effects;
+  HANDLE held_backup = INVALID_HANDLE_VALUE;
+  fs::path backup;
+  effects.replace = [&](const FileReplacement& replacement) {
+    if (!ReplaceFileW(replacement.original.c_str(), replacement.replacement.c_str(),
+                      replacement.backup.c_str(), 0, nullptr, nullptr)) {
+      return std::error_code(static_cast<int>(GetLastError()), std::system_category());
+    }
+    backup = replacement.backup;
+    held_backup = CreateFileW(backup.c_str(), GENERIC_READ, 0, nullptr,
+                             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    EXPECT_NE(held_backup, INVALID_HANDLE_VALUE);
+    return std::error_code{};
+  };
+  const auto result = Mutate({.request = request, .domain = "files", .root = directory.path(),
+                              .write_effects = effects});
+  if (held_backup != INVALID_HANDLE_VALUE) {
+    EXPECT_TRUE(CloseHandle(held_backup));
+  }
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(result.error().code(), "unavailable");
+  EXPECT_EQ(ReadText(target), "replacement");
+  EXPECT_EQ(ReadText(backup), "changed");
+  const auto& details = std::get<EncodableMap>(result.error().details());
+  EXPECT_EQ(std::get<int64_t>(details.at(EncodableValue("affectedCount"))), 1);
+  EXPECT_EQ(std::get<std::string>(details.at(EncodableValue("recoveryPath"))),
+            PathToUtf8(backup.parent_path()));
+#endif
 }
 
 }  // namespace

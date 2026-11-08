@@ -53,7 +53,7 @@ struct QuerySort {
 // Purpose: Hold how a query filters, sorts, pages and projects its rows,
 // parsed and checked once from the request.
 // @param filters must all match for a row to stay.
-// @param sort is empty when the request gives none; rows then keep the
+// @param sort holds ordered tie-breakers; when empty, rows keep the
 // source's order.
 // @param offset is how many rows to skip; a negative value counts as zero.
 // @param limit caps the rows returned. Empty means no cap; a negative
@@ -63,7 +63,7 @@ struct QuerySort {
 // @throws Nothing.
 struct QueryShape {
   std::vector<QueryFilter> filters;
-  std::optional<QuerySort> sort;
+  std::vector<QuerySort> sort;
   int64_t offset = 0;
   std::optional<int64_t> limit;
   std::vector<std::string> projection;

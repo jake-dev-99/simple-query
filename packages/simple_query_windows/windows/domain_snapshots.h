@@ -5,6 +5,7 @@
 #include <string>
 
 #include "polling_observers.h"
+#include "query_shaping.h"
 #include "stop_requested.h"
 
 namespace simple_query_windows {
@@ -17,12 +18,15 @@ namespace simple_query_windows {
 // other name throws std::invalid_argument.
 // @param stop_requested is checked between records, so a long scan ends
 // soon after the observer stops.
+// @param filters optionally borrows the observer's validated filters for this call.
+// Null means no filters.
 // @returns Nothing; this is a data type.
 // @throws Nothing.
 struct SnapshotRequest {
   const std::filesystem::path& root;
   const std::string& domain;
   const StopRequested& stop_requested;
+  const std::vector<QueryFilter>* filters = nullptr;
 };
 
 // Purpose: Take one observer snapshot of a domain's records.

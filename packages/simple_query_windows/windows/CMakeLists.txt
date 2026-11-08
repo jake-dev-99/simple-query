@@ -87,6 +87,7 @@ if (${include_${PROJECT_NAME}_tests})
   # sources directly instead of loading the plugin DLL.
   add_executable(${TEST_RUNNER}
     "test/background_calls_test.cpp"
+    "test/deferred_host_call_test.cpp"
     "test/file_mutations_test.cpp"
     "test/host_call_work_test.cpp"
     "test/platform_thread_dispatcher_test.cpp"

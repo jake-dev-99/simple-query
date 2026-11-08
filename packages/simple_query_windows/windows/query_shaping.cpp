@@ -137,8 +137,25 @@ bool IsAbsentOrUnordered(const EncodableValue* value) {
   return value == nullptr || IsNan(*value);
 }
 
-// Purpose: Order two field values: integers exactly, other numbers as
-// doubles, and any other scalars as text.
+// Purpose: Compare an integer with a double without rounding the integer.
+// @param integer is an exact signed 64-bit value.
+// @param number is a double other than NaN.
+// @returns -1, 0 or 1 for the integer relative to the double.
+// @throws Nothing.
+int CompareIntegerAndDouble(int64_t integer, double number) {
+  // The positive boundary is exclusive: double(INT64_MAX) rounds to 2^63.
+  if (number >= 0x1p63) return -1;
+  if (number < -0x1p63) return 1;
+  const int64_t truncated = static_cast<int64_t>(number);
+  if (integer != truncated) {
+    return (integer > truncated) - (integer < truncated);
+  }
+  const double whole = static_cast<double>(truncated);
+  return (whole > number) - (whole < number);
+}
+
+// Purpose: Order field values with exact numeric comparisons, or as text
+// for other scalars.
 // @param lhs is the first value, or null when the field is absent.
 // @param rhs is the second value, or null when the field is absent.
 // @returns -1, 0 or 1, or nothing when either value is absent, NaN or not
@@ -151,6 +168,18 @@ std::optional<int> CompareValues(const EncodableValue* lhs, const EncodableValue
   }
   if (const auto integers = CompareIntegers(*lhs, *rhs); integers.has_value()) {
     return integers;
+  }
+  const auto* left_double = std::get_if<double>(lhs);
+  const auto* right_double = std::get_if<double>(rhs);
+  if (left_double == nullptr && right_double != nullptr) {
+    if (const auto integer = AsInt(lhs)) {
+      return CompareIntegerAndDouble(*integer, *right_double);
+    }
+  }
+  if (left_double != nullptr && right_double == nullptr) {
+    if (const auto integer = AsInt(rhs)) {
+      return -CompareIntegerAndDouble(*integer, *left_double);
+    }
   }
   const auto left_number = AsDouble(*lhs);
   const auto right_number = AsDouble(*rhs);
@@ -167,7 +196,8 @@ std::optional<int> CompareValues(const EncodableValue* lhs, const EncodableValue
 }
 
 // Purpose: Check two values for equality the way Dart's == does for filter
-// values: null equals only null, and other values compare as scalars. An
+// values: null equals only null, numbers compare numerically, and other
+// scalar values must have the same kind and value. An
 // absent field counts as null, because Dart reads a missing field as null.
 // @param lhs is the first value, or null when the field is absent.
 // @param rhs is the second value, or null when the field is absent.
@@ -176,6 +206,10 @@ std::optional<int> CompareValues(const EncodableValue* lhs, const EncodableValue
 bool ValuesEqual(const EncodableValue* lhs, const EncodableValue* rhs) {
   if (IsAbsentOrNull(lhs) || IsAbsentOrNull(rhs)) {
     return IsAbsentOrNull(lhs) && IsAbsentOrNull(rhs);
+  }
+  const bool both_numbers = AsDouble(*lhs).has_value() && AsDouble(*rhs).has_value();
+  if (!both_numbers && lhs->index() != rhs->index()) {
+    return false;
   }
   return CompareValues(lhs, rhs) == 0;
 }
@@ -242,29 +276,31 @@ bool Passes(const EncodableMap& row, const QueryFilter& filter) {
   return false;
 }
 
-// Purpose: Parse the sort key of a request; only the first key is used.
+// Purpose: Parse every sort key in request order.
 // @param request is the query request.
-// @returns The sort key, nothing when the request has none, or the reason
-// it is invalid.
+// @returns The ordered sort keys, or the reason a key is invalid.
 // @throws Nothing.
-std::variant<std::optional<QuerySort>, std::string> ParseSort(const EncodableMap& request) {
+std::variant<std::vector<QuerySort>, std::string> ParseSort(const EncodableMap& request) {
+  std::vector<QuerySort> keys;
   const auto* sort = ListAt(request, "sort");
-  if (sort == nullptr || sort->empty()) {
-    return std::optional<QuerySort>{};
+  if (sort == nullptr) {
+    return keys;
   }
-  const auto* first = std::get_if<EncodableMap>(&sort->front());
-  const auto field = first == nullptr ? std::nullopt : StringAt(*first, "field");
-  if (!field.has_value() || field->empty()) {
-    return std::string("simple_query: each sort key needs a field");
+  for (const auto& value : *sort) {
+    const auto* key = std::get_if<EncodableMap>(&value);
+    const auto field = key == nullptr ? std::nullopt : StringAt(*key, "field");
+    if (!field.has_value() || field->empty()) {
+      return std::string("simple_query: each sort key needs a field");
+    }
+    const auto direction = StringAt(*key, "direction");
+    const bool known_direction =
+        !direction.has_value() || *direction == "ascending" || *direction == "descending";
+    if (!known_direction) {
+      return "simple_query: sort direction " + *direction + " is not supported";
+    }
+    keys.push_back(QuerySort{.field = *field, .ascending = direction != "descending"});
   }
-  const auto direction = StringAt(*first, "direction");
-  const bool known_direction =
-      !direction.has_value() || *direction == "ascending" || *direction == "descending";
-  if (!known_direction) {
-    return "simple_query: sort direction " + *direction + " is not supported";
-  }
-  return std::optional<QuerySort>(
-      QuerySort{.field = *field, .ascending = direction != "descending"});
+  return keys;
 }
 
 // Purpose: Parse the projection of a request.
@@ -300,6 +336,11 @@ std::variant<std::optional<int64_t>, std::string> ParsePageNumber(const Encodabl
   const EncodableValue* value = FindValue(page, key);
   if (IsAbsentOrNull(value)) {
     return std::optional<int64_t>{};
+  }
+  if (const auto* number = std::get_if<double>(value)) {
+    if (std::trunc(*number) != *number) {
+      return "simple_query: page." + key + " must be a whole number. Send an integer.";
+    }
   }
   const std::optional<int64_t> number = AsInt(value);
   if (!number.has_value()) {
@@ -429,7 +470,7 @@ std::variant<QueryShape, std::string> ParseQueryShape(const EncodableMap& reques
   if (auto* error = std::get_if<std::string>(&sort)) {
     return std::move(*error);
   }
-  shape.sort = std::get<std::optional<QuerySort>>(std::move(sort));
+  shape.sort = std::get<std::vector<QuerySort>>(std::move(sort));
   auto projection = ParseProjection(request);
   if (auto* error = std::get_if<std::string>(&projection)) {
     return std::move(*error);
@@ -477,12 +518,16 @@ std::vector<EncodableMap> ApplyFilters(std::vector<EncodableMap> rows,
 // @throws Nothing.
 EncodableMap ShapeQueryResult(std::vector<EncodableMap> rows, const QueryShape& shape) {
   rows = ApplyFilters(std::move(rows), shape.filters);
-  if (shape.sort.has_value()) {
-    const QuerySort& sort = *shape.sort;
+  if (!shape.sort.empty()) {
     // Stable, so rows that compare equal keep their store order.
     std::stable_sort(rows.begin(), rows.end(), [&](const EncodableMap& lhs, const EncodableMap& rhs) {
-      const int order = SortOrder(FindValue(lhs, sort.field), FindValue(rhs, sort.field));
-      return sort.ascending ? order < 0 : order > 0;
+      for (const auto& sort : shape.sort) {
+        const int order = SortOrder(FindValue(lhs, sort.field), FindValue(rhs, sort.field));
+        if (order != 0) {
+          return sort.ascending ? order < 0 : order > 0;
+        }
+      }
+      return false;
     });
   }
 
@@ -495,7 +540,7 @@ EncodableMap ShapeQueryResult(std::vector<EncodableMap> rows, const QueryShape& 
   EncodableMap result;
   result[EncodableValue("records")] = EncodableValue(std::move(records));
   result[EncodableValue("totalCount")] = EncodableValue(static_cast<int64_t>(rows.size()));
-  if (page.end < rows.size()) {
+  if (page.end > page.start && page.end < rows.size()) {
     result[EncodableValue("nextOffset")] = EncodableValue(static_cast<int64_t>(page.end));
   }
   return result;
