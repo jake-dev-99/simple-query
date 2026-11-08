@@ -83,18 +83,34 @@ class NativeQueryHostApi {
   NativeQueryHostApi(const NativeQueryHostApi&) = delete;
   NativeQueryHostApi& operator=(const NativeQueryHostApi&) = delete;
   virtual ~NativeQueryHostApi() {}
-  virtual ErrorOr<flutter::EncodableMap> GetCapabilities() = 0;
-  virtual ErrorOr<flutter::EncodableMap> Query(const flutter::EncodableMap& request) = 0;
-  virtual ErrorOr<flutter::EncodableMap> Mutate(const flutter::EncodableMap& request) = 0;
-  virtual ErrorOr<flutter::EncodableMap> Batch(const flutter::EncodableMap& request) = 0;
-  virtual ErrorOr<std::string> ObserveStart(const flutter::EncodableMap& request) = 0;
+  virtual void GetCapabilities(std::function<void(ErrorOr<flutter::EncodableMap> reply)> result) = 0;
+  virtual void Query(
+    const flutter::EncodableMap& request,
+    std::function<void(ErrorOr<flutter::EncodableMap> reply)> result) = 0;
+  virtual void Mutate(
+    const flutter::EncodableMap& request,
+    std::function<void(ErrorOr<flutter::EncodableMap> reply)> result) = 0;
+  virtual void Batch(
+    const flutter::EncodableMap& request,
+    std::function<void(ErrorOr<flutter::EncodableMap> reply)> result) = 0;
+  virtual void ObserveStart(
+    const flutter::EncodableMap& request,
+    std::function<void(ErrorOr<std::string> reply)> result) = 0;
   virtual std::optional<FlutterError> ObserveStop(const std::string& observer_id) = 0;
-  virtual ErrorOr<flutter::EncodableMap> OpenBinary(const flutter::EncodableMap& request) = 0;
+  virtual void OpenBinary(
+    const flutter::EncodableMap& request,
+    std::function<void(ErrorOr<flutter::EncodableMap> reply)> result) = 0;
   virtual std::optional<FlutterError> CloseBinary(const std::string& handle_id) = 0;
-  virtual ErrorOr<std::optional<flutter::EncodableMap>> CallExtension(
-    const std::string& namespace,
+  // Purpose: Calls a namespaced Windows-only extension.
+  //
+  // @param extensionNamespace selects the registered Windows extension namespace.
+  // It is not named `namespace`, a C++ keyword, and carries no trailing
+  // underscore, which Pigeon would turn into a reserved C++ identifier.
+  virtual void CallExtension(
+    const std::string& extension_namespace,
     const std::string& method,
-    const flutter::EncodableMap* args) = 0;
+    const flutter::EncodableMap* args,
+    std::function<void(ErrorOr<std::optional<flutter::EncodableMap>> reply)> result) = 0;
 
   // The codec used by NativeQueryHostApi.
   static const flutter::StandardMessageCodec& GetCodec();

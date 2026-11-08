@@ -4,6 +4,10 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:simple_query_platform_interface/simple_query_platform_interface.dart';
 import 'package:simple_query_shared/simple_query_shared.dart';
+// The codec is hidden from the public API; these tests pin the payload the
+// Windows host receives.
+import 'package:simple_query_shared/src/non_android_native_bridge.dart'
+    show NativePayloadCodec;
 
 void main() {
   test('observeOrFallback cancels fallback subscription on cancel', () async {
@@ -56,5 +60,87 @@ void main() {
 
     expect(cancelCount, 1);
     await fallbackController.close();
+  });
+
+  // Purpose: An observe request with no interval still sends the
+  // pollingIntervalMs key, as null, so the Windows host must read null as
+  // "use the default".
+  test('encodeObserveRequest sends a null interval when none is set', () {
+    final payload = NativePayloadCodec.encodeObserveRequest(
+      const ObserveRequest(domain: QueryDomain.files),
+    );
+
+    expect(payload.containsKey('pollingIntervalMs'), isTrue);
+    expect(payload['pollingIntervalMs'], isNull);
+  });
+
+  // Purpose: A filter against null keeps its null value, so the Windows
+  // host must match it against missing and null fields.
+  test('encodeObserveRequest keeps a null filter value', () {
+    final payload = NativePayloadCodec.encodeObserveRequest(
+      ObserveRequest(
+        domain: QueryDomain.files,
+        filters: <QueryFilterCondition>[
+          QueryFilterCondition(
+            field: 'size',
+            operator: QueryFilterOperator.equals,
+          ),
+        ],
+      ),
+    );
+
+    final filters = payload['filters']! as List<Object?>;
+    final filter = filters.single! as Map<String?, Object?>;
+    expect(filter.containsKey('value'), isTrue);
+    expect(filter['value'], isNull);
+  });
+  // Purpose: Projected native records contain only requested fields, and
+  // required fields are still checked when requested or unprojected.
+  test('queryOrNull validates required keys in projection context', () async {
+    TestWidgetsFlutterBinding.ensureInitialized();
+    final bridge = NonAndroidNativeBridge(
+      isCurrentPlatform: () => true,
+      setupFlutterApi: () {},
+      getCapabilities: () async => <String?, Object?>{},
+      query: (_) async => <String?, Object?>{
+        'records': <Object?>[
+          <String, Object?>{'name': 'notes.txt'},
+        ],
+      },
+      mutate: (_) async => <String?, Object?>{},
+      batch: (_) async => <String?, Object?>{},
+      observeStart: (_) async => 'subscription',
+      observeStop: (_) async {},
+      openBinary: (_) async => <String?, Object?>{},
+      closeBinary: (_) async {},
+      callExtension: (_, __, ___) async => null,
+      nativeDomainSupported: (_) => true,
+    );
+
+    final result = await bridge.queryOrNull(const QueryRequest(
+      domain: QueryDomain.files,
+      projection: <String>['name'],
+    ));
+    expect(result!.records, <QueryRecord>[
+      <String, Object?>{'name': 'notes.txt'},
+    ]);
+
+    for (final projection in <List<String>?>[
+      null,
+      <String>[],
+      <String>['name', 'id'],
+    ]) {
+      await expectLater(
+        bridge.queryOrNull(QueryRequest(
+          domain: QueryDomain.files,
+          projection: projection,
+        )),
+        throwsA(isA<SimpleQueryError>().having(
+          (error) => error.code,
+          'code',
+          SimpleQueryErrorCode.unavailable,
+        )),
+      );
+    }
   });
 }

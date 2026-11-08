@@ -74,6 +74,27 @@ so the example builds the workspace plugin):
 CI runs the same steps in the path-gated `.github/workflows/verify-native.yml`
 on every PR that touches the native side (UNFY-198).
 
+**When you touch `packages/simple_query_windows/windows/` (C++), run the
+Windows gate on a Windows machine.** `flutter test` never compiles that C++.
+The script builds a throwaway consumer app, then builds and runs the plugin's
+GoogleTest runner inside it (UNFY-381):
+
+```sh
+bash tool/build_windows_consumer.sh   # Git Bash on Windows
+```
+
+CI runs it in `.github/workflows/verify-windows.yml`, which runs its
+Windows jobs only for pull requests touching the Windows paths and always
+reports one `Windows verify result` check. That workflow also fails when
+the committed Windows Pigeon output does not match `pigeon.dart`. Check that locally with:
+
+```sh
+bash tool/regen_pigeon.sh packages/simple_query_windows && git diff --exit-code -- \
+  packages/simple_query_windows/lib/src/generated/native_query.g.dart \
+  packages/simple_query_windows/windows/native_query.g.h \
+  packages/simple_query_windows/windows/native_query.g.cpp
+```
+
 ## Conventions that have teeth
 
 - **The platform-interface contract is versioned.** A breaking change to

@@ -1,27 +1,41 @@
 #include "include/simple_query_windows/simple_query_windows_plugin.h"
 
 #include <algorithm>
-#include <atomic>
 #include <chrono>
-#include <cctype>
-#include <cstdlib>
+#include <cstddef>
+#include <cstdint>
+#include <exception>
 #include <filesystem>
-#include <fstream>
-#include <mutex>
+#include <functional>
+#include <map>
+#include <memory>
 #include <optional>
-#include <set>
-#include <sstream>
+#include <stdexcept>
 #include <string>
-#include <thread>
+#include <system_error>
+#include <utility>
+#include <variant>
 #include <vector>
 
 #include <flutter/plugin_registrar_windows.h>
-#include <winrt/Windows.ApplicationModel.Appointments.h>
-#include <winrt/Windows.ApplicationModel.Contacts.h>
-#include <winrt/Windows.Foundation.h>
-#include <winrt/base.h>
 
+#include "background_calls.h"
+#include "deferred_host_call.h"
+#include "host_call_work.h"
+#include "boundary_formats.h"
+#include "detached_threads.h"
+#include "domain_snapshots.h"
+#include "file_mutations.h"
+#include "file_records.h"
 #include "native_query.g.h"
+#include "observe_event_sender.h"
+#include "polling_observers.h"
+#include "query_shaping.h"
+#include "request_values.h"
+#include "rows_result.h"
+#include "structured_log.h"
+#include "winrt_records.h"
+#include "owned_message_error.h"
 
 namespace simple_query_windows {
 
@@ -31,1145 +45,614 @@ using flutter::EncodableList;
 using flutter::EncodableMap;
 using flutter::EncodableValue;
 
-const EncodableValue* FindValue(const EncodableMap& map, const std::string& key) {
-  auto it = map.find(EncodableValue(key));
-  if (it == map.end()) {
-    return nullptr;
-  }
-  return &it->second;
-}
+// An observer that names no interval polls once a second; a shorter interval
+// than the floor would keep a large tree's walk running back to back.
+constexpr int64_t kDefaultPollingIntervalMs = 1000;
+constexpr int64_t kMinimumPollingIntervalMs = 250;
 
-std::optional<std::string> AsString(const EncodableValue* value) {
-  if (value == nullptr) {
-    return std::nullopt;
-  }
-  if (const auto* str = std::get_if<std::string>(value)) {
-    return *str;
-  }
-  if (const auto* i32 = std::get_if<int32_t>(value)) {
-    return std::to_string(*i32);
-  }
-  if (const auto* i64 = std::get_if<int64_t>(value)) {
-    return std::to_string(*i64);
-  }
-  if (const auto* dbl = std::get_if<double>(value)) {
-    return std::to_string(*dbl);
-  }
-  if (const auto* b = std::get_if<bool>(value)) {
-    return *b ? "true" : "false";
-  }
-  return std::nullopt;
-}
-
-std::string StringOr(const EncodableMap& map, const std::string& key,
-                     const std::string& fallback) {
-  const auto* value = FindValue(map, key);
-  const auto parsed = AsString(value);
-  return parsed.value_or(fallback);
-}
-
-std::optional<int64_t> AsInt(const EncodableValue* value) {
-  if (value == nullptr) {
-    return std::nullopt;
-  }
-  if (const auto* i32 = std::get_if<int32_t>(value)) {
-    return static_cast<int64_t>(*i32);
-  }
-  if (const auto* i64 = std::get_if<int64_t>(value)) {
-    return *i64;
-  }
-  if (const auto* dbl = std::get_if<double>(value)) {
-    return static_cast<int64_t>(*dbl);
-  }
-  return std::nullopt;
-}
-
-bool BoolOr(const EncodableMap& map, const std::string& key, bool fallback) {
-  const auto* value = FindValue(map, key);
-  if (value == nullptr) {
-    return fallback;
-  }
-  if (const auto* b = std::get_if<bool>(value)) {
-    return *b;
-  }
-  return fallback;
-}
-
-const EncodableMap* AsMap(const EncodableValue* value) {
-  if (value == nullptr) {
-    return nullptr;
-  }
-  return std::get_if<EncodableMap>(value);
-}
-
-const EncodableList* AsList(const EncodableValue* value) {
-  if (value == nullptr) {
-    return nullptr;
-  }
-  return std::get_if<EncodableList>(value);
-}
-
-std::string Lower(std::string value) {
-  std::transform(value.begin(), value.end(), value.begin(),
-                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  return value;
-}
-
-std::string MimeFromPath(const std::filesystem::path& path) {
-  const std::string ext = Lower(path.extension().string());
-  if (ext == ".jpg" || ext == ".jpeg") return "image/jpeg";
-  if (ext == ".png") return "image/png";
-  if (ext == ".gif") return "image/gif";
-  if (ext == ".heic") return "image/heic";
-  if (ext == ".mp4") return "video/mp4";
-  if (ext == ".mov") return "video/quicktime";
-  if (ext == ".mp3") return "audio/mpeg";
-  if (ext == ".wav") return "audio/wav";
-  if (ext == ".aac") return "audio/aac";
-  if (ext == ".flac") return "audio/flac";
-  if (ext == ".txt") return "text/plain";
-  if (ext == ".json") return "application/json";
-  return "application/octet-stream";
-}
-
-bool IsMediaMime(const std::string& mime) {
-  return mime.rfind("image/", 0) == 0 || mime.rfind("video/", 0) == 0 ||
-         mime.rfind("audio/", 0) == 0;
-}
-
-std::string MediaType(const std::string& mime) {
-  if (mime.rfind("image/", 0) == 0) return "image";
-  if (mime.rfind("video/", 0) == 0) return "video";
-  if (mime.rfind("audio/", 0) == 0) return "audio";
-  return "other";
-}
-
+// Purpose: Read the wall clock for event timestamps.
+// @returns Milliseconds since the Unix epoch.
+// @throws Nothing.
 int64_t EpochMsNow() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(
              std::chrono::system_clock::now().time_since_epoch())
       .count();
 }
 
-void EnsureWinRtApartment() {
-  static std::once_flag flag;
-  std::call_once(flag, []() {
-    try {
-      winrt::init_apartment(winrt::apartment_type::multi_threaded);
-    } catch (...) {
-      // Already initialized with a different apartment type.
-    }
-  });
-}
-
-int64_t ToUnixEpochMs(winrt::Windows::Foundation::DateTime value) {
-  constexpr int64_t kWinRtToUnixEpochTicks = 116444736000000000LL;
-  const int64_t ticks = value.time_since_epoch().count();
-  return (ticks - kWinRtToUnixEpochTicks) / 10000;
-}
-
-struct WinRtRowsResult {
-  std::vector<EncodableMap> rows;
-  std::optional<std::string> error;
-};
-
-WinRtRowsResult ListContactRecords() {
-  using namespace winrt::Windows::ApplicationModel::Contacts;
-  WinRtRowsResult result;
-  try {
-    EnsureWinRtApartment();
-
-    const auto store =
-        ContactManager::RequestStoreAsync(ContactStoreAccessType::AllContactsReadOnly).get();
-    const auto contacts = store.FindContactsAsync().get();
-
-    for (const auto& contact : contacts) {
-      std::string id = winrt::to_string(contact.Id());
-      if (id.empty()) {
-        continue;
-      }
-
-      std::string display_name = winrt::to_string(contact.DisplayName());
-      if (display_name.empty()) {
-        display_name = winrt::to_string(contact.FirstName());
-        const auto last_name = winrt::to_string(contact.LastName());
-        if (!last_name.empty()) {
-          if (!display_name.empty()) {
-            display_name += " ";
-          }
-          display_name += last_name;
-        }
-      }
-
-      EncodableList phones;
-      for (const auto& phone : contact.Phones()) {
-        phones.push_back(EncodableValue(winrt::to_string(phone.Number())));
-      }
-
-      EncodableList emails;
-      for (const auto& email : contact.Emails()) {
-        emails.push_back(EncodableValue(winrt::to_string(email.Address())));
-      }
-
-      EncodableMap row;
-      row[EncodableValue("id")] = EncodableValue(id);
-      row[EncodableValue("displayName")] = EncodableValue(display_name);
-      row[EncodableValue("phones")] = EncodableValue(phones);
-      row[EncodableValue("emails")] = EncodableValue(emails);
-
-      if (contact.JobInfo().Size() > 0) {
-        const auto company = winrt::to_string(contact.JobInfo().GetAt(0).CompanyName());
-        if (!company.empty()) {
-          row[EncodableValue("organization")] = EncodableValue(company);
-        }
-      }
-
-      result.rows.push_back(std::move(row));
-    }
-  } catch (const winrt::hresult_error& error) {
-    result.error = "simple_query: windows contacts backend unavailable - " +
-                   winrt::to_string(error.message());
-  } catch (const std::exception& error) {
-    result.error = "simple_query: windows contacts backend unavailable - " +
-                   std::string(error.what());
-  }
-  return result;
-}
-
-WinRtRowsResult ListCalendarRecords() {
-  using namespace winrt::Windows::ApplicationModel::Appointments;
-  WinRtRowsResult result;
-  try {
-    EnsureWinRtApartment();
-
-    const auto store =
-        AppointmentManager::RequestStoreAsync(AppointmentStoreAccessType::AllCalendarsReadOnly)
-            .get();
-    const auto calendars = store.FindAppointmentCalendarsAsync().get();
-
-    const auto now = winrt::clock::now();
-    winrt::Windows::Foundation::TimeSpan lookback{};
-    lookback.Duration = std::chrono::duration_cast<
-                            winrt::Windows::Foundation::TimeSpan::duration>(
-                            std::chrono::hours(24 * 365))
-                            .count();
-    const auto start = now - lookback;
-    winrt::Windows::Foundation::TimeSpan range{};
-    range.Duration = std::chrono::duration_cast<
-                         winrt::Windows::Foundation::TimeSpan::duration>(
-                         std::chrono::hours(24 * 365 * 2))
-                         .count();
-
-    for (const auto& calendar : calendars) {
-      const auto appointments = calendar.FindAppointmentsAsync(start, range).get();
-      const std::string calendar_id = winrt::to_string(calendar.LocalId());
-      for (const auto& appointment : appointments) {
-        const auto start_time = appointment.StartTime();
-        const auto end_time = start_time + appointment.Duration();
-        const int64_t start_ms = ToUnixEpochMs(start_time);
-        const int64_t end_ms = ToUnixEpochMs(end_time);
-
-        std::string appointment_id = winrt::to_string(appointment.LocalId());
-        if (appointment_id.empty()) {
-          appointment_id = calendar_id + ":" + std::to_string(start_ms);
-        }
-
-        EncodableMap row;
-        row[EncodableValue("id")] = EncodableValue(appointment_id);
-        row[EncodableValue("title")] = EncodableValue(winrt::to_string(appointment.Subject()));
-        row[EncodableValue("startAt")] = EncodableValue(std::to_string(start_ms));
-        row[EncodableValue("endAt")] = EncodableValue(std::to_string(end_ms));
-        row[EncodableValue("isAllDay")] = EncodableValue(appointment.AllDay());
-        row[EncodableValue("calendarId")] = EncodableValue(calendar_id);
-        row[EncodableValue("updatedAt")] = EncodableValue(std::to_string(start_ms));
-        result.rows.push_back(std::move(row));
-      }
-    }
-  } catch (const winrt::hresult_error& error) {
-    result.error = "simple_query: windows calendar backend unavailable - " +
-                   winrt::to_string(error.message());
-  } catch (const std::exception& error) {
-    result.error = "simple_query: windows calendar backend unavailable - " +
-                   std::string(error.what());
-  }
-  return result;
-}
-
-EncodableList ListContactStores() {
-  using namespace winrt::Windows::ApplicationModel::Contacts;
-  EnsureWinRtApartment();
-
-  const auto store =
-      ContactManager::RequestStoreAsync(ContactStoreAccessType::AllContactsReadOnly).get();
-  const auto lists = store.FindContactListsAsync().get();
-
-  EncodableList stores;
-  for (const auto& list : lists) {
-    EncodableMap row;
-    row[EncodableValue("id")] = EncodableValue(winrt::to_string(list.Id()));
-    row[EncodableValue("name")] = EncodableValue(winrt::to_string(list.DisplayName()));
-    stores.push_back(EncodableValue(row));
-  }
-  return stores;
-}
-
-EncodableList ListCalendarStores() {
-  using namespace winrt::Windows::ApplicationModel::Appointments;
-  EnsureWinRtApartment();
-
-  const auto store =
-      AppointmentManager::RequestStoreAsync(AppointmentStoreAccessType::AllCalendarsReadOnly)
-          .get();
-  const auto calendars = store.FindAppointmentCalendarsAsync().get();
-
-  EncodableList rows;
-  for (const auto& calendar : calendars) {
-    EncodableMap row;
-    row[EncodableValue("id")] = EncodableValue(winrt::to_string(calendar.LocalId()));
-    row[EncodableValue("title")] = EncodableValue(winrt::to_string(calendar.DisplayName()));
-    rows.push_back(EncodableValue(row));
-  }
-  return rows;
-}
-
-int64_t ModifiedEpochMs(const std::filesystem::directory_entry& entry) {
-  auto ticks = entry.last_write_time().time_since_epoch();
-  return std::chrono::duration_cast<std::chrono::milliseconds>(ticks).count();
-}
-
-std::string ValueAsString(const EncodableMap& row, const std::string& key) {
-  auto it = row.find(EncodableValue(key));
-  if (it == row.end()) {
-    return "";
-  }
-  return AsString(&it->second).value_or("");
-}
-
-EncodableMap Capability(const std::string& domain, bool can_read, bool can_write,
-                        bool can_observe, bool can_stream,
-                        const std::optional<std::string>& reason = std::nullopt) {
-  EncodableMap map;
-  map[EncodableValue("domain")] = EncodableValue(domain);
-  map[EncodableValue("canRead")] = EncodableValue(can_read);
-  map[EncodableValue("canWrite")] = EncodableValue(can_write);
-  map[EncodableValue("canObserve")] = EncodableValue(can_observe);
-  map[EncodableValue("canStream")] = EncodableValue(can_stream);
-  if (reason.has_value()) {
-    map[EncodableValue("reason")] = EncodableValue(*reason);
-  }
-  return map;
-}
-
-std::filesystem::path ResolveRootPath(const EncodableMap& request) {
-  const EncodableMap* platform_data = AsMap(FindValue(request, "platformData"));
+// Purpose: Find the directory a files or media request reads. Dart sends
+// UTF-8, so the path is converted explicitly rather than through the system
+// code page.
+// @param request is the request; platformData.rootPath names the directory.
+// @param effects reads the working directory and captures absolute paths.
+// @returns The named directory, or the working directory.
+// @throws std::system_error when the named path is not valid UTF-8 or the
+// working directory cannot be read.
+std::filesystem::path ResolveRootPath(
+    const EncodableMap& request,
+    const PluginEffects& effects) {
+  const EncodableMap* platform_data = MapAt(request, "platformData");
   if (platform_data != nullptr) {
-    const auto root = AsString(FindValue(*platform_data, "rootPath"));
+    const auto root = StringAt(*platform_data, "rootPath");
     if (root.has_value() && !root->empty()) {
-      return std::filesystem::path(*root);
-    }
-  }
-  return std::filesystem::current_path();
-}
-
-std::vector<EncodableMap> ListRecords(const std::filesystem::path& root,
-                                      bool media_only) {
-  std::vector<EncodableMap> rows;
-  std::error_code ec;
-  if (!std::filesystem::exists(root, ec)) {
-    return rows;
-  }
-
-  for (auto it = std::filesystem::recursive_directory_iterator(
-           root, std::filesystem::directory_options::skip_permission_denied, ec);
-       it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
-    if (ec) {
-      ec.clear();
-      continue;
-    }
-
-    const auto& entry = *it;
-    const auto path = entry.path();
-    const bool is_dir = entry.is_directory(ec);
-    const std::string mime = MimeFromPath(path);
-
-    if (media_only) {
-      if (is_dir || !IsMediaMime(mime)) {
-        continue;
+      const auto path = PathFromUtf8(*root);
+      if (path.is_absolute()) {
+        return path;
       }
-      EncodableMap row;
-      row[EncodableValue("id")] = EncodableValue(path.string());
-      row[EncodableValue("uriOrPath")] = EncodableValue(path.string());
-      row[EncodableValue("mediaType")] = EncodableValue(MediaType(mime));
-      row[EncodableValue("mimeType")] = EncodableValue(mime);
-      if (entry.is_regular_file(ec)) {
-        row[EncodableValue("size")] = EncodableValue(static_cast<int64_t>(entry.file_size(ec)));
-      }
-      const auto modified = ModifiedEpochMs(entry);
-      row[EncodableValue("createdAt")] = EncodableValue(std::to_string(modified));
-      row[EncodableValue("modifiedAt")] = EncodableValue(std::to_string(modified));
-      rows.push_back(std::move(row));
-      continue;
+      return effects.absolute_path(effects.current_directory() / path);
     }
-
-    EncodableMap row;
-    row[EncodableValue("id")] = EncodableValue(path.string());
-    row[EncodableValue("path")] = EncodableValue(path.string());
-    row[EncodableValue("name")] = EncodableValue(path.filename().string());
-    row[EncodableValue("isDirectory")] = EncodableValue(is_dir);
-    if (entry.is_regular_file(ec)) {
-      row[EncodableValue("size")] = EncodableValue(static_cast<int64_t>(entry.file_size(ec)));
-    }
-    const auto modified = ModifiedEpochMs(entry);
-    row[EncodableValue("modifiedAt")] = EncodableValue(std::to_string(modified));
-    row[EncodableValue("mimeType")] = EncodableValue(mime);
-    row[EncodableValue("type")] = EncodableValue(is_dir ? "directory" : "file");
-    row[EncodableValue("extension")] = EncodableValue(path.extension().string());
-    row[EncodableValue("modifiedEpochMs")] = EncodableValue(modified);
-    rows.push_back(std::move(row));
   }
-
-  return rows;
+  return effects.absolute_path(effects.current_directory());
 }
 
-std::vector<EncodableMap> ApplyFilters(std::vector<EncodableMap> rows,
-                                       const EncodableList* filters) {
-  if (filters == nullptr || filters->empty()) {
-    return rows;
+// Purpose: Reject arguments for an extension method that takes none.
+// @param args are the method's arguments, or null.
+// @param method names the method for the error.
+// @returns An invalid-query error when arguments were sent, otherwise nothing.
+// @throws Nothing.
+std::optional<FlutterError> RejectArguments(const EncodableMap* args,
+                                            const std::string& method) {
+  if (args == nullptr || args->empty()) {
+    return std::nullopt;
   }
-
-  std::vector<EncodableMap> filtered;
-  for (auto& row : rows) {
-    bool keep = true;
-    for (const auto& filter_value : *filters) {
-      const auto* filter = std::get_if<EncodableMap>(&filter_value);
-      if (filter == nullptr) {
-        continue;
-      }
-      const auto field = AsString(FindValue(*filter, "field"));
-      const auto op = AsString(FindValue(*filter, "operator"));
-      if (!field.has_value() || !op.has_value()) {
-        continue;
-      }
-
-      const std::string actual = ValueAsString(row, *field);
-      const auto* expected = FindValue(*filter, "value");
-
-      if (*op == "equals") {
-        if (actual != AsString(expected).value_or("")) {
-          keep = false;
-          break;
-        }
-      } else if (*op == "contains") {
-        const std::string needle = Lower(AsString(expected).value_or(""));
-        if (Lower(actual).find(needle) == std::string::npos) {
-          keep = false;
-          break;
-        }
-      } else if (*op == "inList") {
-        const auto* expected_list = AsList(expected);
-        if (expected_list != nullptr) {
-          bool matched = false;
-          for (const auto& item : *expected_list) {
-            if (actual == AsString(&item).value_or("")) {
-              matched = true;
-              break;
-            }
-          }
-          if (!matched) {
-            keep = false;
-            break;
-          }
-        }
-      }
-    }
-
-    if (keep) {
-      filtered.push_back(std::move(row));
-    }
-  }
-
-  return filtered;
+  return FlutterError("invalid-query",
+                      "simple_query: " + method + " takes no arguments. Call it without args.");
 }
 
-void ApplySort(std::vector<EncodableMap>* rows, const EncodableList* sort) {
-  if (sort == nullptr || sort->empty()) {
-    return;
-  }
-  const auto* first = std::get_if<EncodableMap>(&sort->front());
-  if (first == nullptr) {
-    return;
-  }
-  const auto field = AsString(FindValue(*first, "field"));
-  if (!field.has_value()) {
-    return;
-  }
-  const bool ascending = AsString(FindValue(*first, "direction")).value_or("ascending") !=
-                         "descending";
-
-  std::sort(rows->begin(), rows->end(), [&](const EncodableMap& lhs, const EncodableMap& rhs) {
-    const auto lv = ValueAsString(lhs, *field);
-    const auto rv = ValueAsString(rhs, *field);
-    return ascending ? (lv < rv) : (lv > rv);
-  });
+// Purpose: Build one known-folder entry for resolveKnownFolders.
+// @param id names the folder.
+// @param path is the folder's path.
+// @returns The entry, with the path in UTF-8.
+// @throws std::system_error when the path is not valid Unicode.
+EncodableValue KnownFolder(const std::string& id, const std::filesystem::path& path) {
+  EncodableMap folder;
+  folder[EncodableValue("id")] = EncodableValue(id);
+  folder[EncodableValue("path")] = EncodableValue(PathToUtf8(path));
+  return EncodableValue(folder);
 }
 
-EncodableList ApplyProjection(const std::vector<EncodableMap>& rows,
-                              const EncodableList* projection) {
-  EncodableList projected_rows;
-  if (projection == nullptr || projection->empty()) {
-    for (const auto& row : rows) {
-      projected_rows.push_back(EncodableValue(row));
-    }
-    return projected_rows;
+// Purpose: Answer windows.storage.resolveKnownFolders.
+// @param args may hold includeTemp as a bool; absent means true.
+// @param current_directory reads the working directory.
+// @returns The current folder, and the temp folder unless excluded, or an
+// error for a non-bool includeTemp or an unreadable folder.
+// @throws Nothing.
+ErrorOr<std::optional<EncodableMap>> ResolveKnownFolders(
+    const EncodableMap* args, const std::function<std::filesystem::path()>& current_directory) {
+  const EncodableValue* include_temp_value =
+      args == nullptr ? nullptr : FindValue(*args, "includeTemp");
+  const std::optional<bool> include_temp =
+      include_temp_value == nullptr ? std::optional<bool>(true) : BoolAt(*args, "includeTemp");
+  if (!include_temp.has_value()) {
+    return FlutterError("invalid-query",
+                        "simple_query: windows.storage.resolveKnownFolders expects "
+                        "includeTemp as a bool. Send true or false.");
   }
-
-  for (const auto& row : rows) {
-    EncodableMap projected;
-    for (const auto& key_value : *projection) {
-      const auto key = AsString(&key_value).value_or("");
-      auto it = row.find(EncodableValue(key));
-      projected[EncodableValue(key)] =
-          (it == row.end()) ? EncodableValue() : it->second;
+  try {
+    EncodableList folders{KnownFolder("current", current_directory())};
+    if (*include_temp) {
+      folders.push_back(KnownFolder("temp", std::filesystem::temp_directory_path()));
     }
-    projected_rows.push_back(EncodableValue(projected));
+    EncodableMap response;
+    response[EncodableValue("folders")] = EncodableValue(folders);
+    return std::make_optional(std::move(response));
+  } catch (const std::system_error& error) {
+    return FlutterError("unavailable",
+                        std::string("simple_query: windows could not read a known "
+                                    "folder - ") +
+                            ExceptionText(error));
   }
-
-  return projected_rows;
 }
 
-using Snapshot = std::map<std::string, int64_t>;
-
-Snapshot BuildSnapshotForDomain(const EncodableMap& request,
-                                const std::string& domain) {
-  Snapshot snapshot;
-  std::vector<EncodableMap> rows;
-
-  if (domain == "files" || domain == "media") {
-    rows = ListRecords(ResolveRootPath(request), domain == "media");
-  } else if (domain == "contacts") {
-    rows = ListContactRecords().rows;
-  } else if (domain == "calendar") {
-    rows = ListCalendarRecords().rows;
-  }
-
-  for (const auto& row : rows) {
-    const auto id = AsString(FindValue(row, "id"));
-    if (!id.has_value()) {
-      continue;
-    }
-    int64_t modified = AsInt(FindValue(row, "modifiedEpochMs"))
-                           .value_or(AsInt(FindValue(row, "updatedAt"))
-                                         .value_or(AsInt(FindValue(row, "startAt"))
-                                                       .value_or(0)));
-    snapshot[*id] = modified;
-  }
-  return snapshot;
+// Purpose: Answer windows.storage.listLibraries.
+// @returns The library names this host recognizes.
+// @throws Nothing.
+ErrorOr<std::optional<EncodableMap>> ListLibraries() {
+  EncodableList libraries{EncodableValue("documents"), EncodableValue("music"),
+                          EncodableValue("pictures"), EncodableValue("videos")};
+  EncodableMap response;
+  response[EncodableValue("libraries")] = EncodableValue(libraries);
+  return std::make_optional(std::move(response));
 }
 
-EncodableList ChangedIds(const Snapshot& lhs, const Snapshot& rhs) {
-  std::set<std::string> ids;
-  for (const auto& [id, _] : lhs) {
-    const auto it = rhs.find(id);
-    if (it == rhs.end() || it->second != lhs.at(id)) {
-      ids.insert(id);
-    }
+// Purpose: Name the file an openBinary request reads.
+// @param request names the file by platformData.path or recordId.
+// @returns The path text, or nothing when the request names none.
+// @throws Nothing.
+std::optional<std::string> BinaryPathText(const EncodableMap& request) {
+  const EncodableMap* platform_data = MapAt(request, "platformData");
+  std::optional<std::string> path =
+      platform_data == nullptr ? std::nullopt : StringAt(*platform_data, "path");
+  if (!path.has_value()) {
+    path = StringAt(request, "recordId");
   }
-  for (const auto& [id, _] : rhs) {
-    const auto it = lhs.find(id);
-    if (it == lhs.end()) {
-      ids.insert(id);
-    }
+  if (path.has_value() && path->empty()) {
+    return std::nullopt;
   }
-
-  EncodableList values;
-  for (const auto& id : ids) {
-    values.push_back(EncodableValue(id));
-  }
-  return values;
+  return path;
 }
 
-struct ObserverState {
-  std::atomic<bool> active{true};
-  std::thread worker;
-};
+// Purpose: Read the polling interval an observe request asks for.
+// @param request may hold pollingIntervalMs as a number.
+// @returns The interval, raised to the floor; the default when absent or
+// null; or an error when it is not a number.
+// @throws Nothing.
+std::variant<std::chrono::milliseconds, FlutterError> PollingInterval(
+    const EncodableMap& request) {
+  const EncodableValue* value = FindValue(request, "pollingIntervalMs");
+  // Dart's encoder always sends the key, with null when the caller set no
+  // interval, so null asks for the default just as an absent key does.
+  if (IsAbsentOrNull(value)) {
+    return std::chrono::milliseconds(kDefaultPollingIntervalMs);
+  }
+  const std::optional<int64_t> interval_ms = AsInt(value);
+  if (!interval_ms.has_value()) {
+    return FlutterError("invalid-query",
+                        "simple_query: pollingIntervalMs must be a number of "
+                        "milliseconds. Send an integer.");
+  }
+  return std::chrono::milliseconds(std::max(kMinimumPollingIntervalMs, *interval_ms));
+}
+
+// The most host calls that may be queued or awaiting their reply at once,
+// so a stalled store or platform thread cannot grow memory without limit.
+constexpr size_t kMaxUnfinishedCalls = 64;
+
+// Purpose: Build the reply for a call the background worker did not take.
+// @param result says why the call was not queued.
+// @returns unavailable, saying whether to retry or restart.
+// @throws std::logic_error for kQueued, which is not a refusal.
+FlutterError NotQueuedError(EnqueueResult result) {
+  switch (result) {
+    case EnqueueResult::kFull:
+      return FlutterError("unavailable",
+                          "simple_query: windows has too many calls in progress. Try "
+                          "again after earlier calls finish.");
+    case EnqueueResult::kNotReady:
+      return FlutterError("unavailable",
+                          "simple_query: windows could not start its background worker. "
+                          "Restart the app.");
+    case EnqueueResult::kQueued:
+      break;
+  }
+  throw std::logic_error("simple_query_windows: a queued call has no refusal error");
+}
 
 }  // namespace
 
+// Purpose: Answer one engine's simple_query host calls on Windows.
+// Calls that read or write stores or the filesystem run on a background
+// worker and reply on the platform thread, so the platform thread never
+// waits for I/O. Create and destroy it on that engine's platform thread.
+// @param none; its constructor documents its own parameters.
+// @returns Nothing; this is a class.
+// @throws Nothing; its members document what they throw.
 class NativeQueryHostApiImpl : public NativeQueryHostApi {
  public:
-  explicit NativeQueryHostApiImpl(flutter::BinaryMessenger* messenger)
-      : flutter_api_(messenger) {}
+  // Purpose: Serve host calls and send observe events through one engine.
+  // @param messenger is the engine's messenger; it must outlive this object.
+  // @param effects supplies the environment reads.
+  // @returns Nothing.
+  // @throws Nothing.
+  NativeQueryHostApiImpl(flutter::BinaryMessenger* messenger,
+                         PluginEffects effects)
+      : effects_(std::move(effects)),
+        event_sender_(messenger),
+        observers_({.send_event =
+                        [this](ObserveEvent event) { event_sender_.Send(std::move(event)); },
+                    .now_epoch_ms = &EpochMsNow}),
+        background_calls_(kMaxUnfinishedCalls) {}
 
-  ~NativeQueryHostApiImpl() override { ShutdownObservers(); }
-
-  ErrorOr<EncodableMap> GetCapabilities() override {
-    const auto contacts_probe = ListContactRecords();
-    const auto calendar_probe = ListCalendarRecords();
-
-    EncodableList capabilities;
-    capabilities.push_back(
-        EncodableValue(Capability("contacts", !contacts_probe.error.has_value(), false,
-                                  !contacts_probe.error.has_value(), false,
-                                  contacts_probe.error)));
-    capabilities.push_back(EncodableValue(Capability("media", true, true, true, true)));
-    capabilities.push_back(EncodableValue(Capability("files", true, true, true, true)));
-    capabilities.push_back(EncodableValue(Capability("calendar",
-                                                     !calendar_probe.error.has_value(),
-                                                     false,
-                                                     !calendar_probe.error.has_value(),
-                                                     false, calendar_probe.error)));
-    capabilities.push_back(EncodableValue(
-        Capability("messages", false, false, false, false,
-                   "simple_query: messages is not supported on Windows")));
-    capabilities.push_back(EncodableValue(
-        Capability("calls", false, false, false, false,
-                   "simple_query: calls is not supported on Windows")));
-    capabilities.push_back(
-        EncodableValue(Capability("platformSpecific", true, false, false, false)));
-
-    EncodableMap extensions;
-    extensions[EncodableValue("windows.contacts")] = EncodableValue(true);
-    extensions[EncodableValue("windows.calendar")] = EncodableValue(true);
-    extensions[EncodableValue("windows.storage")] = EncodableValue(true);
-
-    EncodableMap result;
-    result[EncodableValue("capabilities")] = EncodableValue(capabilities);
-    result[EncodableValue("platformExtensions")] = EncodableValue(extensions);
-    return result;
+  // Purpose: Report what each domain supports on this machine.
+  // @param result receives the capabilities and the platform extensions.
+  // @returns Nothing.
+  // @throws Nothing; an unreadable store is reported in its capability.
+  void GetCapabilities(std::function<void(ErrorOr<EncodableMap> reply)> result) override {
+    RunInBackground<EncodableMap>(&ReadCapabilities, std::move(result));
   }
 
-  ErrorOr<EncodableMap> Query(const EncodableMap& request) override {
-    const std::string domain = StringOr(request, "domain", "platformSpecific");
-    if (domain != "files" && domain != "media" && domain != "contacts" &&
-        domain != "calendar") {
-      return FlutterError("not-supported",
-                          "simple_query: query is not supported for domain " + domain +
-                              " on Windows host");
+  // Purpose: Answer one query for files, media, contacts or calendar.
+  // @param request names the domain, filters, sort, page and projection.
+  // @param result receives one page of records with the total count;
+  // invalid-query for a malformed request; permission-denied, with the
+  // permission id, when access is off; unavailable when the store cannot be
+  // read.
+  // @returns Nothing.
+  // @throws Nothing.
+  void Query(const EncodableMap& request,
+             std::function<void(ErrorOr<EncodableMap> reply)> result) override {
+    const std::optional<std::string> domain = StringAt(request, "domain");
+    if (!domain.has_value()) {
+      return result(MissingDomainError());
     }
-
-    std::vector<EncodableMap> rows;
-    if (domain == "files" || domain == "media") {
-      rows = ListRecords(ResolveRootPath(request), domain == "media");
-    } else if (domain == "contacts") {
-      auto contact_rows = ListContactRecords();
-      if (contact_rows.error.has_value()) {
-        return FlutterError("unavailable", *contact_rows.error);
-      }
-      rows = std::move(contact_rows.rows);
-    } else {
-      auto calendar_rows = ListCalendarRecords();
-      if (calendar_rows.error.has_value()) {
-        return FlutterError("unavailable", *calendar_rows.error);
-      }
-      rows = std::move(calendar_rows.rows);
+    if (!IsReadableDomain(*domain)) {
+      return result(NotSupportedError("query", *domain));
     }
-    rows = ApplyFilters(std::move(rows), AsList(FindValue(request, "filters")));
-    ApplySort(&rows, AsList(FindValue(request, "sort")));
-
-    const int64_t total_count = static_cast<int64_t>(rows.size());
-    const EncodableMap* page = AsMap(FindValue(request, "page"));
-    const int64_t offset = std::max<int64_t>(0, page == nullptr
-                                                    ? 0
-                                                    : AsInt(FindValue(*page, "offset")).value_or(0));
-    const auto limit_opt = page == nullptr ? std::optional<int64_t>{}
-                                           : AsInt(FindValue(*page, "limit"));
-
-    const size_t start = static_cast<size_t>(std::min<int64_t>(offset, rows.size()));
-    size_t end = rows.size();
-    if (limit_opt.has_value()) {
-      end = std::min(rows.size(), start + static_cast<size_t>(std::max<int64_t>(0, *limit_opt)));
+    auto shape = ParseQueryShape(request);
+    if (auto* invalid = std::get_if<std::string>(&shape)) {
+      return result(FlutterError("invalid-query", *invalid));
     }
-
-    std::vector<EncodableMap> paged_rows(rows.begin() + static_cast<long>(start),
-                                         rows.begin() + static_cast<long>(end));
-
-    EncodableMap result;
-    result[EncodableValue("records")] =
-        EncodableValue(ApplyProjection(paged_rows, AsList(FindValue(request, "projection"))));
-    result[EncodableValue("totalCount")] = EncodableValue(total_count);
-    if (end < rows.size()) {
-      result[EncodableValue("nextOffset")] = EncodableValue(static_cast<int64_t>(end));
-    }
-    return result;
+    ValidatedQuery query{.domain = *domain,
+                         .shape = std::get<QueryShape>(std::move(shape)),
+                         .root = ResolveRoot(request)};
+    RunInBackground<EncodableMap>(
+        [query = std::move(query)](const StopRequested& stop_requested) {
+          return RunQuery(query, stop_requested);
+        },
+        std::move(result));
   }
 
-  ErrorOr<EncodableMap> Mutate(const EncodableMap& request) override {
-    const std::string domain = StringOr(request, "domain", "platformSpecific");
-    if (domain != "files" && domain != "media") {
-      return FlutterError("not-supported",
-                          "simple_query: mutate is not supported for domain " + domain +
-                              " on Windows host");
-    }
-
-    const std::string type = StringOr(request, "type", "");
-    if (type == "insert") {
-      const EncodableMap* values = AsMap(FindValue(request, "values"));
-      if (values == nullptr) {
-        return FlutterError("invalid-query", "simple_query: insert requires values");
-      }
-      const auto path = AsString(FindValue(*values, "path"));
-      if (!path.has_value() || path->empty()) {
-        return FlutterError("invalid-query", "simple_query: insert requires values.path");
-      }
-
-      std::error_code ec;
-      const bool is_directory = BoolOr(*values, "isDirectory", false);
-      if (is_directory) {
-        std::filesystem::create_directories(*path, ec);
-      } else {
-        const auto file_path = std::filesystem::path(*path);
-        std::filesystem::create_directories(file_path.parent_path(), ec);
-        std::ofstream stream(*path, std::ios::binary);
-        if (!stream.is_open()) {
-          return FlutterError("unavailable", "simple_query: could not create output file");
-        }
-        stream << AsString(FindValue(*values, "content")).value_or("");
-      }
-
-      EncodableMap result;
-      result[EncodableValue("affectedCount")] = EncodableValue(static_cast<int64_t>(1));
-      result[EncodableValue("insertedId")] = EncodableValue(*path);
-      return result;
-    }
-
-    if (type == "delete") {
-      EncodableMap query_request;
-      query_request[EncodableValue("domain")] = EncodableValue(domain);
-      query_request[EncodableValue("filters")] =
-          FindValue(request, "filters") == nullptr ? EncodableValue(EncodableList{})
-                                                     : *FindValue(request, "filters");
-      if (FindValue(request, "platformData") != nullptr) {
-        query_request[EncodableValue("platformData")] = *FindValue(request, "platformData");
-      }
-
-      auto queried = Query(query_request);
-      if (queried.has_error()) {
-        return queried.error();
-      }
-
-      const auto* records = AsList(FindValue(queried.value(), "records"));
-      int64_t deleted = 0;
-      if (records != nullptr) {
-        for (const auto& record_value : *records) {
-          const auto* record = std::get_if<EncodableMap>(&record_value);
-          if (record == nullptr) {
-            continue;
-          }
-          const auto path = AsString(FindValue(*record, "path"));
-          if (!path.has_value() || path->empty()) {
-            continue;
-          }
-          std::error_code ec;
-          deleted += static_cast<int64_t>(std::filesystem::remove_all(*path, ec));
-        }
-      }
-
-      EncodableMap result;
-      result[EncodableValue("affectedCount")] = EncodableValue(deleted);
-      return result;
-    }
-
-    if (type == "update") {
-      const EncodableMap* values = AsMap(FindValue(request, "values"));
-      if (values == nullptr) {
-        return FlutterError("invalid-query", "simple_query: update requires values");
-      }
-
-      std::set<std::string> target_paths;
-      const auto explicit_path = AsString(FindValue(*values, "path"));
-      const auto explicit_id = AsString(FindValue(*values, "id"));
-      if (explicit_path.has_value() && !explicit_path->empty()) {
-        target_paths.insert(*explicit_path);
-      } else if (explicit_id.has_value() && !explicit_id->empty()) {
-        target_paths.insert(*explicit_id);
-      }
-
-      if (target_paths.empty()) {
-        EncodableMap query_request;
-        query_request[EncodableValue("domain")] = EncodableValue(domain);
-        query_request[EncodableValue("filters")] =
-            FindValue(request, "filters") == nullptr ? EncodableValue(EncodableList{})
-                                                       : *FindValue(request, "filters");
-        if (FindValue(request, "platformData") != nullptr) {
-          query_request[EncodableValue("platformData")] = *FindValue(request, "platformData");
-        }
-        auto queried = Query(query_request);
-        if (queried.has_error()) {
-          return queried.error();
-        }
-        const auto* records = AsList(FindValue(queried.value(), "records"));
-        if (records != nullptr) {
-          for (const auto& record_value : *records) {
-            const auto* record = std::get_if<EncodableMap>(&record_value);
-            if (record == nullptr) {
-              continue;
-            }
-            const auto path = AsString(FindValue(*record, "path"));
-            if (path.has_value() && !path->empty()) {
-              target_paths.insert(*path);
-            }
-          }
-        }
-      }
-
-      int64_t updated = 0;
-      for (const auto& original_path : target_paths) {
-        std::error_code ec;
-        std::filesystem::path effective_path(original_path);
-        if (!std::filesystem::exists(effective_path, ec)) {
-          continue;
-        }
-
-        bool changed = false;
-        const auto new_path = AsString(FindValue(*values, "newPath"));
-        if (new_path.has_value() && !new_path->empty() && *new_path != original_path) {
-          const std::filesystem::path next_path(*new_path);
-          std::filesystem::create_directories(next_path.parent_path(), ec);
-          ec.clear();
-          std::filesystem::rename(effective_path, next_path, ec);
-          if (!ec) {
-            effective_path = next_path;
-            changed = true;
-          }
-        }
-
-        const bool is_directory = std::filesystem::is_directory(effective_path, ec);
-        if (!is_directory) {
-          const auto* bytes_value = FindValue(*values, "bytes");
-          if (bytes_value != nullptr) {
-            if (const auto* bytes = std::get_if<std::vector<uint8_t>>(bytes_value)) {
-              std::ofstream stream(effective_path.string(), std::ios::binary | std::ios::trunc);
-              if (!stream.is_open()) {
-                return FlutterError("unavailable", "simple_query: could not open file for update");
-              }
-              stream.write(reinterpret_cast<const char*>(bytes->data()),
-                           static_cast<std::streamsize>(bytes->size()));
-              changed = true;
-            } else {
-              return FlutterError(
-                  "invalid-query",
-                  "simple_query: update expects values.bytes as Uint8List when provided");
-            }
-          } else if (const auto* content_value = FindValue(*values, "content");
-                     content_value != nullptr) {
-            std::ofstream stream(effective_path.string(), std::ios::binary | std::ios::trunc);
-            if (!stream.is_open()) {
-              return FlutterError("unavailable", "simple_query: could not open file for update");
-            }
-            stream << AsString(content_value).value_or("");
-            changed = true;
-          }
-        }
-
-        if (changed) {
-          updated += 1;
-        }
-      }
-
-      EncodableMap result;
-      result[EncodableValue("affectedCount")] = EncodableValue(updated);
-      return result;
-    }
-
-    return FlutterError("invalid-query", "simple_query: unknown mutation type " + type);
+  // Purpose: Insert, update or delete files or media.
+  // @param request names the domain, the mutation type and its values.
+  // @param result receives the affected count, or an error for an invalid
+  // request or a filesystem step that failed.
+  // @returns Nothing.
+  // @throws Nothing.
+  void Mutate(const EncodableMap& request,
+              std::function<void(ErrorOr<EncodableMap> reply)> result) override {
+    RunInBackground<EncodableMap>(
+        [request, root = ResolveRoot(request)](const StopRequested& stop_requested) {
+          return MutateRequest({.request = request, .root = root,
+                                .stop_requested = stop_requested});
+        },
+        std::move(result));
   }
 
-  ErrorOr<EncodableMap> Batch(const EncodableMap& request) override {
-    const auto* operations = AsList(FindValue(request, "operations"));
+  // Purpose: Run several mutations in order, stopping at the first failure.
+  // @param request holds the operations and a shared platformData.
+  // @param result receives each mutation's result, or the first error.
+  // @returns Nothing.
+  // @throws Nothing.
+  void Batch(const EncodableMap& request,
+             std::function<void(ErrorOr<EncodableMap> reply)> result) override {
+    const EncodableList* operations = ListAt(request, "operations");
     if (operations == nullptr) {
-      return FlutterError("invalid-query", "simple_query: batch requires operations");
+      return result(FlutterError("invalid-query",
+                                 "simple_query: batch requires operations. Send a list "
+                                 "of mutation maps."));
     }
-
-    EncodableList results;
-    for (const auto& op_value : *operations) {
-      const auto* op = std::get_if<EncodableMap>(&op_value);
-      if (op == nullptr) {
-        return FlutterError("invalid-query", "simple_query: batch operation must be a map");
+    const EncodableValue* shared_platform_data = FindValue(request, "platformData");
+    std::vector<BatchOperation> batch;
+    for (const auto& operation_value : *operations) {
+      const auto* operation = std::get_if<EncodableMap>(&operation_value);
+      if (operation == nullptr) {
+        return result(FlutterError("invalid-query",
+                                   "simple_query: each batch operation must be a map."));
       }
-      EncodableMap merged = *op;
-      if (FindValue(*op, "platformData") == nullptr &&
-          FindValue(request, "platformData") != nullptr) {
-        merged[EncodableValue("platformData")] = *FindValue(request, "platformData");
+      EncodableMap merged = *operation;
+      if (FindValue(*operation, "platformData") == nullptr &&
+          shared_platform_data != nullptr) {
+        merged[EncodableValue("platformData")] = *shared_platform_data;
       }
-
-      auto result = Mutate(merged);
-      if (result.has_error()) {
-        return result.error();
-      }
-      results.push_back(EncodableValue(result.value()));
+      ResolvedRoot root = ResolveRoot(merged);
+      batch.push_back({.request = std::move(merged), .root = std::move(root)});
     }
-
-    EncodableMap response;
-    response[EncodableValue("results")] = EncodableValue(results);
-    return response;
+    RunInBackground<EncodableMap>(
+        [batch = std::move(batch)](const StopRequested& stop_requested) {
+          return RunBatch(batch, stop_requested);
+        },
+        std::move(result));
   }
 
-  ErrorOr<std::string> ObserveStart(const EncodableMap& request) override {
-    const std::string domain = StringOr(request, "domain", "platformSpecific");
-    if (domain != "files" && domain != "media" && domain != "contacts" &&
-        domain != "calendar") {
-      return FlutterError("not-supported",
-                          "simple_query: observe is not supported for domain " + domain +
-                              " on Windows host");
+  // Purpose: Start polling one domain and sending its changes to Dart. The
+  // first snapshot is taken before replying, so the observer reports every
+  // change made after the reply.
+  // @param request names the domain, the polling interval and the root.
+  // @param result receives the new observer's id; invalid-query for a
+  // malformed request; permission-denied, with the permission id, when
+  // access is off; or unavailable when the records cannot be read or the
+  // worker cannot start.
+  // @returns Nothing.
+  // @throws Nothing.
+  void ObserveStart(const EncodableMap& request,
+                    std::function<void(ErrorOr<std::string> reply)> result) override {
+    std::variant<ObserverSpec, FlutterError> spec = ObserverSpecFor(request);
+    if (auto* invalid = std::get_if<FlutterError>(&spec)) {
+      return result(*invalid);
     }
-
-    int64_t interval_ms = AsInt(FindValue(request, "pollingIntervalMs")).value_or(1000);
-    interval_ms = std::max<int64_t>(250, interval_ms);
-
-    const std::string observer_id =
-        std::string("windows_observer_") + std::to_string(++observer_counter_);
-    auto state = std::make_unique<ObserverState>();
-    auto* state_ptr = state.get();
-
-    {
-      std::lock_guard<std::mutex> lock(observers_mutex_);
-      observers_[observer_id] = std::move(state);
-    }
-
-    state_ptr->worker = std::thread(
-        [this, observer_id, domain, request, interval_ms, state_ptr]() {
-      Snapshot previous = BuildSnapshotForDomain(request, domain);
-      while (state_ptr->active.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
-        if (!state_ptr->active.load()) {
-          break;
-        }
-        Snapshot current = BuildSnapshotForDomain(request, domain);
-        if (current == previous) {
-          continue;
-        }
-
-        EncodableMap event;
-        event[EncodableValue("domain")] = EncodableValue(domain);
-        event[EncodableValue("changeType")] = EncodableValue("unknown");
-        event[EncodableValue("timestamp")] =
-            EncodableValue(std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                              std::chrono::system_clock::now().time_since_epoch())
-                                              .count()));
-        event[EncodableValue("ids")] = EncodableValue(ChangedIds(previous, current));
-        event[EncodableValue("source")] = EncodableValue("windows-host");
-        previous = std::move(current);
-
-        flutter_api_.OnObserveEvent(
-            observer_id, event, []() {}, [](const FlutterError&) {});
-      }
-    });
-
-    return observer_id;
+    const ObserverSpec& observer_spec = std::get<ObserverSpec>(spec);
+    RunInBackground<BaselineOrError, std::string>(
+        {.work = [observer_spec](const StopRequested& stop_requested) {
+           return TakeBaseline(observer_spec, stop_requested);
+         },
+         .finish = [this, observer_spec](BaselineOrError baseline) {
+           return StartObserver(observer_spec, std::move(baseline));
+         },
+         .result = std::move(result)});
   }
 
+  // Purpose: Stop one observer. An unknown id does nothing.
+  // @param observer_id is the id ObserveStart returned.
+  // @returns Nothing on success.
+  // @throws Nothing.
   std::optional<FlutterError> ObserveStop(const std::string& observer_id) override {
-    std::unique_ptr<ObserverState> state;
-    {
-      std::lock_guard<std::mutex> lock(observers_mutex_);
-      auto it = observers_.find(observer_id);
-      if (it == observers_.end()) {
-        return std::nullopt;
-      }
-      state = std::move(it->second);
-      observers_.erase(it);
-    }
-    state->active.store(false);
-    if (state->worker.joinable()) {
-      state->worker.join();
-    }
+    observers_.Stop(observer_id);
     return std::nullopt;
   }
 
-  ErrorOr<EncodableMap> OpenBinary(const EncodableMap& request) override {
-    const std::string domain = StringOr(request, "domain", "platformSpecific");
-    if (domain != "files" && domain != "media") {
-      return FlutterError("not-supported",
-                          "simple_query: openBinary is not supported for domain " + domain +
-                              " on Windows host");
+  // Purpose: Describe a file so Dart can read its bytes.
+  // @param request names the file by platformData.path or recordId, in UTF-8.
+  // @param result receives a handle, the file's UTF-8 path, MIME type and
+  // size, or an error.
+  // @returns Nothing.
+  // @throws Nothing.
+  void OpenBinary(const EncodableMap& request,
+                  std::function<void(ErrorOr<EncodableMap> reply)> result) override {
+    const std::optional<std::string> domain = StringAt(request, "domain");
+    if (!domain.has_value()) {
+      return result(MissingDomainError());
     }
-
-    std::optional<std::string> path;
-    const EncodableMap* platform_data = AsMap(FindValue(request, "platformData"));
-    if (platform_data != nullptr) {
-      path = AsString(FindValue(*platform_data, "path"));
+    if (!IsFileDomain(*domain)) {
+      return result(NotSupportedError("openBinary", *domain));
     }
-    if (!path.has_value()) {
-      path = AsString(FindValue(request, "recordId"));
+    const std::optional<std::string> path_text = BinaryPathText(request);
+    if (!path_text.has_value()) {
+      return result(FlutterError("invalid-query",
+                                 "simple_query: openBinary requires recordId or "
+                                 "platformData.path. Send the file's path."));
     }
-
-    if (!path.has_value() || path->empty()) {
-      return FlutterError("invalid-query", "simple_query: openBinary requires recordId or platformData.path");
+    std::filesystem::path path;
+    try {
+      path = PathFromUtf8(*path_text);
+    } catch (const std::system_error& error) {
+      return result(FlutterError("unavailable",
+                                 std::string("simple_query: openBinary could not read the "
+                                             "path. Check that it is valid Unicode - ") +
+                                     ExceptionText(error)));
     }
-
-    std::error_code ec;
-    if (!std::filesystem::exists(*path, ec)) {
-      return FlutterError("unavailable", "simple_query: binary resource was not found");
-    }
-
-    const auto handle = std::string("win_handle_") + std::to_string(++handle_counter_);
-    open_handles_[handle] = *path;
-
-    EncodableMap result;
-    result[EncodableValue("handleId")] = EncodableValue(handle);
-    result[EncodableValue("localPath")] = EncodableValue(*path);
-    result[EncodableValue("mimeType")] = EncodableValue(MimeFromPath(*path));
-    if (std::filesystem::is_regular_file(*path, ec)) {
-      result[EncodableValue("size")] =
-          EncodableValue(static_cast<int64_t>(std::filesystem::file_size(*path, ec)));
-    }
-    EncodableMap metadata;
-    metadata[EncodableValue("source")] = EncodableValue("windows-host");
-    result[EncodableValue("metadata")] = EncodableValue(metadata);
-    return result;
+    RunInBackground<ErrorOr<EncodableMap>, EncodableMap>(
+        {.work = [path](const StopRequested&) { return DescribeBinaryFile(path); },
+         .finish = [this, path](ErrorOr<EncodableMap> described) {
+           return RegisterHandle(path, std::move(described));
+         },
+         .result = std::move(result)});
   }
 
+  // Purpose: Forget a handle OpenBinary returned.
+  // @param handle_id is the handle to forget.
+  // @returns Nothing on success.
+  // @throws Nothing.
   std::optional<FlutterError> CloseBinary(const std::string& handle_id) override {
     open_handles_.erase(handle_id);
     return std::nullopt;
   }
 
-  ErrorOr<std::optional<EncodableMap>> CallExtension(
-      const std::string& namespaze, const std::string& method,
-      const EncodableMap* args) override {
-    if (namespaze == "windows.contacts" && method == "listStores") {
-      if (args != nullptr && !args->empty()) {
-        return FlutterError(
-            "invalid-query",
-            "simple_query: windows.contacts.listStores does not accept arguments");
+  // Purpose: Run one Windows-specific extension method. Store listings run
+  // on the background worker; the rest answer at once.
+  // @param extension_namespace is the extension namespace, such as
+  // windows.storage.
+  // @param method is the method name.
+  // @param args are the method's arguments, or null.
+  // @param result receives the method's result, or an error for an unknown
+  // method, invalid arguments, a denied store or an unreadable store.
+  // @returns Nothing.
+  // @throws Nothing.
+  // The generated NativeQueryHostApi fixes this signature.
+  void CallExtension(
+      const std::string& extension_namespace, const std::string& method,
+      const EncodableMap* args,
+      std::function<void(ErrorOr<std::optional<EncodableMap>> reply)> result) override {
+    const std::string qualified = extension_namespace + "." + method;
+    const bool lists_stores = qualified == "windows.contacts.listStores" ||
+                              qualified == "windows.calendar.listCalendars";
+    if (lists_stores) {
+      if (auto rejected = RejectArguments(args, qualified)) {
+        return result(*rejected);
       }
-      EncodableList stores;
-      try {
-        stores = ListContactStores();
-      } catch (const winrt::hresult_error& error) {
-        return FlutterError("unavailable",
-                            "simple_query: windows contacts backend unavailable - " +
-                                winrt::to_string(error.message()));
-      } catch (const std::exception& error) {
-        return FlutterError("unavailable",
-                            "simple_query: windows contacts backend unavailable - " +
-                                std::string(error.what()));
-      }
-
-      EncodableMap response;
-      response[EncodableValue("stores")] = EncodableValue(stores);
-      return response;
+      const bool contacts = qualified == "windows.contacts.listStores";
+      return RunInBackground<std::optional<EncodableMap>>(
+          [contacts](const StopRequested& stop_requested) {
+            return contacts ? StoresReply("stores", ListContactStores(stop_requested))
+                            : StoresReply("calendars", ListCalendarStores(stop_requested));
+          },
+          std::move(result));
     }
-
-    if (namespaze == "windows.calendar" && method == "listCalendars") {
-      if (args != nullptr && !args->empty()) {
-        return FlutterError(
-            "invalid-query",
-            "simple_query: windows.calendar.listCalendars does not accept arguments");
-      }
-      EncodableList calendars;
-      try {
-        calendars = ListCalendarStores();
-      } catch (const winrt::hresult_error& error) {
-        return FlutterError("unavailable",
-                            "simple_query: windows calendar backend unavailable - " +
-                                winrt::to_string(error.message()));
-      } catch (const std::exception& error) {
-        return FlutterError("unavailable",
-                            "simple_query: windows calendar backend unavailable - " +
-                                std::string(error.what()));
-      }
-      EncodableMap response;
-      response[EncodableValue("calendars")] = EncodableValue(calendars);
-      return response;
+    if (qualified == "windows.storage.resolveKnownFolders") {
+      return result(ResolveKnownFolders(args, effects_.current_directory));
     }
-
-    if (namespaze == "windows.storage" && method == "resolveKnownFolders") {
-      bool include_temp = true;
-      if (args != nullptr) {
-        if (const auto* include_temp_value = FindValue(*args, "includeTemp")) {
-          if (const auto* include_temp_bool = std::get_if<bool>(include_temp_value)) {
-            include_temp = *include_temp_bool;
-          } else {
-            return FlutterError(
-                "invalid-query",
-                "simple_query: windows.storage.resolveKnownFolders expects includeTemp as bool");
-          }
-        }
+    if (qualified == "windows.storage.listLibraries") {
+      if (auto rejected = RejectArguments(args, qualified)) {
+        return result(*rejected);
       }
-
-      EncodableList folders;
-      EncodableMap cwd;
-      cwd[EncodableValue("id")] = EncodableValue("current");
-      cwd[EncodableValue("path")] = EncodableValue(std::filesystem::current_path().string());
-      folders.push_back(EncodableValue(cwd));
-
-      if (include_temp) {
-        EncodableMap temp;
-        temp[EncodableValue("id")] = EncodableValue("temp");
-        temp[EncodableValue("path")] =
-            EncodableValue(std::filesystem::temp_directory_path().string());
-        folders.push_back(EncodableValue(temp));
-      }
-
-      EncodableMap response;
-      response[EncodableValue("folders")] = EncodableValue(folders);
-      return response;
+      return result(ListLibraries());
     }
-
-    if (namespaze == "windows.storage" && method == "listLibraries") {
-      if (args != nullptr && !args->empty()) {
-        return FlutterError(
-            "invalid-query",
-            "simple_query: windows.storage.listLibraries does not accept arguments");
-      }
-      EncodableList libraries;
-      libraries.push_back(EncodableValue("documents"));
-      libraries.push_back(EncodableValue("music"));
-      libraries.push_back(EncodableValue("pictures"));
-      libraries.push_back(EncodableValue("videos"));
-
-      EncodableMap response;
-      response[EncodableValue("libraries")] = EncodableValue(libraries);
-      return response;
-    }
-
-    return FlutterError("not-supported",
-                        "simple_query: " + namespaze + "." + method +
-                            " is not supported on Windows host");
+    result(FlutterError("not-supported", "simple_query: " + qualified +
+                                             " is not supported on Windows. Check "
+                                             "platformExtensions from getCapabilities."));
   }
 
  private:
-  void ShutdownObservers() {
-    std::vector<std::unique_ptr<ObserverState>> states;
-    {
-      std::lock_guard<std::mutex> lock(observers_mutex_);
-      for (auto& item : observers_) {
-        states.push_back(std::move(item.second));
-      }
-      observers_.clear();
-    }
-    for (auto& state : states) {
-      state->active.store(false);
-      if (state->worker.joinable()) {
-        state->worker.join();
-      }
+  // Purpose: Run a call's work on the background worker, then build and send
+  // its reply on the platform thread. A call the worker cannot take is
+  // answered at once.
+  // @param call is the work, the platform-thread step and the reply.
+  // @returns Nothing.
+  // @throws Nothing.
+  template <typename Value, typename Reply>
+  void RunInBackground(BackgroundCall<Value, Reply> call) {
+    std::function<void(ErrorOr<Reply>)> refused = call.result;
+    BackgroundJob job = MakeBackgroundJob(std::move(call));
+    const EnqueueResult queued = background_calls_.Enqueue(
+        std::move(job), [result = refused]() {
+          result(FlutterError(
+              "unavailable",
+              "simple_query: windows operation timed out after 30 seconds and may "
+              "still finish. Check its effect before retrying, then restart the app."));
+        });
+    if (queued != EnqueueResult::kQueued) {
+      refused(NotQueuedError(queued));
     }
   }
 
-  NativeQueryFlutterApi flutter_api_;
+  // Purpose: Run a call's work on the background worker and send its reply
+  // unchanged on the platform thread.
+  // @param work runs on the worker; see BackgroundCall::work.
+  // @param result is Pigeon's reply callback.
+  // @returns Nothing.
+  // @throws Nothing.
+  template <typename Reply>
+  void RunInBackground(std::function<ErrorOr<Reply>(const StopRequested&)> work,
+                       std::function<void(ErrorOr<Reply>)> result) {
+    RunInBackground<ErrorOr<Reply>, Reply>(
+        {.work = std::move(work),
+         .finish = [](ErrorOr<Reply> reply) { return reply; },
+         .result = std::move(result)});
+  }
+
+  // Purpose: Resolve a files or media request's root on the platform thread.
+  // @param request may name the root in platformData.rootPath.
+  // @returns The root, or why it could not be resolved.
+  // @throws Nothing.
+  ResolvedRoot ResolveRoot(const EncodableMap& request) {
+    try {
+      return {.path = ResolveRootPath(request, effects_), .error = std::nullopt};
+    } catch (const std::system_error& error) {
+      return {.path = std::nullopt, .error = error};
+    }
+  }
+
+  // Purpose: Validate an observe request and build its observer spec.
+  // @param request names the domain, the polling interval and the root.
+  // @returns The spec, or the error Dart receives.
+  // @throws Nothing.
+  std::variant<ObserverSpec, FlutterError> ObserverSpecFor(const EncodableMap& request) {
+    const std::optional<std::string> domain = StringAt(request, "domain");
+    if (!domain.has_value()) {
+      return MissingDomainError();
+    }
+    if (!IsReadableDomain(*domain)) {
+      return NotSupportedError("observe", *domain);
+    }
+    if (!observers_.IsReady()) {
+      return FlutterError("unavailable",
+                          "simple_query: windows observe could not create its "
+                          "platform-thread message window. Restart the app.");
+    }
+    auto interval = PollingInterval(request);
+    if (auto* invalid = std::get_if<FlutterError>(&interval)) {
+      return *invalid;
+    }
+    auto parsed_filters = ParseFilters(request);
+    if (auto* invalid = std::get_if<std::string>(&parsed_filters)) {
+      return FlutterError("invalid-query", *invalid);
+    }
+    auto filters = std::get<std::vector<QueryFilter>>(std::move(parsed_filters));
+    // Only files and media read a root. It is resolved once, here, so the
+    // worker keeps only what its snapshots read.
+    std::filesystem::path root;
+    if (IsFileDomain(*domain)) {
+      ResolvedRoot resolved = ResolveRoot(request);
+      if (resolved.error.has_value()) {
+        return FlutterError("unavailable",
+                            std::string("simple_query: windows observe could not "
+                                        "resolve its root directory. Check "
+                                        "platformData.rootPath - ") +
+                                ExceptionText(*resolved.error));
+      }
+      root = std::move(*resolved.path);
+    }
+    return ObserverSpec{
+        .domain = *domain,
+        .polling_interval = std::get<std::chrono::milliseconds>(interval),
+        .take_snapshot =
+            [root, domain = *domain, filters = std::move(filters)](const StopRequested& stop_requested) {
+              return BuildSnapshotForDomain(
+                  {.root = root, .domain = domain, .stop_requested = stop_requested,
+                   .filters = &filters});
+            },
+    };
+  }
+
+  // Purpose: Start an observer from its first snapshot. Runs on the
+  // platform thread.
+  // @param spec is the observer's spec.
+  // @param baseline is the first snapshot, or the error it failed with.
+  // @returns The observer's id, or the error Dart receives.
+  // @throws Nothing.
+  ErrorOr<std::string> StartObserver(const ObserverSpec& spec, BaselineOrError baseline) {
+    if (auto* error = std::get_if<FlutterError>(&baseline)) {
+      return *error;
+    }
+    std::optional<std::string> observer_id;
+    try {
+      observer_id = observers_.Start(spec, std::get<Snapshot>(std::move(baseline)));
+    } catch (const std::system_error& error) {
+      return FlutterError("unavailable",
+                          "simple_query: windows observe could not start its polling "
+                          "thread. Try again - " + ExceptionText(error));
+    }
+    if (!observer_id.has_value()) {
+      return FlutterError("unavailable",
+                          "simple_query: windows observe already runs " +
+                              std::to_string(kMaxDetachedThreads) +
+                              " worker threads. Stop an observer, or try again "
+                              "shortly once stopped observers finish.");
+    }
+    return *observer_id;
+  }
+
+  // Purpose: Give a described file a handle Dart can close. Runs on the
+  // platform thread.
+  // @param path is the file's path.
+  // @param described is the file's description, or the error it failed with.
+  // @returns The description with its handle, or the error.
+  // @throws Nothing.
+  ErrorOr<EncodableMap> RegisterHandle(const std::filesystem::path& path,
+                                       ErrorOr<EncodableMap> described) {
+    if (described.has_error()) {
+      return described;
+    }
+    EncodableMap result = described.value();
+    const std::string handle = "win_handle_" + std::to_string(++handle_counter_);
+    open_handles_[handle] = path;
+    result[EncodableValue("handleId")] = EncodableValue(handle);
+    return result;
+  }
+
+  // Read only on the platform thread.
+  const PluginEffects effects_;
+  ObserveEventSender event_sender_;
   int64_t handle_counter_ = 0;
-  int64_t observer_counter_ = 0;
-  std::map<std::string, std::string> open_handles_;
-  std::map<std::string, std::unique_ptr<ObserverState>> observers_;
-  std::mutex observers_mutex_;
+  std::map<std::string, std::filesystem::path> open_handles_;
+  // Declared after event_sender_ so it is destroyed first: no worker can
+  // wake it once it is gone, and no event is sent after the sender goes.
+  PollingObservers observers_;
+  // Declared last so it is destroyed first: its pending replies use this
+  // object, and are dropped before any member they touch goes away.
+  BackgroundCalls background_calls_;
 };
 
-}  // namespace
-
+// Each engine's registrar owns its own plugin and host API, so every engine's
+// events go to its own messenger.
+// Purpose: Create this engine's plugin and hand it to the registrar.
+// @param registrar is the engine's plugin registrar.
+// @returns Nothing.
+// @throws Nothing.
 void SimpleQueryWindowsPlugin::RegisterWithRegistrar(
     flutter::PluginRegistrarWindows* registrar) {
-  auto plugin = std::make_unique<SimpleQueryWindowsPlugin>();
-  registrar->AddPlugin(std::move(plugin));
-
-  static std::unique_ptr<NativeQueryHostApiImpl> host_api;
-  if (!host_api) {
-    host_api = std::make_unique<NativeQueryHostApiImpl>(registrar->messenger());
-  }
-  NativeQueryHostApi::SetUp(registrar->messenger(), host_api.get());
+  registrar->AddPlugin(
+      std::make_unique<SimpleQueryWindowsPlugin>(registrar->messenger()));
 }
 
-SimpleQueryWindowsPlugin::SimpleQueryWindowsPlugin() {}
+// Purpose: Start answering host API calls on one engine's messenger.
+// @param messenger is the engine's messenger; it must outlive the plugin.
+// @param effects supplies the environment reads.
+// @returns Nothing.
+// @throws Nothing.
+SimpleQueryWindowsPlugin::SimpleQueryWindowsPlugin(
+    flutter::BinaryMessenger* messenger, PluginEffects effects)
+    : messenger_(messenger),
+      host_api_(std::make_unique<NativeQueryHostApiImpl>(messenger,
+                                                         std::move(effects))) {
+  NativeQueryHostApi::SetUp(messenger_, host_api_.get());
+}
 
-SimpleQueryWindowsPlugin::~SimpleQueryWindowsPlugin() {}
+// The registrar destroys its plugins while the messenger is still alive, so
+// the handlers are removed and every observer stops before the engine goes.
+// Purpose: Remove this engine's handlers, then stop every observer.
+// @returns Nothing.
+// @throws Nothing.
+SimpleQueryWindowsPlugin::~SimpleQueryWindowsPlugin() {
+  NativeQueryHostApi::SetUp(messenger_, nullptr);
+}
 
 }  // namespace simple_query_windows

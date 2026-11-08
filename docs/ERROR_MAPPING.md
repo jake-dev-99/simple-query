@@ -86,3 +86,25 @@ A null cursor maps to `unavailable` on the `query()` and
 `details.contentUri` is the failing provider's: a related query's for a
 join. See
 [API_SEMANTICS.md](API_SEMANTICS.md#null-cursor-semantics-android).
+
+### Windows host deadlines
+
+Windows filesystem and store host calls have a 30-second deadline starting
+when queued. If an unfinished call reaches its deadline, the host reports
+`unavailable` for every unfinished call and refuses further background work
+until the plugin is recreated. Replies remain on the platform thread.
+
+The deadline cancels supported store reads. Windows filesystem I/O cannot
+always be interrupted: an operation already running may still change files
+after its timeout reply. A timeout does not roll back a mutation. Check its
+effect before retrying, then restart the app. Queued operations that never
+started are dropped; late replies are suppressed.
+
+Windows file mutations validate filters and contents before changing targets.
+File inserts never replace existing destinations. Content updates follow symbolic
+links and stage replacement bytes before publication, preserving existing file
+metadata through Windows replacement semantics. Filesystem mutation failures
+include `affectedCount` for confirmed effects and `partialEffectsPossible`;
+timeouts or unexpected deferred failures can leave the count unknown.
+A `recoveryPath` identifies a retained recovery directory after replacement or
+backup-cleanup failure. These errors do not promise rollback of earlier effects.

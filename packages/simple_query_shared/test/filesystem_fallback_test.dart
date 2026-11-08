@@ -35,6 +35,24 @@ void main() {
     await temp.delete(recursive: true);
   });
 
+  // Purpose: A name-only files projection remains a valid partial record.
+  test('query validates filesystem projection without adding keys', () async {
+    final temp = await Directory.systemTemp.createTemp('sq_projection_');
+    addTearDown(() => temp.delete(recursive: true));
+    await File('${temp.path}${Platform.pathSeparator}sample.txt')
+        .writeAsString('hello');
+
+    final result = await fallback.query(QueryRequest(
+      domain: QueryDomain.files,
+      projection: const <String>['name'],
+      platformData: <String, Object?>{'rootPath': temp.path},
+    ));
+
+    expect(result.records, <QueryRecord>[
+      <String, Object?>{'name': 'sample.txt'},
+    ]);
+  });
+
   test('batch executes with sequential best effort semantics', () async {
     final temp = await Directory.systemTemp.createTemp('sq_fallback_batch_');
     final first = File('${temp.path}${Platform.pathSeparator}first.txt');

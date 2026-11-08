@@ -1,0 +1,164 @@
+name: Verify (Windows)
+
+# Builds the Windows plugin inside a Flutter consumer app and runs its native
+# GoogleTest runner, and checks that the committed Windows Pigeon output
+# matches pigeon.dart. The Dart-only verify.yml never compiles this C++
+# (UNFY-381).
+#
+# COST CONTROL. A Windows runner is slow and costly, so the build and drift
+# jobs run only when a pull request touches the Windows package, the packages
+# it depends on, the script that builds the consumer, the Pigeon regeneration
+# script or this workflow. The workflow itself runs on every pull request, so
+# its "Windows verify result" check always reports and can be required: a
+# PR that touches none of those paths passes it without the Windows jobs.
+#
+# External GitHub Actions are pinned to a full commit SHA (not a floating
+# tag) for supply-chain safety, with a human-readable version comment — same
+# convention as verify.yml / verify-native.yml.
+
+on:
+  pull_request:
+    branches: [main]
+  # Like verify.yml, gate commits that reach main (including the "Cut
+  # Release" bot's), but only those touching the Windows paths. The changes
+  # job repeats this list for pull requests; keep the two in step.
+  push:
+    branches: [main]
+    paths:
+      - 'packages/simple_query_windows/**'
+      - 'packages/simple_query_platform_interface/**'
+      - 'packages/simple_query_shared/**'
+      - 'tool/build_windows_consumer.sh'
+      - 'tool/regen_pigeon.sh'
+      - '.github/workflows/verify-windows.yml'
+  # Manual override for re-running the Windows gate against a specific ref.
+  workflow_dispatch:
+
+jobs:
+  changes:
+    name: Detect Windows changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read  # checkout only; least-privilege (zizmor)
+    outputs:
+      windows: ${{ steps.detect.outputs.windows }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0  # the pull request diff needs the base commit
+          persist-credentials: false  # no later step does authenticated git ops (zizmor artipacked)
+
+      - name: Check whether the change touches the Windows paths
+        id: detect
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # Pushes are already path-filtered, and a manual run asks for the gate.
+          if [[ "${EVENT_NAME}" != "pull_request" ]]; then
+            echo "windows=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          windows=false
+          while IFS= read -r -d '' path; do
+            case "${path}" in
+              packages/simple_query_windows/*|packages/simple_query_platform_interface/*|\
+              packages/simple_query_shared/*|tool/build_windows_consumer.sh|\
+              tool/regen_pigeon.sh|.github/workflows/verify-windows.yml)
+                windows=true
+                ;;
+            esac
+          # --no-renames lists a moved file under both its old and new
+          # path, so moving a file out of a watched folder still runs the
+          # Windows jobs. -z prints raw names ending in NUL; without it, Git
+          # quotes and escapes a name like café.cpp, and no pattern matches.
+          done < <(git diff --no-renames --name-only -z "${BASE_SHA}...${HEAD_SHA}")
+          echo "windows=${windows}" >> "${GITHUB_OUTPUT}"
+
+  windows-consumer:
+    name: Windows consumer build + native tests
+    needs: changes
+    if: needs.changes.outputs.windows == 'true'
+    # Matches the Unify app's Windows build job, so the plugin compiles with
+    # the same Visual Studio toolchain that app releases use.
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read  # checkout only; least-privilege (zizmor)
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false  # no later step does authenticated git ops (zizmor artipacked)
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+
+      - name: Build Flutter Windows consumer fixture and run native tests
+        shell: bash
+        run: bash tool/build_windows_consumer.sh
+
+  pigeon-drift:
+    name: Windows Pigeon output matches pigeon.dart
+    needs: changes
+    if: needs.changes.outputs.windows == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read  # checkout only; least-privilege (zizmor)
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false  # no later step does authenticated git ops (zizmor artipacked)
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+
+      - name: Regenerate the Windows Pigeon output
+        run: bash tool/regen_pigeon.sh packages/simple_query_windows
+
+      - name: Fail when the committed output differs
+        # Only the generated files: pub get may rewrite pubspec.lock.
+        run: |
+          set -euo pipefail
+          generated=(
+            packages/simple_query_windows/lib/src/generated/native_query.g.dart
+            packages/simple_query_windows/windows/native_query.g.h
+            packages/simple_query_windows/windows/native_query.g.cpp
+          )
+          if ! git diff --exit-code -- "${generated[@]}"; then
+            echo "::error::The committed Windows Pigeon output does not match pigeon.dart. Run: bash tool/regen_pigeon.sh packages/simple_query_windows"
+            exit 1
+          fi
+
+  result:
+    # The one check to require. It runs even when the Windows jobs were
+    # skipped, and fails when either of them failed or was cancelled.
+    name: Windows verify result
+    needs: [changes, windows-consumer, pigeon-drift]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Fail when a Windows job did not succeed
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          CONSUMER: ${{ needs.windows-consumer.result }}
+          DRIFT: ${{ needs.pigeon-drift.result }}
+        run: |
+          set -euo pipefail
+          if [[ "${CHANGES}" != "success" ]]; then
+            echo "::error::Detecting Windows changes ended as ${CHANGES}."
+            exit 1
+          fi
+          for result in "${CONSUMER}" "${DRIFT}"; do
+            if [[ "${result}" != "success" && "${result}" != "skipped" ]]; then
+              echo "::error::A Windows job ended as ${result}. Open its log above."
+              exit 1
+            fi
+          done

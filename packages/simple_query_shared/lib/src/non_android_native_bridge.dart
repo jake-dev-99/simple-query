@@ -4,6 +4,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:simple_query_platform_interface/simple_query_platform_interface.dart';
 
+import 'query_result_validation.dart';
+
 typedef NativePayload = Map<String?, Object?>;
 typedef NativeNullablePayload = Map<String?, Object?>?;
 
@@ -104,6 +106,7 @@ class NonAndroidNativeBridge {
       return NativePayloadCodec.decodeQueryResult(
         await query(NativePayloadCodec.encodeQueryRequest(request)),
         domain: request.domain,
+        projection: request.projection,
       );
     } on PlatformException catch (error) {
       if (_shouldFallback(error)) {
@@ -579,9 +582,17 @@ abstract final class NativePayloadCodec {
     );
   }
 
+  /// Purpose: Decode native records using the query's projection context.
+  /// @param payload contains the native result map.
+  /// @param domain selects the required core fields.
+  /// @param projection selects required fields to validate; null or empty
+  /// validates complete records.
+  /// @returns The decoded result, preserving exactly the supplied record keys.
+  /// @throws SimpleQueryError when required fields in scope are missing.
   static QueryResult decodeQueryResult(
     NativePayload payload, {
     required QueryDomain domain,
+    List<String>? projection,
   }) {
     final rawRecords =
         payload['records'] as List<Object?>? ?? const <Object?>[];
@@ -592,8 +603,9 @@ abstract final class NativePayloadCodec {
               row.map((key, value) => MapEntry(key?.toString() ?? '', value)),
         )
         .toList(growable: false);
-    return RuntimeContractValidation.validateQueryResult(
+    return validateProjectedQueryResult(
       domain: domain,
+      projection: projection,
       result: QueryResult(
         records: records,
         totalCount: _asInt(payload['totalCount']),
