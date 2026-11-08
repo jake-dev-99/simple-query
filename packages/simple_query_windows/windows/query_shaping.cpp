@@ -118,6 +118,15 @@ std::optional<double> AsDouble(const EncodableValue& value) {
   return std::nullopt;
 }
 
+// Purpose: Report whether an operand cannot be ordered because it is
+// absent or NaN.
+// @param value is the operand, or null when its field is absent.
+// @returns true when the operand is absent or NaN.
+// @throws Nothing.
+bool IsAbsentOrUnordered(const EncodableValue* value) {
+  return value == nullptr || IsNan(*value);
+}
+
 // Purpose: Order two field values: integers exactly, other numbers as
 // doubles, and any other scalars as text.
 // @param lhs is the first value, or null when the field is absent.
@@ -127,7 +136,7 @@ std::optional<double> AsDouble(const EncodableValue& value) {
 // @throws Nothing.
 std::optional<int> CompareValues(const EncodableValue* lhs, const EncodableValue* rhs) {
   // NaN is unordered: its < and > are both false, which would read as equal.
-  if (lhs == nullptr || rhs == nullptr || IsNan(*lhs) || IsNan(*rhs)) {
+  if (IsAbsentOrUnordered(lhs) || IsAbsentOrUnordered(rhs)) {
     return std::nullopt;
   }
   if (const auto integers = CompareIntegers(*lhs, *rhs); integers.has_value()) {

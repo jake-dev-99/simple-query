@@ -19,6 +19,7 @@ std::atomic<int64_t>& RunningCount() {
 
 // Purpose: Reserve one place for a new detached thread, unless the process
 // already runs kMaxDetachedThreads.
+// @param none.
 // @returns true when a place was reserved.
 // @throws Nothing.
 bool ReservePlace() {
