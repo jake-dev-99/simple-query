@@ -1187,9 +1187,10 @@ void main() {
     /// @param host the fake host, handing out `a` then `b`.
     /// @param api the instance under test, built on [host].
     /// @param openGate the gate the second open waits for.
-    /// @returns the second open, still in flight.
+    /// @returns a record holding the second open, still in flight; a
+    ///   record, so awaiting the setup never awaits the open.
     /// @throws Nothing; the first open succeeds on the fake host.
-    Future<Future<iface.BinaryContentHandle>> openOneThenStall(
+    Future<({Future<iface.BinaryContentHandle> opening})> openOneThenStall(
       _FakeHostApi host,
       SimpleQueryAndroidApi api,
       Completer<void> openGate,
@@ -1212,7 +1213,7 @@ void main() {
         ),
       );
       await Future<void>.delayed(Duration.zero);
-      return opening;
+      return (opening: opening);
     }
 
     test('dispose closes the open handles while another open stalls',
@@ -1234,7 +1235,7 @@ void main() {
       final host = _FakeHostApi()..nextStreamIds.addAll(<String>['a', 'b']);
       final api = apiFor(host);
       final openGate = Completer<void>();
-      final opening = await openOneThenStall(host, api, openGate);
+      final (:opening) = await openOneThenStall(host, api, openGate);
 
       await api.dispose();
       openGate.complete();
@@ -1262,7 +1263,7 @@ void main() {
       final host = _FakeHostApi()..nextStreamIds.addAll(<String>['a', 'b']);
       final api = apiFor(host);
       final openGate = Completer<void>();
-      final opening = await openOneThenStall(host, api, openGate);
+      final (:opening) = await openOneThenStall(host, api, openGate);
       host.closeStreamFailures['b'] =
           PlatformException(code: 'transient', message: 'b failed');
 
