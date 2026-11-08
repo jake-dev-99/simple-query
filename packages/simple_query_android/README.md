@@ -19,3 +19,18 @@ Also supports:
 - Permission integration via `simple_permissions_native`
 
 This package is automatically included when you depend on `simple_query`.
+
+## Closing binary streams
+
+`closeBinary()` waits up to 5 seconds for a running background copy to stop.
+A copy failure that races the close is still raised as its mapped
+`SimpleQueryError`. A copy that does not stop in time raises the failure it
+recorded so far, with the timeout attached. With none recorded, it raises an
+`IOException` (`transientFailure`), because the content may be incomplete. A
+failure that copy records later is logged. A JVM `Error` in the copy is not
+raised here; it propagates on the copy's own thread.
+
+`dispose()` closes its open binary streams concurrently, so those waits
+overlap. It raises the first failure in step order. The plugin detach
+(`StreamManager.dispose()`) does not wait; a running copy logs its own failure
+when it finishes.
