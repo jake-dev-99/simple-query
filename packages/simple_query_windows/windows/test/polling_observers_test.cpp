@@ -454,14 +454,16 @@ TEST_F(PollingObserversTest, TeardownDropsAQueuedChange) {
 // refused until they finish.
 TEST_F(PollingObserversTest, RefusesAStartWhileTooManyWorkersStillRun) {
   std::atomic<bool> released{false};
+  std::atomic<int64_t> entered{0};
   ASSERT_TRUE(WaitWithoutPumping([]() { return RunningDetachedThreads() == 0; },
                                  kDeliveryTimeout));
   DetachedThreadsDrain drain;
   PollingObservers observers(RecordingEffects());
   const ObserverSpec blocked{.domain = "files",
                              .polling_interval = kFastPoll,
-                             .take_snapshot = [&released](const StopRequested&) {
+                             .take_snapshot = [&released, &entered](const StopRequested&) {
                                // Stands in for blocking I/O that ignores a stop.
+                               entered.fetch_add(1);
                                while (!released.load()) {
                                  std::this_thread::sleep_for(1ms);
                                }
@@ -473,6 +475,16 @@ TEST_F(PollingObserversTest, RefusesAStartWhileTooManyWorkersStillRun) {
     ASSERT_TRUE(observer_id.has_value());
     observer_ids.push_back(std::move(*observer_id));
   }
+
+  // Every worker must be inside the blocking read before any stop. A
+  // worker still waiting for its first poll can otherwise stop and free a
+  // slot, which would make the second refusal timing-dependent.
+  const bool all_entered = WaitWithoutPumping(
+      [&]() { return entered.load() == kMaxDetachedThreads; }, kDeliveryTimeout);
+  if (!all_entered) {
+    released.store(true);
+  }
+  ASSERT_TRUE(all_entered);
 
   EXPECT_FALSE(observers.Start(blocked, {}).has_value());
   for (const std::string& observer_id : observer_ids) {
