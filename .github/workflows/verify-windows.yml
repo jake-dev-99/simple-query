@@ -1,0 +1,87 @@
+name: Verify (Windows)
+
+# Builds the Windows plugin inside a Flutter consumer app and runs its native
+# GoogleTest runner, and checks that the committed Windows Pigeon output
+# matches pigeon.dart. The Dart-only verify.yml never compiles this C++
+# (UNFY-381).
+#
+# COST CONTROL. A Windows runner is slow and costly, so this workflow is
+# path-gated to the Windows package, the packages it depends on, the
+# script that builds the consumer, the Pigeon regeneration script and this
+# workflow. Other PRs skip it.
+#
+# External GitHub Actions are pinned to a full commit SHA (not a floating
+# tag) for supply-chain safety, with a human-readable version comment — same
+# convention as verify.yml / verify-native.yml.
+
+on:
+  pull_request:
+    branches: [main]
+    paths: &windows-paths
+      - 'packages/simple_query_windows/**'
+      - 'packages/simple_query_platform_interface/**'
+      - 'packages/simple_query_shared/**'
+      - 'tool/build_windows_consumer.sh'
+      - 'tool/regen_pigeon.sh'
+      - '.github/workflows/verify-windows.yml'
+  # Like verify.yml, gate commits that reach main (including the "Cut
+  # Release" bot's), but only those touching the paths above.
+  push:
+    branches: [main]
+    paths: *windows-paths
+  # Manual override for re-running the Windows gate against a specific ref.
+  workflow_dispatch:
+
+jobs:
+  windows-consumer:
+    name: Windows consumer build + native tests
+    # Matches the Unify app's Windows build job, so the plugin compiles with
+    # the same Visual Studio toolchain that app releases use.
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read  # checkout only; least-privilege (zizmor)
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false  # no later step does authenticated git ops (zizmor artipacked)
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+
+      - name: Build Flutter Windows consumer fixture and run native tests
+        shell: bash
+        run: bash tool/build_windows_consumer.sh
+
+  pigeon-drift:
+    name: Windows Pigeon output matches pigeon.dart
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read  # checkout only; least-privilege (zizmor)
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false  # no later step does authenticated git ops (zizmor artipacked)
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+
+      - name: Regenerate the Windows Pigeon output
+        run: bash tool/regen_pigeon.sh packages/simple_query_windows
+
+      - name: Fail when the committed output differs
+        # Only the generated files: pub get may rewrite pubspec.lock.
+        run: |
+          set -euo pipefail
+          generated=(
+            packages/simple_query_windows/lib/src/generated/native_query.g.dart
+            packages/simple_query_windows/windows/native_query.g.h
+            packages/simple_query_windows/windows/native_query.g.cpp
+          )
+          if ! git diff --exit-code -- "${generated[@]}"; then
+            echo "::error::The committed Windows Pigeon output does not match pigeon.dart. Run: bash tool/regen_pigeon.sh packages/simple_query_windows"
+            exit 1
+          fi

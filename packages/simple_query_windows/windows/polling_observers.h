@@ -21,8 +21,8 @@
 
 namespace simple_query_windows {
 
-// Each watched record's id, mapped to the value that changes when the record
-// changes, such as its modification time.
+// Each watched record's id, mapped to a fingerprint of its row that changes
+// whenever any field of the record changes.
 using Snapshot = std::map<std::string, int64_t>;
 
 // Purpose: Describe one polled observation.
@@ -197,12 +197,12 @@ class PollingObservers {
 // @throws Nothing.
 flutter::EncodableList ChangedIds(const Snapshot& before, const Snapshot& after);
 
-// Purpose: Build a snapshot that changes whenever any field of a row changes,
-// for records that carry no modification time.
+// Purpose: Build a snapshot that changes whenever any field of a row changes.
 // @param rows are the records, each with a string "id" field.
 // @returns Each id mapped to a hash of its whole row. Rows without a string id
 // are left out.
-// @throws Nothing.
+// @throws std::invalid_argument when a row holds a custom value, which has no
+// bytes to hash; std::logic_error for a value type the hash does not know.
 Snapshot FingerprintRecords(const std::vector<flutter::EncodableMap>& rows);
 
 }  // namespace simple_query_windows

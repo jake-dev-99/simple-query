@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Regenerates the Pigeon glue for every platform package that has a
-# pigeon.dart in its root. Idempotent — safe to run anytime.
+# pigeon.dart in its root, or only for the packages named as arguments.
+# Idempotent — safe to run anytime.
 #
 # Used by:
 # - Developers: run after editing any pigeon.dart.
-# - CI: no job runs the drift check today. To check by hand, run this and
-#   confirm `git diff --exit-code` is clean (i.e. the committed generated
-#   code matches pigeon.dart).
+# - CI: verify-windows.yml runs it for packages/simple_query_windows and
+#   fails when `git diff --exit-code` is not clean (the committed generated
+#   code does not match pigeon.dart). For the other packages, check by hand
+#   the same way.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -18,6 +20,9 @@ PACKAGES=(
   packages/simple_query_linux
   packages/simple_query_windows
 )
+if [[ $# -gt 0 ]]; then
+  PACKAGES=("$@")
+fi
 
 for pkg in "${PACKAGES[@]}"; do
   if [[ ! -f "$pkg/pigeon.dart" ]]; then

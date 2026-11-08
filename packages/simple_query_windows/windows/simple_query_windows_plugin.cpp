@@ -278,13 +278,9 @@ Snapshot BuildSnapshotForDomain(const SnapshotRequest& source) {
                                            .stop_requested = source.stop_requested}));
   }
   if (domain == "contacts" || domain == "calendar") {
-    const WinRtRowsResult result = domain == "contacts"
-                                       ? ListContactRecords(source.stop_requested)
-                                       : ListCalendarRecords(source.stop_requested);
-    if (result.error.has_value()) {
-      throw std::runtime_error(*result.error);
-    }
-    return FingerprintRecords(result.rows);
+    return FingerprintRecords(RowsOrThrow(domain == "contacts"
+                                              ? ListContactRecords(source.stop_requested)
+                                              : ListCalendarRecords(source.stop_requested)));
   }
   throw std::invalid_argument("simple_query: windows observe has no snapshot for domain " +
                               domain);
@@ -630,8 +626,19 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
     int64_t interval_ms = AsInt(FindValue(request, "pollingIntervalMs")).value_or(1000);
     interval_ms = std::max<int64_t>(250, interval_ms);
 
-    // Resolved once, so the worker keeps only what its snapshots read.
-    const std::filesystem::path root = ResolveRootPath(request);
+    // Only files and media read a root. It is resolved once, here, so the
+    // worker keeps only what its snapshots read.
+    std::filesystem::path root;
+    if (domain == "files" || domain == "media") {
+      try {
+        root = ResolveRootPath(request);
+      } catch (const std::filesystem::filesystem_error& error) {
+        return FlutterError("unavailable",
+                            std::string("simple_query: windows observe could not "
+                                        "resolve its root directory: ") +
+                                error.what());
+      }
+    }
     ObserverSpec spec{
         .domain = domain,
         .polling_interval = std::chrono::milliseconds(interval_ms),
@@ -729,7 +736,7 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
 
       EncodableMap response;
       response[EncodableValue("stores")] = EncodableValue(stores);
-      return std::optional<EncodableMap>(std::move(response));
+      return std::make_optional(std::move(response));
     }
 
     if (namespaze == "windows.calendar" && method == "listCalendars") {
@@ -752,7 +759,7 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
       }
       EncodableMap response;
       response[EncodableValue("calendars")] = EncodableValue(calendars);
-      return std::optional<EncodableMap>(std::move(response));
+      return std::make_optional(std::move(response));
     }
 
     if (namespaze == "windows.storage" && method == "resolveKnownFolders") {
@@ -785,7 +792,7 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
 
       EncodableMap response;
       response[EncodableValue("folders")] = EncodableValue(folders);
-      return std::optional<EncodableMap>(std::move(response));
+      return std::make_optional(std::move(response));
     }
 
     if (namespaze == "windows.storage" && method == "listLibraries") {
@@ -802,7 +809,7 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
 
       EncodableMap response;
       response[EncodableValue("libraries")] = EncodableValue(libraries);
-      return std::optional<EncodableMap>(std::move(response));
+      return std::make_optional(std::move(response));
     }
 
     return FlutterError("not-supported",
@@ -812,15 +819,17 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
 
  private:
   // Purpose: Send one observe event to Dart. Runs on the platform thread.
-  // Only the first event Dart rejects is logged, because a Dart side that
-  // stopped listening rejects every event after it.
+  // A run of rejected events is logged once, because a Dart side that stopped
+  // listening rejects every event after it. An accepted event ends the run,
+  // so the next rejection is logged again.
   // @param observer_id is the observer the event belongs to.
   // @param event is the change event map.
   // @returns Nothing.
   // @throws Nothing.
   void SendObserveEvent(const std::string& observer_id, const EncodableMap& event) {
     flutter_api_.OnObserveEvent(
-        observer_id, event, []() {},
+        observer_id, event,
+        [reported = rejected_event_reported_]() { *reported = false; },
         [observer_id, reported = rejected_event_reported_](const FlutterError& error) {
           if (*reported) {
             return;
@@ -830,7 +839,7 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
                        "event for "
                     << observer_id << " (" << error.code() << ": "
                     << error.message()
-                    << "); later rejected events are not logged.\n";
+                    << "); not logging again until an event is accepted.\n";
         });
   }
 

@@ -83,7 +83,13 @@ GoogleTest runner inside it (UNFY-381):
 bash tool/build_windows_consumer.sh   # Git Bash on Windows
 ```
 
-CI runs it in the `windows-consumer` job of `.github/workflows/verify.yml`.
+CI runs it in the path-gated `.github/workflows/verify-windows.yml`, which
+also fails when the committed Windows Pigeon output does not match
+`pigeon.dart`. Check that locally with:
+
+```sh
+bash tool/regen_pigeon.sh packages/simple_query_windows && git diff --exit-code
+```
 
 ## Conventions that have teeth
 

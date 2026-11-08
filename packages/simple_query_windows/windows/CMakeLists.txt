@@ -58,23 +58,45 @@ if (${include_${PROJECT_NAME}_tests})
   set(INSTALL_GTEST OFF CACHE BOOL "Disable installation of googletest" FORCE)
   FetchContent_MakeAvailable(googletest)
 
+  # A DLL holding its own copy of the dispatcher, so a test can check that the
+  # dispatcher registers its window class for the module that holds it, as
+  # the plugin DLL does in an app.
+  set(DISPATCHER_PROBE "${PROJECT_NAME}_dispatcher_probe")
+  add_library(${DISPATCHER_PROBE} SHARED
+    "test/dispatcher_probe.cpp"
+    "platform_thread_dispatcher.cpp"
+  )
+  apply_standard_settings(${DISPATCHER_PROBE})
+  target_compile_definitions(${DISPATCHER_PROBE} PRIVATE NOMINMAX)
+  target_compile_features(${DISPATCHER_PROBE} PRIVATE cxx_std_20)
+  target_include_directories(${DISPATCHER_PROBE} PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}")
+
   # The C API wrapper adds nothing to test, so the runner builds the plugin
   # sources directly instead of loading the plugin DLL.
   add_executable(${TEST_RUNNER}
-    "test/simple_query_windows_test.cpp"
+    "test/platform_thread_dispatcher_test.cpp"
+    "test/polling_observers_test.cpp"
+    "test/records_test.cpp"
+    "test/simple_query_windows_plugin_test.cpp"
+    "test/winrt_records_test.cpp"
     ${PLUGIN_SOURCES}
   )
+  add_dependencies(${TEST_RUNNER} ${DISPATCHER_PROBE})
   apply_standard_settings(${TEST_RUNNER})
   target_compile_definitions(${TEST_RUNNER} PRIVATE NOMINMAX)
   target_compile_features(${TEST_RUNNER} PRIVATE cxx_std_20)
   target_include_directories(${TEST_RUNNER} PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  # ole32 provides CoGetApartmentType, which the apartment tests call.
   target_link_libraries(${TEST_RUNNER} PRIVATE
-    flutter_wrapper_plugin windowsapp gtest_main)
-  # flutter_wrapper_plugin links against the Flutter DLL.
+    flutter_wrapper_plugin windowsapp ole32 gtest_main)
+  # flutter_wrapper_plugin links against the Flutter DLL, and the dispatcher
+  # test loads the probe DLL from the runner's directory.
   add_custom_command(TARGET ${TEST_RUNNER} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-    "${FLUTTER_LIBRARY}" $<TARGET_FILE_DIR:${TEST_RUNNER}>
+    "${FLUTTER_LIBRARY}" $<TARGET_FILE:${DISPATCHER_PROBE}>
+    $<TARGET_FILE_DIR:${TEST_RUNNER}>
   )
 endif()

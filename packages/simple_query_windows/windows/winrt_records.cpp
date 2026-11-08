@@ -6,7 +6,7 @@
 #include <chrono>
 #include <cstdint>
 #include <exception>
-#include <mutex>
+#include <stdexcept>
 #include <utility>
 
 #include <winrt/Windows.ApplicationModel.Appointments.h>
@@ -23,28 +23,6 @@ using flutter::EncodableList;
 using flutter::EncodableMap;
 using flutter::EncodableValue;
 
-// How often a store call in flight checks whether its read should stop.
-constexpr std::chrono::milliseconds kStopCheckInterval{50};
-
-// Purpose: Join the process's multithreaded Windows Runtime apartment once.
-// @returns Nothing.
-// @throws winrt::hresult_error when the apartment cannot be initialized for a
-// reason other than the calling thread already being in another apartment.
-void EnsureWinRtApartment() {
-  static std::once_flag flag;
-  std::call_once(flag, []() {
-    try {
-      winrt::init_apartment(winrt::apartment_type::multi_threaded);
-    } catch (const winrt::hresult_error& error) {
-      // RPC_E_CHANGED_MODE means the thread already joined a single-threaded
-      // apartment, such as the platform thread; store calls still work there.
-      if (static_cast<int32_t>(error.code()) != RPC_E_CHANGED_MODE) {
-        throw;
-      }
-    }
-  });
-}
-
 // Purpose: Convert a Windows Runtime time to milliseconds since the Unix epoch.
 // @param value is the Windows Runtime time.
 // @returns Milliseconds since 1970-01-01 UTC.
@@ -53,24 +31,6 @@ int64_t ToUnixEpochMs(winrt::Windows::Foundation::DateTime value) {
   constexpr int64_t kWinRtToUnixEpochTicks = 116444736000000000LL;
   const int64_t ticks = value.time_since_epoch().count();
   return (ticks - kWinRtToUnixEpochTicks) / 10000;
-}
-
-// Purpose: Wait for a store call, cancelling it once the read should stop.
-// @param operation is the store call in flight.
-// @param stop_requested ends the wait early; empty means never.
-// @returns The call's result, or nothing when the read stopped first.
-// @throws winrt::hresult_error when the call failed.
-template <typename Operation>
-auto AwaitUnlessStopped(const Operation& operation, const StopRequested& stop_requested)
-    -> std::optional<decltype(operation.GetResults())> {
-  while (operation.wait_for(kStopCheckInterval) ==
-         winrt::Windows::Foundation::AsyncStatus::Started) {
-    if (IsStopRequested(stop_requested)) {
-      operation.Cancel();
-      return std::nullopt;
-    }
-  }
-  return operation.GetResults();
 }
 
 // Purpose: Build the query row for one contact.
@@ -152,11 +112,39 @@ EncodableMap AppointmentRow(
 
 }  // namespace
 
+WinRtApartmentScope::WinRtApartmentScope() {
+  try {
+    winrt::init_apartment(winrt::apartment_type::multi_threaded);
+    joined_ = true;
+  } catch (const winrt::hresult_error& error) {
+    // RPC_E_CHANGED_MODE means the thread already joined a single-threaded
+    // apartment, such as the platform thread; store calls still work there.
+    if (static_cast<int32_t>(error.code()) != RPC_E_CHANGED_MODE) {
+      throw;
+    }
+  }
+}
+
+WinRtApartmentScope::~WinRtApartmentScope() {
+  if (joined_) {
+    winrt::uninit_apartment();
+  }
+}
+
+std::vector<EncodableMap> RowsOrThrow(WinRtRowsResult result) {
+  if (result.error.has_value()) {
+    throw std::runtime_error(*result.error);
+  }
+  return std::move(result.rows);
+}
+
 WinRtRowsResult ListContactRecords(const StopRequested& stop_requested) {
   using namespace winrt::Windows::ApplicationModel::Contacts;
   WinRtRowsResult result;
   try {
-    EnsureWinRtApartment();
+    // Declared first, so every store object below is released before the
+    // thread leaves the apartment.
+    const WinRtApartmentScope apartment;
 
     const auto store = AwaitUnlessStopped(
         ContactManager::RequestStoreAsync(ContactStoreAccessType::AllContactsReadOnly),
@@ -192,7 +180,9 @@ WinRtRowsResult ListCalendarRecords(const StopRequested& stop_requested) {
   using namespace winrt::Windows::ApplicationModel::Appointments;
   WinRtRowsResult result;
   try {
-    EnsureWinRtApartment();
+    // Declared first, so every store object below is released before the
+    // thread leaves the apartment.
+    const WinRtApartmentScope apartment;
 
     const auto store = AwaitUnlessStopped(
         AppointmentManager::RequestStoreAsync(AppointmentStoreAccessType::AllCalendarsReadOnly),
@@ -243,7 +233,7 @@ WinRtRowsResult ListCalendarRecords(const StopRequested& stop_requested) {
 
 EncodableList ListContactStores() {
   using namespace winrt::Windows::ApplicationModel::Contacts;
-  EnsureWinRtApartment();
+  const WinRtApartmentScope apartment;
 
   const auto store =
       ContactManager::RequestStoreAsync(ContactStoreAccessType::AllContactsReadOnly).get();
@@ -261,7 +251,7 @@ EncodableList ListContactStores() {
 
 EncodableList ListCalendarStores() {
   using namespace winrt::Windows::ApplicationModel::Appointments;
-  EnsureWinRtApartment();
+  const WinRtApartmentScope apartment;
 
   const auto store =
       AppointmentManager::RequestStoreAsync(AppointmentStoreAccessType::AllCalendarsReadOnly)
