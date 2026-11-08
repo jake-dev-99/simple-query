@@ -123,18 +123,18 @@ class ReadStoreDenialTest : public testing::TestWithParam<DenialCase> {};
 
 using winrt_store_detail::ReadStore;
 using winrt_store_detail::StoreRead;
-// Purpose: Represent a nullable WinRT store handle without opening user data.
+// Purpose: Model store presence without activating any Windows Runtime factory.
 // @param none.
-// @returns An alias for the base WinRT object interface.
+// @returns false for a null store and true for an opened store.
 // @throws Nothing.
-using TestStore = winrt::Windows::Foundation::IInspectable;
+using TestStore = bool;
 
 // Purpose: A null opened store reports a denial without trying to read it.
 TEST_P(ReadStoreDenialTest, NullStoreReturnsDenialAndCapability) {
   bool read_called = false;
   const auto result = ReadStore(StoreRead{
       .spec = GetParam().spec,
-      .open = []() { return std::optional<TestStore>{TestStore{nullptr}}; },
+      .open = []() { return std::optional<TestStore>{false}; },
       .read = [&](const TestStore&) {
         read_called = true;
         return RowsResult{};
@@ -175,7 +175,7 @@ TEST_P(ReadStoreDenialTest, AccessDeniedWhileReadingReturnsDenialAndCapability) 
   const auto result = ReadStore(StoreRead{
       .spec = GetParam().spec,
       .open = []() -> std::optional<TestStore> {
-        return winrt::Windows::Foundation::PropertyValue::CreateInt32(1);
+        return true;
       },
       .read = [&](const TestStore&) -> RowsResult {
         read_called = true;
@@ -200,7 +200,7 @@ TEST_P(ReadStoreDenialTest, UnrelatedHresultIsNotClassifiedAsPermissionDenied) {
           if (fail_while_opening) {
             throw winrt::hresult_error(E_FAIL, L"synthetic failure");
           }
-          return winrt::Windows::Foundation::PropertyValue::CreateInt32(1);
+          return true;
         },
         .read = [&](const TestStore&) -> RowsResult {
           read_called = true;
