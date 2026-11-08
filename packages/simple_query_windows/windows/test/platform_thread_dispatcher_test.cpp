@@ -63,8 +63,8 @@ class ProbeLibrary {
     // GetProcAddress returns a generic function pointer; casting through
     // void (*)() is the documented way to give it the export's real type.
     using GenericFunction = void (*)();
-    return reinterpret_cast<Function>(
-        reinterpret_cast<GenericFunction>(GetProcAddress(module_, name)));
+    const auto generic = reinterpret_cast<GenericFunction>(GetProcAddress(module_, name));
+    return reinterpret_cast<Function>(generic);
   }
 
  private:

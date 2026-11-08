@@ -10,6 +10,7 @@ set(PLUGIN_SOURCES
   "native_query.g.cpp"
   "platform_thread_dispatcher.cpp"
   "polling_observers.cpp"
+  "structured_log.cpp"
   "winrt_records.cpp"
 )
 
@@ -79,6 +80,7 @@ if (${include_${PROJECT_NAME}_tests})
     "test/polling_observers_test.cpp"
     "test/records_test.cpp"
     "test/simple_query_windows_plugin_test.cpp"
+    "test/structured_log_test.cpp"
     "test/winrt_records_test.cpp"
     ${PLUGIN_SOURCES}
   )

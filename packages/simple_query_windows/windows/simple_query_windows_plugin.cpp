@@ -5,7 +5,6 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <iostream>
 #include <memory>
 #include <optional>
 #include <set>
@@ -22,6 +21,7 @@
 #include "file_records.h"
 #include "native_query.g.h"
 #include "polling_observers.h"
+#include "structured_log.h"
 #include "winrt_records.h"
 
 namespace simple_query_windows {
@@ -835,11 +835,12 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
             return;
           }
           *reported = true;
-          std::cerr << "simple_query_windows: Dart did not accept the observe "
-                       "event for "
-                    << observer_id << " (" << error.code() << ": "
-                    << error.message()
-                    << "); not logging again until an event is accepted.\n";
+          WriteLog({LogLevel::kWarning,
+                    "observe_event_rejected",
+                    {{"observer_id", observer_id},
+                     {"code", error.code()},
+                     {"message", error.message()},
+                     {"next_log", "after an event is accepted"}}});
         });
   }
 

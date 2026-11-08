@@ -32,6 +32,12 @@ constexpr std::chrono::milliseconds kFastPoll = 20ms;
 constexpr std::chrono::milliseconds kLongPoll = 10min;
 constexpr int64_t kFixedNowEpochMs = 1700000000000;
 
+// Purpose: Say whether a ControlledSource's snapshots fail.
+struct ReadOutcome {
+  // true makes every snapshot throw.
+  bool failing = false;
+};
+
 // Purpose: Serve snapshots that the test sets, and count how many were taken.
 class ControlledSource {
  public:
@@ -45,10 +51,10 @@ class ControlledSource {
   }
 
   // Purpose: Make every snapshot from now on fail, or succeed again.
-  // @param failing is true to make snapshots throw.
+  // @param outcome says whether snapshots throw.
   // @returns Nothing.
   // @throws Nothing.
-  void SetFailing(bool failing) { failing_.store(failing); }
+  void SetReadOutcome(ReadOutcome outcome) { failing_.store(outcome.failing); }
 
   // Purpose: Report how many snapshots were taken.
   // @returns The number of snapshots taken so far.
@@ -169,9 +175,9 @@ TEST_F(PollingObserversTest, SkipsAFailedPollAndKeepsReporting) {
   observers.Start(SpecFor(source, kFastPoll));
   ASSERT_TRUE(WaitForBaseline(source));
 
-  source.SetFailing(true);
+  source.SetReadOutcome({.failing = true});
   ASSERT_TRUE(source.WaitForPollToFinish());
-  source.SetFailing(false);
+  source.SetReadOutcome({.failing = false});
   ASSERT_TRUE(source.WaitForPollToFinish());
   PumpQueuedMessages();
   EXPECT_TRUE(events_.empty());
@@ -193,11 +199,11 @@ TEST_F(PollingObserversTest, LogsEachRunOfFailedPollsOnce) {
     observers.Start(SpecFor(source, kFastPoll));
     ASSERT_TRUE(WaitForBaseline(source));
 
-    source.SetFailing(true);
+    source.SetReadOutcome({.failing = true});
     ASSERT_TRUE(source.WaitForPollToFinish());
-    source.SetFailing(false);
+    source.SetReadOutcome({.failing = false});
     ASSERT_TRUE(source.WaitForPollToFinish());
-    source.SetFailing(true);
+    source.SetReadOutcome({.failing = true});
     ASSERT_TRUE(source.WaitForPollToFinish());
     // Leaving the scope joins the worker before the log is read.
   }
@@ -215,12 +221,12 @@ TEST_F(PollingObserversTest, LogsEachRunOfFailedPollsOnce) {
 TEST_F(PollingObserversTest, WaitsForAFirstSnapshotThatSucceeds) {
   ControlledSource source;
   source.Set({{"a", 1}});
-  source.SetFailing(true);
+  source.SetReadOutcome({.failing = true});
   PollingObservers observers(RecordingEffects());
   observers.Start(SpecFor(source, kFastPoll));
   ASSERT_TRUE(source.WaitForPollToFinish());
 
-  source.SetFailing(false);
+  source.SetReadOutcome({.failing = false});
   ASSERT_TRUE(source.WaitForPollToFinish());
   PumpQueuedMessages();
   EXPECT_TRUE(events_.empty());

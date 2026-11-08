@@ -42,7 +42,7 @@ const std::string kObserveEventChannel =
     "dev.flutter.pigeon.simple_query_windows.NativeQueryFlutterApi."
     "onObserveEvent";
 // What the plugin logs when Dart rejects an observe event.
-const std::string kRejectedEventLog = "did not accept the observe event";
+const std::string kRejectedEventLog = "\"event\":\"observe_event_rejected\"";
 
 // How the fake Dart side answers an observe event.
 enum class EventReply {
@@ -185,23 +185,29 @@ class FakeMessenger : public flutter::BinaryMessenger {
   std::map<std::string, flutter::BinaryMessageHandler> handlers_;
 };
 
+// Purpose: Describe a files observer to start through the host API.
+struct FileObserverRequest {
+  // The engine's messenger.
+  FakeMessenger& messenger;
+  // The directory to watch.
+  std::filesystem::path root;
+  // The requested polling interval.
+  int64_t polling_interval_ms = 0;
+};
+
 // Purpose: Start a files observer through the host API, as Dart would.
-// @param messenger is the engine's messenger.
-// @param root is the directory to watch.
-// @param polling_interval_ms is the requested polling interval.
+// @param request names the messenger, the directory and the interval.
 // @returns The observer id, or empty when observeStart failed.
 // @throws std::bad_variant_access when the reply is malformed.
-std::string StartFileObserver(FakeMessenger& messenger,
-                              const std::filesystem::path& root,
-                              int64_t polling_interval_ms) {
+std::string StartFileObserver(const FileObserverRequest& request) {
   const EncodableMap platform_data{
-      {EncodableValue("rootPath"), EncodableValue(root.string())}};
-  const EncodableMap request{
+      {EncodableValue("rootPath"), EncodableValue(request.root.string())}};
+  const EncodableMap observe_request{
       {EncodableValue("domain"), EncodableValue("files")},
-      {EncodableValue("pollingIntervalMs"), EncodableValue(polling_interval_ms)},
+      {EncodableValue("pollingIntervalMs"), EncodableValue(request.polling_interval_ms)},
       {EncodableValue("platformData"), EncodableValue(platform_data)}};
-  const EncodableList reply =
-      messenger.CallHost("observeStart", EncodableList{EncodableValue(request)});
+  const EncodableList reply = request.messenger.CallHost(
+      "observeStart", EncodableList{EncodableValue(observe_request)});
   if (reply.size() != 1) {
     ADD_FAILURE() << "observeStart did not return an observer id";
     return "";
@@ -248,7 +254,9 @@ TEST(SimpleQueryWindowsPluginTest, SendsObserveEventsOnThePlatformThread) {
   TempDirectory directory;
   SimpleQueryWindowsPlugin plugin(&messenger);
   const std::string observer_id =
-      StartFileObserver(messenger, directory.path(), kPluginFastPollMs);
+      StartFileObserver({.messenger = messenger,
+                         .root = directory.path(),
+                         .polling_interval_ms = kPluginFastPollMs});
   ASSERT_FALSE(observer_id.empty());
 
   ASSERT_TRUE(WriteFilesUntilObserveEvent(messenger, directory));
@@ -273,11 +281,13 @@ TEST(SimpleQueryWindowsPluginTest, KeepsEachEnginesObserversSeparate) {
   TempDirectory second_directory;
   auto first_plugin = std::make_unique<SimpleQueryWindowsPlugin>(&first_messenger);
   SimpleQueryWindowsPlugin second_plugin(&second_messenger);
-  ASSERT_FALSE(
-      StartFileObserver(first_messenger, first_directory.path(), kPluginFastPollMs)
-          .empty());
-  ASSERT_FALSE(StartFileObserver(second_messenger, second_directory.path(),
-                                 kPluginFastPollMs)
+  ASSERT_FALSE(StartFileObserver({.messenger = first_messenger,
+                                  .root = first_directory.path(),
+                                  .polling_interval_ms = kPluginFastPollMs})
+                   .empty());
+  ASSERT_FALSE(StartFileObserver({.messenger = second_messenger,
+                                  .root = second_directory.path(),
+                                  .polling_interval_ms = kPluginFastPollMs})
                    .empty());
 
   ASSERT_TRUE(WriteFilesUntilObserveEvent(first_messenger, first_directory));
@@ -297,8 +307,10 @@ TEST(SimpleQueryWindowsPluginTest, TearsDownPromptlyWithALongPollingInterval) {
   FakeMessenger messenger;
   TempDirectory directory;
   auto plugin = std::make_unique<SimpleQueryWindowsPlugin>(&messenger);
-  ASSERT_FALSE(
-      StartFileObserver(messenger, directory.path(), kPluginLongPollMs).empty());
+  ASSERT_FALSE(StartFileObserver({.messenger = messenger,
+                                  .root = directory.path(),
+                                  .polling_interval_ms = kPluginLongPollMs})
+                   .empty());
 
   EXPECT_LT(TimeOf([&]() { plugin.reset(); }), kPromptTeardown);
   EXPECT_FALSE(messenger.HasHandler(kObserveStartChannel));
@@ -313,8 +325,10 @@ TEST(SimpleQueryWindowsPluginTest, LogsEachRunOfRejectedEventsOnce) {
     FakeMessenger messenger;
     TempDirectory directory;
     SimpleQueryWindowsPlugin plugin(&messenger);
-    ASSERT_FALSE(
-        StartFileObserver(messenger, directory.path(), kPluginFastPollMs).empty());
+    ASSERT_FALSE(StartFileObserver({.messenger = messenger,
+                                    .root = directory.path(),
+                                    .polling_interval_ms = kPluginFastPollMs})
+                     .empty());
 
     messenger.SetEventReply(EventReply::kReject);
     ASSERT_TRUE(WriteFilesUntilObserveEvent(messenger, directory));

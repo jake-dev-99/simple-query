@@ -103,6 +103,12 @@ class PollingObservers {
   // Purpose: Hold one observer's settings, worker and change state.
   struct Observer;
 
+  // Purpose: Hold one observer's worker thread and how it is told to stop.
+  struct WorkerLifecycle;
+
+  // Purpose: Hold what one observer last delivered and what waits to go.
+  struct DeliveryState;
+
   // Purpose: Remember which failures a worker has logged. A failure that
   // repeats on every poll is logged once, then again only after it clears.
   struct FailureStreaks {

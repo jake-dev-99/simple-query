@@ -1,8 +1,9 @@
 #include "polling_observers.h"
 
+#include "structured_log.h"
+
 #include <cstddef>
 #include <exception>
-#include <iostream>
 #include <set>
 #include <stdexcept>
 #include <system_error>
@@ -132,6 +133,21 @@ class RowHasher {
 
 }  // namespace
 
+struct PollingObservers::WorkerLifecycle {
+  // Read without the observer's mutex by snapshot scans; written under it.
+  std::atomic<bool> stopping{false};
+  // Wakes the worker early when the observer is stopping.
+  std::condition_variable stop_signal;
+  std::thread worker;
+};
+
+struct PollingObservers::DeliveryState {
+  // The snapshot the last delivered event described.
+  Snapshot delivered;
+  // The change waiting for delivery, if any.
+  std::optional<PendingChange> pending;
+};
+
 struct PollingObservers::Observer {
   // Purpose: Hold the settings for one observer before its worker starts.
   // @param observer_spec describes what to poll and how often.
@@ -139,21 +155,16 @@ struct PollingObservers::Observer {
   // @throws Nothing.
   explicit Observer(ObserverSpec observer_spec)
       : spec(std::move(observer_spec)),
-        stop_requested([this]() { return stopping.load(); }) {}
+        stop_requested([this]() { return lifecycle.stopping.load(); }) {}
 
   const ObserverSpec spec;
-  // Read without the mutex by snapshot scans; written under it.
-  std::atomic<bool> stopping{false};
   // Given to each snapshot so a long scan ends once the observer stops.
   const StopRequested stop_requested;
+  // Guards delivery, and orders a stop request with the worker's wait.
   std::mutex mutex;
-  // Wakes the worker early when the observer is stopping.
-  std::condition_variable stop_signal;
-  // Guarded by mutex: the snapshot the last delivered event described.
-  Snapshot delivered;
-  // Guarded by mutex: the change waiting for delivery, if any.
-  std::optional<PendingChange> pending;
-  std::thread worker;
+  WorkerLifecycle lifecycle;
+  // Guarded by mutex.
+  DeliveryState delivery;
 };
 
 PollingObservers::PollingObservers(PollingObserverEffects effects)
@@ -193,7 +204,7 @@ std::string PollingObservers::Start(ObserverSpec spec) {
     observers_[observer_id] = std::move(observer);
   }
   try {
-    worker_observer->worker =
+    worker_observer->lifecycle.worker =
         std::thread([this, worker_observer]() { RunWorker(worker_observer); });
   } catch (const std::system_error&) {
     // No worker started, so the observer is removed and the caller told.
@@ -232,7 +243,7 @@ void PollingObservers::RunWorker(Observer* observer) {
   }
   {
     std::lock_guard<std::mutex> lock(observer->mutex);
-    observer->delivered = std::move(*baseline);
+    observer->delivery.delivered = std::move(*baseline);
   }
 
   while (!WaitForNextPoll(observer)) {
@@ -255,7 +266,7 @@ std::optional<Snapshot> PollingObservers::TakeSnapshot(Observer* observer,
     // and the next one tries again.
     failure = error.what();
   }
-  if (observer->stopping.load()) {
+  if (observer->lifecycle.stopping.load()) {
     return std::nullopt;
   }
   if (snapshot.has_value()) {
@@ -264,19 +275,21 @@ std::optional<Snapshot> PollingObservers::TakeSnapshot(Observer* observer,
   }
   if (!streaks->snapshot_failing) {
     streaks->snapshot_failing = true;
-    std::cerr << "simple_query_windows: an observe snapshot of "
-              << observer->spec.domain << " failed (" << failure
-              << "); retrying each poll, and not logging again until one "
-                 "succeeds.\n";
+    WriteLog({LogLevel::kError,
+              "observe_snapshot_failed",
+              {{"domain", observer->spec.domain},
+               {"error", failure},
+               {"retry", "each poll"},
+               {"next_log", "after a snapshot succeeds"}}});
   }
   return std::nullopt;
 }
 
 bool PollingObservers::WaitForNextPoll(Observer* observer) {
   std::unique_lock<std::mutex> lock(observer->mutex);
-  return observer->stop_signal.wait_for(
+  return observer->lifecycle.stop_signal.wait_for(
       lock, observer->spec.polling_interval,
-      [observer]() { return observer->stopping.load(); });
+      [observer]() { return observer->lifecycle.stopping.load(); });
 }
 
 void PollingObservers::RequestDelivery(FailureStreaks* streaks) {
@@ -291,23 +304,24 @@ void PollingObservers::RequestDelivery(FailureStreaks* streaks) {
   }
   streaks->wake_failing = true;
   // The pending change stays recorded, so the next poll asks again.
-  std::cerr << "simple_query_windows: could not schedule an observe event "
-               "on the platform thread (Windows error "
-            << error << "); retrying after each poll, and not logging again "
-                        "until one is scheduled.\n";
+  WriteLog({LogLevel::kError,
+            "observe_wake_failed",
+            {{"windows_error", std::to_string(error)},
+             {"retry", "after each poll"},
+             {"next_log", "after an event is scheduled"}}});
 }
 
 bool PollingObservers::RecordSnapshot(Observer* observer, Snapshot current) {
   std::lock_guard<std::mutex> lock(observer->mutex);
-  if (current == observer->delivered) {
+  if (current == observer->delivery.delivered) {
     // Back to what was last delivered: nothing is left to report.
-    observer->pending.reset();
+    observer->delivery.pending.reset();
     return false;
   }
-  const bool already_pending = observer->pending.has_value() &&
-                               observer->pending->snapshot == current;
+  const bool already_pending = observer->delivery.pending.has_value() &&
+                               observer->delivery.pending->snapshot == current;
   if (!already_pending) {
-    observer->pending = PendingChange{ChangedIds(observer->delivered, current),
+    observer->delivery.pending = PendingChange{ChangedIds(observer->delivery.delivered, current),
                                       std::move(current),
                                       effects_.now_epoch_ms()};
   }
@@ -320,13 +334,13 @@ void PollingObservers::DeliverPendingChanges() {
     std::lock_guard<std::mutex> lock(observers_mutex_);
     for (auto& [observer_id, observer] : observers_) {
       std::lock_guard<std::mutex> observer_lock(observer->mutex);
-      if (!observer->pending.has_value()) {
+      if (!observer->delivery.pending.has_value()) {
         continue;
       }
       events.emplace_back(observer_id,
-                          BuildEvent(observer->spec.domain, *observer->pending));
-      observer->delivered = std::move(observer->pending->snapshot);
-      observer->pending.reset();
+                          BuildEvent(observer->spec.domain, *observer->delivery.pending));
+      observer->delivery.delivered = std::move(observer->delivery.pending->snapshot);
+      observer->delivery.pending.reset();
     }
   }
   // Send outside the locks; Stop runs on this same thread, so no observer
@@ -353,14 +367,14 @@ void PollingObservers::RequestStop(Observer& observer) {
     // Set under the mutex so a worker between its stop check and its wait
     // cannot miss the signal.
     std::lock_guard<std::mutex> lock(observer.mutex);
-    observer.stopping.store(true);
+    observer.lifecycle.stopping.store(true);
   }
-  observer.stop_signal.notify_all();
+  observer.lifecycle.stop_signal.notify_all();
 }
 
 void PollingObservers::JoinWorker(Observer& observer) {
-  if (observer.worker.joinable()) {
-    observer.worker.join();
+  if (observer.lifecycle.worker.joinable()) {
+    observer.lifecycle.worker.join();
   }
 }
 
