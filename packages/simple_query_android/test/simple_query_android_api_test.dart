@@ -1181,10 +1181,19 @@ void main() {
       );
     });
 
-    test('dispose closes a handle whose open finishes while it waits',
-        () async {
-      final host = _FakeHostApi()..nextStreamIds.addAll(<String>['a', 'b']);
-      final api = apiFor(host);
+    /// Purpose: Open stream `a`, then start an open of stream `b` that holds
+    /// at the host until [openGate] completes.
+    ///
+    /// @param host the fake host, handing out `a` then `b`.
+    /// @param api the instance under test, built on [host].
+    /// @param openGate the gate the second open waits for.
+    /// @returns the second open, still in flight.
+    /// @throws Nothing; the first open succeeds on the fake host.
+    Future<Future<iface.BinaryContentHandle>> openOneThenStall(
+      _FakeHostApi host,
+      SimpleQueryAndroidApi api,
+      Completer<void> openGate,
+    ) async {
       await api.openBinary(
         const iface.BinaryRequest(
           domain: iface.QueryDomain.media,
@@ -1193,7 +1202,6 @@ void main() {
           },
         ),
       );
-      final openGate = Completer<void>();
       host.openStreamGate = openGate;
       final opening = api.openBinary(
         const iface.BinaryRequest(
@@ -1204,14 +1212,73 @@ void main() {
         ),
       );
       await Future<void>.delayed(Duration.zero);
+      return opening;
+    }
 
-      final disposing = api.dispose();
+    test('dispose closes the open handles while another open stalls',
+        () async {
+      final host = _FakeHostApi()..nextStreamIds.addAll(<String>['a', 'b']);
+      final api = apiFor(host);
+      // This open never returns.
+      final stalled = Completer<void>();
+      unawaited(openOneThenStall(host, api, stalled));
       await Future<void>.delayed(Duration.zero);
-      openGate.complete();
-      await opening;
-      await disposing;
 
-      expect(host.closedStreams, unorderedEquals(<String>['a', 'b']));
+      await api.dispose().timeout(const Duration(seconds: 5));
+
+      expect(host.closedStreams, <String>['a']);
+    });
+
+    test('an open that dispose overtakes closes its own stream and fails',
+        () async {
+      final host = _FakeHostApi()..nextStreamIds.addAll(<String>['a', 'b']);
+      final api = apiFor(host);
+      final openGate = Completer<void>();
+      final opening = await openOneThenStall(host, api, openGate);
+
+      await api.dispose();
+      openGate.complete();
+
+      await expectLater(
+        opening,
+        throwsA(isA<iface.SimpleQueryError>()
+            .having((e) => e.code, 'code',
+                iface.SimpleQueryErrorCode.transientFailure)
+            .having((e) => e.domain, 'domain', iface.QueryDomain.media)
+            .having((e) => e.operation, 'operation', iface.QueryOperation.read)
+            .having((e) => e.details, 'details', <String, Object?>{
+          'reason': 'disposedWhileOpening',
+          'contentUri': 'content://media/external/images/media/8',
+        })),
+      );
+      expect(host.closedStreams, <String>['a', 'b']);
+
+      // The overtaken open kept no handle for the next dispose.
+      await api.dispose();
+      expect(host.closeStreamAttempts, <String>['a', 'b']);
+    });
+
+    test('an overtaken open raises the failure of its own close', () async {
+      final host = _FakeHostApi()..nextStreamIds.addAll(<String>['a', 'b']);
+      final api = apiFor(host);
+      final openGate = Completer<void>();
+      final opening = await openOneThenStall(host, api, openGate);
+      host.closeStreamFailures['b'] =
+          PlatformException(code: 'transient', message: 'b failed');
+
+      await api.dispose();
+      openGate.complete();
+
+      await expectLater(
+        opening,
+        throwsA(hostError(
+          code: iface.SimpleQueryErrorCode.transientFailure,
+          hostCode: 'transient',
+          domain: iface.QueryDomain.media,
+          operation: iface.QueryOperation.read,
+          contentUri: 'content://media/external/images/media/8',
+        )),
+      );
     });
 
     test('a handle opened after dispose takes its snapshot stays closable',

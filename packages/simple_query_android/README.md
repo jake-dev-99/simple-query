@@ -31,9 +31,11 @@ the timeout attached. With none recorded, it raises an `IOException`
 arrives after the wait ends is logged once. A JVM `Error` in the copy is not
 raised here; it propagates on the copy's own thread.
 
-`dispose()` first waits for any `openBinary()` still in flight, then closes
-every open binary stream concurrently, so those waits overlap. It raises the
-first failure in step order. A stream opened while it runs stays open for the
+`dispose()` closes every open binary stream concurrently, so those waits
+overlap. It raises the first failure in step order. It does not wait for an
+`openBinary()` still in flight: when that open returns, it closes its own
+stream and raises `transientFailure` with reason `disposedWhileOpening`. A
+stream opened after `dispose()` starts closing streams stays open for the
 next `dispose()`. The plugin detach (`StreamManager.dispose()`) does not wait;
 it logs a copy failure already recorded, and a running copy logs its own
 failure when it finishes.
