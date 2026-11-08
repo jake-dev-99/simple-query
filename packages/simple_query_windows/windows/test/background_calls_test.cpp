@@ -169,6 +169,82 @@ TEST(BackgroundCallsTest, TellsARunningJobToStopOnTeardown) {
   EXPECT_TRUE(WaitWithoutPumping([&]() { return saw_stop->load(); }, kDeliveryTimeout));
 }
 
+// Purpose: A deadline settles both a blocked call and queued calls on the
+// platform thread without waiting for I/O, and suppresses every late result.
+TEST(BackgroundCallsTest, TimesOutBlockedAndQueuedCallsWithoutWaitingForIo) {
+  auto started = std::make_shared<std::atomic<bool>>(false);
+  auto released = std::make_shared<std::atomic<bool>>(false);
+  int expired = 0;
+  int finished = 0;
+  std::atomic<int> queued_work{0};
+  std::vector<std::thread::id> reply_threads;
+  DetachedThreadsDrain drain;
+  BackgroundCalls calls(kCapacity, 40ms);
+  const auto on_timeout = [&]() {
+    ++expired;
+    reply_threads.push_back(std::this_thread::get_id());
+  };
+  EXPECT_EQ(calls.Enqueue([started, released, &finished](const StopRequested&) {
+    started->store(true);
+    while (!released->load()) {
+      std::this_thread::sleep_for(1ms);
+    }
+    return std::function<void()>([&finished]() { ++finished; });
+  }, on_timeout), EnqueueResult::kQueued);
+  EXPECT_EQ(calls.Enqueue([&queued_work, &finished](const StopRequested&) {
+    ++queued_work;
+    return std::function<void()>([&finished]() { ++finished; });
+  }, on_timeout), EnqueueResult::kQueued);
+
+  EXPECT_TRUE(WaitWithoutPumping([&]() { return started->load(); }, kDeliveryTimeout));
+  EXPECT_TRUE(PumpUntil([&]() { return expired == 2; }, kDeliveryTimeout));
+  EXPECT_EQ(queued_work.load(), 0);
+  EXPECT_EQ(finished, 0);
+  EXPECT_EQ(reply_threads, (std::vector<std::thread::id>(2, std::this_thread::get_id())));
+  EXPECT_EQ(calls.Enqueue([](const StopRequested&) { return std::function<void()>([]() {}); }),
+            EnqueueResult::kNotReady);
+
+  released->store(true);
+  EXPECT_TRUE(WaitWithoutPumping([]() { return RunningDetachedThreads() == 0; },
+                                kDeliveryTimeout));
+  PumpQueuedMessages();
+  EXPECT_EQ(expired, 2);
+  EXPECT_EQ(finished, 0);
+}
+
+// Purpose: A deadline reaches a cooperative operation through its stop check,
+// so a pending WinRT operation can cancel itself and never send a late success.
+TEST(BackgroundCallsTest, DeadlineStopsCooperativeWork) {
+  auto saw_stop = std::make_shared<std::atomic<bool>>(false);
+  int expired = 0;
+  int finished = 0;
+  DetachedThreadsDrain drain;
+  BackgroundCalls calls(kCapacity, 40ms);
+  EXPECT_EQ(calls.Enqueue([saw_stop, &finished](const StopRequested& stop_requested) {
+    while (!stop_requested()) {
+      std::this_thread::sleep_for(1ms);
+    }
+    saw_stop->store(true);
+    return std::function<void()>([&finished]() { ++finished; });
+  }, [&]() { ++expired; }), EnqueueResult::kQueued);
+
+  EXPECT_TRUE(PumpUntil([&]() { return expired == 1; }, kDeliveryTimeout));
+  EXPECT_TRUE(WaitWithoutPumping([&]() { return saw_stop->load(); }, kDeliveryTimeout));
+  PumpQueuedMessages();
+  EXPECT_EQ(expired, 1);
+  EXPECT_EQ(finished, 0);
+}
+
+// Purpose: Invalid deadlines fail setup before any work can be accepted.
+TEST(BackgroundCallsTest, RefusesWorkWithANonPositiveDeadline) {
+  DetachedThreadsDrain drain;
+  for (const auto timeout : {0ms, -1ms}) {
+    BackgroundCalls calls(kCapacity, timeout);
+    EXPECT_EQ(calls.Enqueue([](const StopRequested&) { return std::function<void()>([]() {}); }),
+              EnqueueResult::kNotReady);
+  }
+}
+
 }  // namespace
 }  // namespace test
 }  // namespace simple_query_windows

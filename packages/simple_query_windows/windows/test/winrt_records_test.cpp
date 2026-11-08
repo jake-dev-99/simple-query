@@ -9,6 +9,7 @@
 
 #include <optional>
 #include <thread>
+#include <string>
 
 #include <winrt/Windows.Foundation.h>
 
@@ -101,6 +102,130 @@ ApartmentState CurrentApartment() {
 bool IsSingleThreaded(APTTYPE type) {
   return type == APTTYPE_STA || type == APTTYPE_MAINSTA;
 }
+
+// Purpose: Pair a production store specification with its expected denial contract.
+// @param spec is the production store identity used by ReadStore.
+// @param capability is the independently expected permission identifier.
+// @param denied_error is the independently expected denial message.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
+struct DenialCase {
+  winrt_store_detail::StoreSpec spec;
+  const char* capability;
+  const char* denied_error;
+};
+
+// Purpose: Exercise the real store-opening and reading boundary for both stores.
+// @param none; GoogleTest supplies one DenialCase per test instance.
+// @returns Nothing; this is a test fixture.
+// @throws Nothing; test operations document their failures.
+class ReadStoreDenialTest : public testing::TestWithParam<DenialCase> {};
+
+using winrt_store_detail::ReadStore;
+using winrt_store_detail::StoreRead;
+// Purpose: Represent a nullable WinRT store handle without opening user data.
+// @param none.
+// @returns An alias for the base WinRT object interface.
+// @throws Nothing.
+using TestStore = winrt::Windows::Foundation::IInspectable;
+
+// Purpose: A null opened store reports a denial without trying to read it.
+TEST_P(ReadStoreDenialTest, NullStoreReturnsDenialAndCapability) {
+  bool read_called = false;
+  const auto result = ReadStore(StoreRead{
+      .spec = GetParam().spec,
+      .open = []() { return std::optional<TestStore>{TestStore{nullptr}}; },
+      .read = [&](const TestStore&) {
+        read_called = true;
+        return RowsResult{};
+      }});
+
+  EXPECT_FALSE(read_called);
+  ASSERT_TRUE(result.error.has_value());
+  EXPECT_EQ(*result.error, GetParam().denied_error);
+  ASSERT_TRUE(result.denied_capability.has_value());
+  EXPECT_EQ(*result.denied_capability, GetParam().capability);
+  EXPECT_TRUE(result.rows.empty());
+}
+
+// Purpose: E_ACCESSDENIED from opening reports the store's denial contract.
+TEST_P(ReadStoreDenialTest, AccessDeniedWhileOpeningReturnsDenialAndCapability) {
+  bool read_called = false;
+  const auto result = ReadStore(StoreRead{
+      .spec = GetParam().spec,
+      .open = []() -> std::optional<TestStore> {
+        throw winrt::hresult_error(E_ACCESSDENIED);
+      },
+      .read = [&](const TestStore&) {
+        read_called = true;
+        return RowsResult{};
+      }});
+
+  EXPECT_FALSE(read_called);
+  ASSERT_TRUE(result.error.has_value());
+  EXPECT_EQ(*result.error, GetParam().denied_error);
+  ASSERT_TRUE(result.denied_capability.has_value());
+  EXPECT_EQ(*result.denied_capability, GetParam().capability);
+  EXPECT_TRUE(result.rows.empty());
+}
+
+// Purpose: E_ACCESSDENIED from reading reports the same denial contract.
+TEST_P(ReadStoreDenialTest, AccessDeniedWhileReadingReturnsDenialAndCapability) {
+  bool read_called = false;
+  const auto result = ReadStore(StoreRead{
+      .spec = GetParam().spec,
+      .open = []() -> std::optional<TestStore> {
+        return winrt::Windows::Foundation::PropertyValue::CreateInt32(1);
+      },
+      .read = [&](const TestStore&) -> RowsResult {
+        read_called = true;
+        throw winrt::hresult_error(E_ACCESSDENIED);
+      }});
+
+  EXPECT_TRUE(read_called);
+  ASSERT_TRUE(result.error.has_value());
+  EXPECT_EQ(*result.error, GetParam().denied_error);
+  ASSERT_TRUE(result.denied_capability.has_value());
+  EXPECT_EQ(*result.denied_capability, GetParam().capability);
+  EXPECT_TRUE(result.rows.empty());
+}
+
+// Purpose: Other HRESULT failures remain backend errors at either operation.
+TEST_P(ReadStoreDenialTest, UnrelatedHresultIsNotClassifiedAsPermissionDenied) {
+  for (const bool fail_while_opening : {true, false}) {
+    bool read_called = false;
+    const auto result = ReadStore(StoreRead{
+        .spec = GetParam().spec,
+        .open = [fail_while_opening]() -> std::optional<TestStore> {
+          if (fail_while_opening) {
+            throw winrt::hresult_error(E_FAIL, L"synthetic failure");
+          }
+          return winrt::Windows::Foundation::PropertyValue::CreateInt32(1);
+        },
+        .read = [&](const TestStore&) -> RowsResult {
+          read_called = true;
+          throw winrt::hresult_error(E_FAIL, L"synthetic failure");
+        }});
+
+    EXPECT_EQ(read_called, !fail_while_opening);
+    ASSERT_TRUE(result.error.has_value());
+    EXPECT_EQ(*result.error, std::string("simple_query: windows ") +
+                                 GetParam().spec.backend +
+                                 " backend unavailable - synthetic failure");
+    EXPECT_FALSE(result.denied_capability.has_value());
+    EXPECT_TRUE(result.rows.empty());
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    ContactAndCalendarStores, ReadStoreDenialTest,
+    testing::Values(
+        DenialCase{winrt_store_detail::kContactsStore, "contacts",
+                   "simple_query: windows contacts access is denied. Turn on "
+                   "Contacts access for this app in Windows Settings > Privacy & security."},
+        DenialCase{winrt_store_detail::kCalendarStore, "appointments",
+                   "simple_query: windows calendar access is denied. Turn on "
+                   "Calendar access for this app in Windows Settings > Privacy & security."}));
 
 // Purpose: A call that finishes is waited out and its result returned.
 TEST(AwaitUnlessStoppedTest, ReturnsTheResultOnceTheCallFinishes) {

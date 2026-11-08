@@ -15,6 +15,7 @@
 #include <limits>
 #include <string>
 #include <system_error>
+#include <vector>
 
 #include "boundary_formats.h"
 #include "test/test_support.h"
@@ -286,6 +287,66 @@ TEST(FileMutationsTest, RejectsANanFilterBeforeUpdating) {
   ASSERT_TRUE(result.has_error());
   EXPECT_EQ(result.error().code(), "invalid-query");
   EXPECT_EQ(ReadText(photo), "changed");
+}
+
+// Purpose: Malformed filters fail before a media delete can change any file.
+TEST(FileMutationsTest, RejectsMalformedFiltersBeforeDeletingMedia) {
+  const std::vector<EncodableValue> malformed{
+      EncodableValue(EncodableMap{}), EncodableValue("filters"), EncodableValue(true),
+      EncodableValue(int32_t{1}), EncodableValue(int64_t{1}), EncodableValue(1.5)};
+
+  for (const auto& filters : malformed) {
+    SCOPED_TRACE(filters.index());
+    TempDirectory directory;
+    const fs::path photo = directory.WriteFile("photo.jpg");
+    const fs::path other = directory.WriteFile("other.jpg");
+    const fs::path notes = directory.WriteFile("notes.txt");
+    const EncodableMap request{
+        {EncodableValue("type"), EncodableValue("delete")},
+        {EncodableValue("filters"), filters},
+    };
+
+    const auto result = Mutate({.request = request, .domain = "media", .root = directory.path()});
+
+    EXPECT_TRUE(result.has_error());
+    if (result.has_error()) {
+      EXPECT_EQ(result.error().code(), "invalid-query");
+    }
+    EXPECT_EQ(ReadText(photo), "changed");
+    EXPECT_EQ(ReadText(other), "changed");
+    EXPECT_EQ(ReadText(notes), "changed");
+  }
+}
+
+// Purpose: Malformed filters fail before a media update can change any file.
+TEST(FileMutationsTest, RejectsMalformedFiltersBeforeUpdatingMedia) {
+  const std::vector<EncodableValue> malformed{
+      EncodableValue(EncodableMap{}), EncodableValue("filters"), EncodableValue(true),
+      EncodableValue(int32_t{1}), EncodableValue(int64_t{1}), EncodableValue(1.5)};
+
+  for (const auto& filters : malformed) {
+    SCOPED_TRACE(filters.index());
+    TempDirectory directory;
+    const fs::path photo = directory.WriteFile("photo.jpg");
+    const fs::path other = directory.WriteFile("other.jpg");
+    const fs::path notes = directory.WriteFile("notes.txt");
+    const EncodableMap request{
+        {EncodableValue("type"), EncodableValue("update")},
+        {EncodableValue("filters"), filters},
+        {EncodableValue("values"),
+         EncodableValue(EncodableMap{{EncodableValue("content"), EncodableValue("replaced")}})},
+    };
+
+    const auto result = Mutate({.request = request, .domain = "media", .root = directory.path()});
+
+    EXPECT_TRUE(result.has_error());
+    if (result.has_error()) {
+      EXPECT_EQ(result.error().code(), "invalid-query");
+    }
+    EXPECT_EQ(ReadText(photo), "changed");
+    EXPECT_EQ(ReadText(other), "changed");
+    EXPECT_EQ(ReadText(notes), "changed");
+  }
 }
 
 // Purpose: A filtered mutation whose folder cannot be walked fails as

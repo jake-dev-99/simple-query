@@ -1,5 +1,7 @@
 #include "platform_thread_dispatcher.h"
 
+#include <algorithm>
+#include <cstdint>
 #include <mutex>
 #include <utility>
 
@@ -8,6 +10,7 @@ namespace simple_query_windows {
 namespace {
 
 constexpr UINT kWakeMessage = WM_APP + 1;
+constexpr UINT_PTR kWakeTimer = 1;
 constexpr const wchar_t* kWindowClassName =
     L"SimpleQueryWindowsPlatformThreadDispatcher";
 // Its address lies in this module, which identifies the module.
@@ -41,10 +44,11 @@ HMODULE CodeModule() {
 // Purpose: Register the window class and create the message-only window that
 // carries wake requests to the creating thread.
 // @param on_wake runs on the creating thread once per delivered wake.
+// @param wake_interval adds periodic wakes when positive, within Windows limits.
 // @returns Nothing; IsReady() reports whether the window exists.
 // @throws Nothing; a window that cannot be created leaves IsReady() false.
 PlatformThreadDispatcher::PlatformThreadDispatcher(
-    std::function<void()> on_wake)
+    std::function<void()> on_wake, std::chrono::milliseconds wake_interval)
     : on_wake_(std::move(on_wake)), module_(CodeModule()) {
   if (module_ == nullptr) {
     return;
@@ -62,6 +66,15 @@ PlatformThreadDispatcher::PlatformThreadDispatcher(
                             HWND_MESSAGE, nullptr, module_, nullptr);
   if (window_ != nullptr) {
     SetWindowLongPtrW(window_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+    if (wake_interval.count() > 0) {
+      const auto interval = std::clamp<int64_t>(
+          wake_interval.count(), USER_TIMER_MINIMUM, USER_TIMER_MAXIMUM);
+      if (SetTimer(window_, kWakeTimer, static_cast<UINT>(interval), nullptr) == 0) {
+        SetWindowLongPtrW(window_, GWLP_USERDATA, 0);
+        DestroyWindow(window_);
+        window_ = nullptr;
+      }
+    }
   }
 }
 
@@ -136,8 +149,8 @@ bool PlatformThreadDispatcher::RequestWake() {
   return true;
 }
 
-// Purpose: Run the dispatcher's wake for a wake message and pass every other
-// message to the default window procedure.
+// Purpose: Run posted or periodic wakes and pass every other message to
+// the default window procedure.
 // @param window is the dispatcher's message-only window.
 // @param message is the message identifier.
 // @param wparam is the message's first parameter.
@@ -148,13 +161,19 @@ LRESULT CALLBACK PlatformThreadDispatcher::WindowProc(HWND window,
                                                       UINT message,
                                                       WPARAM wparam,
                                                       LPARAM lparam) {
-  if (message != kWakeMessage) {
+  const bool timer_wake = message == WM_TIMER && wparam == kWakeTimer;
+  if (message != kWakeMessage && !timer_wake) {
     return DefWindowProcW(window, message, wparam, lparam);
   }
   auto* dispatcher = reinterpret_cast<PlatformThreadDispatcher*>(
       GetWindowLongPtrW(window, GWLP_USERDATA));
   if (dispatcher != nullptr) {
-    dispatcher->RunWake();
+    if (timer_wake) {
+      // A timer never consumes a posted wake, so its queued flag stays set.
+      dispatcher->on_wake_();
+    } else {
+      dispatcher->RunWake();
+    }
   }
   return 0;
 }

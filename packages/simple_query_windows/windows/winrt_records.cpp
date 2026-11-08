@@ -19,26 +19,7 @@
 
 namespace simple_query_windows {
 
-namespace {
-
-using flutter::EncodableList;
-using flutter::EncodableMap;
-using flutter::EncodableValue;
-
-// Purpose: Name one Windows Runtime store for its errors and denials.
-struct StoreSpec {
-  // The store's name in an error, such as "contacts".
-  const char* backend;
-  // The packaged-app capability that grants access, such as "contacts".
-  const char* capability;
-  // The Windows Settings privacy page that turns access on, such as "Contacts".
-  const char* settings_page;
-};
-
-constexpr StoreSpec kContactsStore{
-    .backend = "contacts", .capability = "contacts", .settings_page = "Contacts"};
-constexpr StoreSpec kCalendarStore{
-    .backend = "calendar", .capability = "appointments", .settings_page = "Calendar"};
+namespace winrt_store_detail {
 
 // Purpose: Give the outcome of a store read the user has not allowed.
 // @param spec names the store.
@@ -62,6 +43,20 @@ RowsResult StoppedResult() {
   return result;
 }
 
+}  // namespace winrt_store_detail
+
+using winrt_store_detail::kCalendarStore;
+using winrt_store_detail::kContactsStore;
+using winrt_store_detail::ReadStore;
+using winrt_store_detail::StoppedResult;
+using winrt_store_detail::StoreRead;
+
+namespace {
+
+using flutter::EncodableList;
+using flutter::EncodableMap;
+using flutter::EncodableValue;
+
 // Purpose: Convert a Windows Runtime time to the system clock.
 // @param value is the Windows Runtime time.
 // @returns The same instant on the system clock.
@@ -69,51 +64,6 @@ RowsResult StoppedResult() {
 std::chrono::system_clock::time_point TimeFromWinRt(
     winrt::Windows::Foundation::DateTime value) {
   return TimeFromWindowsTicks(value.time_since_epoch().count());
-}
-
-// Purpose: Name one read of a Windows Runtime store.
-template <typename Open, typename Read>
-struct StoreRead {
-  StoreSpec spec;
-  // Opens the store; gives nothing when the read stopped, and a null store
-  // when the user turned access off.
-  Open open;
-  // Reads the open store.
-  Read read;
-};
-
-// Purpose: Open a store in a Windows Runtime apartment, read it, and turn
-// a stop, a denial or a failure into the read's outcome.
-// @param request names the store, how to open it and how to read it.
-// @returns The outcome the read gives, kReadStoppedError, a denial naming
-// the capability, or an error when the store fails.
-// @throws Nothing; store failures are returned in error.
-template <typename Open, typename Read>
-RowsResult ReadStore(StoreRead<Open, Read> request) {
-  const StoreSpec& spec = request.spec;
-  try {
-    // Joined first, so every store object below is released before the
-    // thread leaves the apartment.
-    const WinRtApartmentScope apartment;
-    const auto store = request.open();
-    if (!store.has_value()) {
-      return StoppedResult();
-    }
-    if (!*store) {
-      return DeniedResult(spec);
-    }
-    return request.read(*store);
-  } catch (const winrt::hresult_error& error) {
-    // A packaged app without the capability gets E_ACCESSDENIED rather
-    // than a null store.
-    if (static_cast<int32_t>(error.code()) == E_ACCESSDENIED) {
-      return DeniedResult(spec);
-    }
-    RowsResult result;
-    result.error = std::string("simple_query: windows ") + spec.backend +
-                   " backend unavailable - " + winrt::to_string(error.message());
-    return result;
-  }
 }
 
 // Purpose: Build the query row for one contact.

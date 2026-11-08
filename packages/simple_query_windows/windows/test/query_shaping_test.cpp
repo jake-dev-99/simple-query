@@ -211,6 +211,36 @@ TEST(QueryShapingTest, RejectsAMalformedFilter) {
   EXPECT_TRUE(std::holds_alternative<std::string>(ParseQueryShape(no_field)));
 }
 
+// Purpose: A present filters value must be a list, so malformed input
+// cannot become an unrestricted query or mutation.
+TEST(QueryShapingTest, RejectsFiltersThatAreNotAList) {
+  const std::vector<EncodableValue> malformed{
+      EncodableValue(EncodableMap{}), EncodableValue("filters"), EncodableValue(true),
+      EncodableValue(int32_t{1}), EncodableValue(int64_t{1}), EncodableValue(1.5)};
+
+  for (const auto& filters : malformed) {
+    SCOPED_TRACE(filters.index());
+    const EncodableMap request{{EncodableValue("filters"), filters}};
+    EXPECT_TRUE(std::holds_alternative<std::string>(ParseQueryShape(request)));
+  }
+}
+
+// Purpose: Omitted, null and empty filters retain the unrestricted semantics
+// of valid requests.
+TEST(QueryShapingTest, AcceptsOmittedNullAndEmptyFilters) {
+  const std::vector<EncodableMap> requests{
+      {}, {{EncodableValue("filters"), EncodableValue()}},
+      {{EncodableValue("filters"), EncodableValue(EncodableList{})}}};
+  const std::vector<EncodableMap> rows{Row("kept", {"size", EncodableValue(int64_t{1})})};
+
+  for (const auto& request : requests) {
+    const auto parsed = ParseQueryShape(request);
+    ASSERT_TRUE(std::holds_alternative<QueryShape>(parsed));
+    EXPECT_EQ(IdsOf(ShapeQueryResult(rows, std::get<QueryShape>(parsed))),
+              (std::vector<std::string>{"kept"}));
+  }
+}
+
 // Purpose: A NaN filter value is rejected for every operator, because NaN
 // has no order and would otherwise match every row.
 TEST(QueryShapingTest, RejectsANanFilterValue) {

@@ -3,6 +3,7 @@
 
 #include <windows.h>
 
+#include <chrono>
 #include <functional>
 #include <mutex>
 
@@ -37,9 +38,14 @@ class PlatformThreadDispatcher {
  public:
   // Purpose: Create the message-only window that receives wake requests.
   // @param on_wake runs on the creating thread once per delivered wake.
+  // @param wake_interval also runs it periodically when positive, bounded to
+  // Windows timer limits; zero disables the timer. Timer setup failure closes
+  // the dispatcher so a caller never relies on an absent deadline wake.
   // @returns Nothing; check IsReady() before relying on wake delivery.
   // @throws Nothing; a window that cannot be created leaves IsReady() false.
-  explicit PlatformThreadDispatcher(std::function<void()> on_wake);
+  explicit PlatformThreadDispatcher(
+      std::function<void()> on_wake,
+      std::chrono::milliseconds wake_interval = std::chrono::milliseconds(0));
 
   // Purpose: Close the dispatcher if its owner has not.
   // Destroy an unclosed dispatcher on the creating thread.
@@ -72,7 +78,7 @@ class PlatformThreadDispatcher {
   bool RequestWake();
 
  private:
-  // Purpose: Receive the wake message on the creating thread.
+  // Purpose: Receive wake and timer messages on the creating thread.
   // @param window is the dispatcher's message-only window.
   // @param message is the message identifier.
   // @param wparam is the message's first parameter.

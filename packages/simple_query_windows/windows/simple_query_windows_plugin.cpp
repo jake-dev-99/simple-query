@@ -490,7 +490,13 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
         result(finish(std::move(value)));
       };
     };
-    const EnqueueResult queued = background_calls_.Enqueue(std::move(job));
+    const EnqueueResult queued = background_calls_.Enqueue(
+        std::move(job), [result = refused]() {
+          result(FlutterError(
+              "unavailable",
+              "simple_query: windows operation timed out after 30 seconds and may "
+              "still finish. Check its effect before retrying, then restart the app."));
+        });
     if (queued != EnqueueResult::kQueued) {
       refused(NotQueuedError(queued));
     }

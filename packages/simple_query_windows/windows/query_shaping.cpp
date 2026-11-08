@@ -54,6 +54,16 @@ bool HoldsNan(const EncodableValue* value) {
   return value != nullptr && IsNan(*value);
 }
 
+// Purpose: Check whether a filter lacks the field or operator it needs.
+// @param field is the parsed field name, if present.
+// @param op_name is the parsed operator name, if present.
+// @returns Whether the filter is incomplete.
+// @throws Nothing.
+bool IsIncompleteFilter(const std::optional<std::string>& field,
+                        const std::optional<std::string>& op_name) {
+  return !field.has_value() || field->empty() || !op_name.has_value();
+}
+
 // Purpose: Parse one filter map of a request.
 // @param value is the filter value.
 // @returns The filter, or the reason it is invalid.
@@ -65,7 +75,7 @@ std::variant<QueryFilter, std::string> ParseFilter(const EncodableValue& value) 
   }
   const auto field = StringAt(*filter, "field");
   const auto op_name = StringAt(*filter, "operator");
-  if (!field.has_value() || field->empty() || !op_name.has_value()) {
+  if (IsIncompleteFilter(field, op_name)) {
     return std::string("simple_query: each filter needs a field and an operator");
   }
   const auto op = ParseOperator(*op_name);
@@ -386,9 +396,13 @@ EncodableMap Project(EncodableMap row, const std::vector<std::string>& projectio
 // @throws Nothing.
 std::variant<std::vector<QueryFilter>, std::string> ParseFilters(const EncodableMap& request) {
   std::vector<QueryFilter> filters;
-  const auto* values = ListAt(request, "filters");
-  if (values == nullptr) {
+  const auto* raw_filters = FindValue(request, "filters");
+  if (IsAbsentOrNull(raw_filters)) {
     return filters;
+  }
+  const auto* values = AsList(raw_filters);
+  if (values == nullptr) {
+    return std::string("simple_query: filters must be a list");
   }
   for (const auto& value : *values) {
     auto parsed = ParseFilter(value);

@@ -14,6 +14,9 @@ class NativeQueryHostApiImpl;
 
 // Purpose: Give the plugin its reads of the process environment, so tests
 // can supply their own.
+// @param current_directory returns the process working directory.
+// @returns Nothing; this is a data type.
+// @throws Nothing; callbacks document what they throw.
 struct PluginEffects {
   // Returns the working directory, the root of a files or media request that
   // names none. Throws std::system_error when it cannot be read.

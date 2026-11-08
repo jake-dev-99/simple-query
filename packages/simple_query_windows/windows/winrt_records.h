@@ -1,10 +1,14 @@
 #ifndef SIMPLE_QUERY_WINDOWS_WINRT_RECORDS_H_
 #define SIMPLE_QUERY_WINDOWS_WINRT_RECORDS_H_
 
+#include <windows.h>
+
 #include <flutter/encodable_value.h>
 
 #include <chrono>
+#include <cstdint>
 #include <optional>
+#include <string>
 #include <thread>
 
 #include <winrt/Windows.Foundation.h>
@@ -65,6 +69,93 @@ auto AwaitUnlessStopped(const Operation& operation, const StopRequested& stop_re
   }
   return operation.GetResults();
 }
+
+// Shared implementation detail: production and tests supply the store operations.
+namespace winrt_store_detail {
+
+// Purpose: Name one Windows Runtime store for its errors and denials.
+// @param backend names the store in errors.
+// @param capability identifies the packaged-app permission.
+// @param settings_page names its Windows Settings privacy page.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
+struct StoreSpec {
+  // The store's name in an error, such as "contacts".
+  const char* backend;
+  // The packaged-app capability that grants access, such as "contacts".
+  const char* capability;
+  // The Windows Settings privacy page that turns access on, such as "Contacts".
+  const char* settings_page;
+};
+
+inline constexpr StoreSpec kContactsStore{
+    .backend = "contacts", .capability = "contacts", .settings_page = "Contacts"};
+inline constexpr StoreSpec kCalendarStore{
+    .backend = "calendar", .capability = "appointments", .settings_page = "Calendar"};
+
+// Purpose: Give the outcome of a store read the user has not allowed.
+// @param spec names the store.
+// @returns An error naming the capability and how to allow access.
+// @throws Nothing.
+RowsResult DeniedResult(const StoreSpec& spec);
+
+// Purpose: Give the outcome of a read that stopped before it finished.
+// @param none.
+// @returns An outcome carrying kReadStoppedError.
+// @throws Nothing.
+RowsResult StoppedResult();
+
+// Purpose: Name one read of a Windows Runtime store.
+// @param spec names the store and its permission.
+// @param open opens the store, or returns no value when stopped.
+// @param read reads a non-null opened store.
+// @returns Nothing; this is a data type.
+// @throws Nothing; the operations document their failures.
+template <typename Open, typename Read>
+struct StoreRead {
+  StoreSpec spec;
+  // Opens the store; gives nothing when the read stopped, and a null store
+  // when the user turned access off.
+  Open open;
+  // Reads the open store.
+  Read read;
+};
+
+// Purpose: Open a store in a Windows Runtime apartment, read it, and turn
+// a stop, a denial or a failure into the read's outcome.
+// @param request names the store, how to open it and how to read it.
+// @returns The outcome the read gives, kReadStoppedError, a denial naming
+// the capability, or an error when the store fails.
+// @throws Nothing; store failures are returned in error.
+template <typename Open, typename Read>
+RowsResult ReadStore(StoreRead<Open, Read> request) {
+  const StoreSpec& spec = request.spec;
+  try {
+    // Joined first, so every store object below is released before the
+    // thread leaves the apartment.
+    const WinRtApartmentScope apartment;
+    const auto store = request.open();
+    if (!store.has_value()) {
+      return StoppedResult();
+    }
+    if (!*store) {
+      return DeniedResult(spec);
+    }
+    return request.read(*store);
+  } catch (const winrt::hresult_error& error) {
+    // A packaged app without the capability gets E_ACCESSDENIED rather
+    // than a null store.
+    if (static_cast<int32_t>(error.code()) == E_ACCESSDENIED) {
+      return DeniedResult(spec);
+    }
+    RowsResult result;
+    result.error = std::string("simple_query: windows ") + spec.backend +
+                   " backend unavailable - " + winrt::to_string(error.message());
+    return result;
+  }
+}
+
+}  // namespace winrt_store_detail
 
 // Purpose: List the user's contacts as query rows.
 // @param stop_requested ends the read early, cancelling any store call in

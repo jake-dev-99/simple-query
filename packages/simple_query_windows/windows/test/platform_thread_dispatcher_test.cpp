@@ -95,6 +95,20 @@ TEST(PlatformThreadDispatcherTest, RunsTheWakeOnTheCreatingThread) {
   EXPECT_EQ(wake_thread, std::this_thread::get_id());
 }
 
+// Purpose: A timer wakes the platform thread without a worker post, so a
+// blocked worker cannot prevent its call deadline from being checked.
+TEST(PlatformThreadDispatcherTest, TimerWakesWithoutAWorkerPostAndStopsWhenClosed) {
+  int wakes = 0;
+  PlatformThreadDispatcher dispatcher([&]() { ++wakes; }, std::chrono::milliseconds(10));
+  ASSERT_TRUE(dispatcher.IsReady());
+  ASSERT_TRUE(PumpUntil([&]() { return wakes >= 2; }, kDeliveryTimeout));
+
+  dispatcher.Close();
+  const int before = wakes;
+  PumpQueuedMessages();
+  EXPECT_EQ(wakes, before);
+}
+
 // Purpose: Requests made while a wake is queued add no further messages.
 TEST(PlatformThreadDispatcherTest, CoalescesRequestsWhileAWakeIsQueued) {
   int wakes = 0;
