@@ -205,9 +205,9 @@ std::optional<FlutterError> WriteBytes(const FileWrite& write) {
     if (IsStopRequested(write.mutation.stop_requested)) {
       return StoppedMutation(0);
     }
-    temporary = destination;
-    temporary += ".simple-query-" + std::to_string(GetCurrentProcessId()) + "-" +
-                 std::to_string(next_temporary.fetch_add(1)) + ".tmp";
+    temporary = destination.parent_path() /
+                (".simple-query-" + std::to_string(GetCurrentProcessId()) + "-" +
+                 std::to_string(next_temporary.fetch_add(1)) + ".tmp");
     handle = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
                          FILE_ATTRIBUTE_NORMAL, nullptr);
     if (handle == INVALID_HANDLE_VALUE) {
@@ -260,8 +260,9 @@ std::optional<FlutterError> WriteBytes(const FileWrite& write) {
   } else if (!failure.has_value()) {
     // Own the recovery directory exclusively, so ReplaceFile never overwrites
     // an unrelated backup. A failed replacement may leave the only original here.
-    fs::path recovery = temporary;
-    recovery += ".recovery";
+    const fs::path recovery = destination.parent_path() /
+        (".simple-query-" + std::to_string(GetCurrentProcessId()) + "-" +
+         std::to_string(next_temporary.fetch_add(1)) + ".recovery");
     std::error_code error;
     const bool reserved = fs::create_directory(recovery, error);
     if (error || !reserved) {

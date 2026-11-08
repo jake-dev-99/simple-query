@@ -829,6 +829,65 @@ TEST(FileMutationsTest, BackupCleanupFailureDisclosesPublishedUpdateAndRecovery)
 #endif
 }
 
+// Purpose: Name a valid maximum-length component, allowing its full Windows path.
+// @param parent is the temporary directory that will contain the file.
+// @returns A 255-character filename; Windows uses its extended-length path form.
+// @throws std::filesystem::filesystem_error when the absolute parent cannot be read.
+fs::path LongComponentPath(const fs::path& parent) {
+  fs::path target = fs::absolute(parent / (std::string(251, 'x') + ".txt"));
+#if defined(_WIN32)
+  const std::wstring native = target.native();
+  const bool already_extended = native.rfind(L"\\\\?\\", 0) == 0;
+  if (!already_extended) {
+    const bool unc = native.rfind(L"\\\\", 0) == 0;
+    target = fs::path(unc ? L"\\\\?\\UNC\\" + native.substr(2) : L"\\\\?\\" + native);
+  }
+#endif
+  return target;
+}
+
+// Purpose: An insert accepts a valid 255-character destination component.
+TEST(FileMutationsTest, InsertsFileWithMaximumLengthComponent) {
+  TempDirectory directory;
+  const fs::path target = LongComponentPath(directory.path());
+  ASSERT_EQ(target.filename().native().size(), 255u);
+  const EncodableMap request{
+      {EncodableValue("type"), EncodableValue("insert")},
+      {EncodableValue("values"), EncodableValue(EncodableMap{
+          {EncodableValue("path"), EncodableValue(PathToUtf8(target))},
+          {EncodableValue("content"), EncodableValue("inserted long name")}})}};
+
+  const auto result = Mutate({.request = request, .domain = "files", .root = directory.path()});
+
+  ASSERT_FALSE(result.has_error()) << result.error().message();
+  EXPECT_EQ(AffectedCount(result), 1);
+  EXPECT_EQ(ReadText(target), "inserted long name");
+  EXPECT_TRUE(fs::remove(target));
+  EXPECT_TRUE(fs::is_empty(directory.path()));
+}
+
+// Purpose: An update accepts the same valid component without lengthening staging names.
+TEST(FileMutationsTest, UpdatesFileWithMaximumLengthComponent) {
+  TempDirectory directory;
+  const fs::path target = LongComponentPath(directory.path());
+  ASSERT_EQ(target.filename().native().size(), 255u);
+  std::ofstream(target) << "original long name";
+  ASSERT_EQ(ReadText(target), "original long name");
+  const EncodableMap request{
+      {EncodableValue("type"), EncodableValue("update")},
+      {EncodableValue("values"), EncodableValue(EncodableMap{
+          {EncodableValue("path"), EncodableValue(PathToUtf8(target))},
+          {EncodableValue("content"), EncodableValue("updated long name")}})}};
+
+  const auto result = Mutate({.request = request, .domain = "files", .root = directory.path()});
+
+  ASSERT_FALSE(result.has_error()) << result.error().message();
+  EXPECT_EQ(AffectedCount(result), 1);
+  EXPECT_EQ(ReadText(target), "updated long name");
+  EXPECT_TRUE(fs::remove(target));
+  EXPECT_TRUE(fs::is_empty(directory.path()));
+}
+
 }  // namespace
 }  // namespace test
 }  // namespace simple_query_windows

@@ -103,7 +103,8 @@ started are dropped; late replies are suppressed.
 Windows file mutations validate filters and contents before changing targets.
 File inserts never replace existing destinations. Content updates follow symbolic
 links and stage replacement bytes before publication, preserving existing file
-metadata through Windows replacement semantics. An `unavailable` mutation error
-includes `affectedCount` for confirmed effects and `partialEffectsPossible`.
+metadata through Windows replacement semantics. Filesystem mutation failures
+include `affectedCount` for confirmed effects and `partialEffectsPossible`;
+timeouts or unexpected deferred failures can leave the count unknown.
 A `recoveryPath` identifies a retained recovery directory after replacement or
 backup-cleanup failure. These errors do not promise rollback of earlier effects.
