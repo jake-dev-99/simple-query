@@ -26,6 +26,9 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Before
 import org.junit.runner.RunWith
@@ -238,17 +241,52 @@ class StreamManagerTest {
      * wraps.
      *
      * @param copies the executor that runs the background copies.
+     * @param copyStopTimeoutMs how long closeStream waits for a running copy.
      * @return the manager.
      * @throws Nothing.
      */
-    private fun managerOn(copies: ExecutorService) = StreamManager(
+    private fun managerOn(copies: ExecutorService, copyStopTimeoutMs: Long = 5_000L) = StreamManager(
         context,
         executor = copies,
         createPipe = {
             val pipes = ParcelFileDescriptor.createPipe()
             arrayOf(wrapReadEnd(pipes[0]), wrapWriteEnd(pipes[1])).also { createdPipes.add(it) }
         },
+        copyStopTimeoutMs = copyStopTimeoutMs,
     )
+
+    /**
+     * Purpose: Open a stream on a real copy thread whose copy reads all its
+     * content, then waits inside its write-end close until [failClose]
+     * counts down, and then fails that close.
+     *
+     * The write end is already released when the copy waits, so a release
+     * leaves the close to the copy, and its failure arrives late.
+     *
+     * @param failClose counted down to let the write-end close fail with
+     *   "close failed".
+     * @param copyStopTimeoutMs how long closeStream waits for the copy.
+     * @return the stream's id and its copy thread.
+     * @throws AssertionError when the copy never reaches the write-end close.
+     */
+    private fun openStreamWaitingInWriteEndClose(
+        failClose: CountDownLatch,
+        copyStopTimeoutMs: Long = 5_000L,
+    ): Pair<String, ExecutorService> {
+        register(CONTENT) { ByteArrayInputStream(byteArrayOf(1, 2, 3)) }
+        val closing = CountDownLatch(1)
+        wrapWriteEnd = {
+            SignalingEnd(it, closing) {
+                failClose.await(5, TimeUnit.SECONDS)
+                throw IOException("close failed")
+            }
+        }
+        val copies = copyThread()
+        manager = managerOn(copies, copyStopTimeoutMs)
+        val descriptor = manager.openStream(CONTENT)
+        assertTrue(closing.await(5, TimeUnit.SECONDS))
+        return descriptor.streamId to copies
+    }
 
     /**
      * Purpose: Build a single real copy thread, as production runs copies,
@@ -822,10 +860,7 @@ class StreamManagerTest {
 
         assertFalse(readEnd().fileDescriptor.valid())
         assertFalse(writeEnd().fileDescriptor.valid())
-        val logged = warnings().single()
-        assertTrue(logged.msg.startsWith("dispose: stream "), logged.msg)
-        assertTrue(logged.msg.endsWith(" copy failed"), logged.msg)
-        assertEquals("disk read failed", logged.throwable?.message)
+        assertCopyFailureLoggedOnce("disk read failed")
     }
 
     /**
@@ -958,29 +993,63 @@ class StreamManagerTest {
      */
     @Test
     fun aCopyFailingAfterDisposeLogsItsFailureOnce() {
-        register(CONTENT) { ByteArrayInputStream(byteArrayOf(1, 2, 3)) }
-        val writeEndClosing = CountDownLatch(1)
-        val disposed = CountDownLatch(1)
-        wrapWriteEnd = {
-            SignalingEnd(it, writeEndClosing) {
-                disposed.await(5, TimeUnit.SECONDS)
-                throw IOException("close failed")
-            }
-        }
-        val copies = copyThread()
-        manager = managerOn(copies)
-        manager.openStream(CONTENT)
-        assertTrue(writeEndClosing.await(5, TimeUnit.SECONDS))
+        val failClose = CountDownLatch(1)
+        val (_, copies) = openStreamWaitingInWriteEndClose(failClose)
 
         manager.dispose()
         assertTrue(warnings().isEmpty())
-        disposed.countDown()
+        failClose.countDown()
 
         assertTrue(copies.awaitTermination(5, TimeUnit.SECONDS))
-        val logged = warnings().single()
-        assertTrue(logged.msg.startsWith("dispose: stream "), logged.msg)
-        assertTrue(logged.msg.endsWith(" copy failed"), logged.msg)
-        assertEquals("close failed", logged.throwable?.message)
+        assertCopyFailureLoggedOnce("close failed")
+    }
+
+    /**
+     * Purpose: Pin that a closeStream cancelled while it waits for the copy
+     *   leaves the copy's later failure to the log, once (UNFY-365).
+     *
+     * @return Nothing.
+     * @throws AssertionError when the failure is lost or logged twice.
+     */
+    @Test
+    fun aCancelledCloseStreamLeavesALaterCopyFailureToTheLog() {
+        val failClose = CountDownLatch(1)
+        val (streamId, copies) = openStreamWaitingInWriteEndClose(failClose)
+
+        runBlocking {
+            // Unconfined runs closeStream here until it suspends in its wait.
+            launch(Dispatchers.Unconfined) { manager.closeStream(streamId) }.cancelAndJoin()
+        }
+        assertTrue(warnings().isEmpty())
+        failClose.countDown()
+
+        copies.shutdown()
+        assertTrue(copies.awaitTermination(5, TimeUnit.SECONDS))
+        assertCopyFailureLoggedOnce("close failed")
+    }
+
+    /**
+     * Purpose: Pin that closeStream raises a copy that does not stop in time
+     *   as incomplete content, and leaves the copy's later failure to the
+     *   log, once (UNFY-365).
+     *
+     * @return Nothing.
+     * @throws AssertionError when closeStream returns normally, or the later
+     *   failure is lost or logged twice.
+     */
+    @Test
+    fun closeStreamRaisesACopyThatDoesNotStopAndLogsItsLaterFailure() {
+        val failClose = CountDownLatch(1)
+        val (streamId, copies) = openStreamWaitingInWriteEndClose(failClose, copyStopTimeoutMs = 100)
+
+        val error = assertFailsWith<IOException> { manager.closeStreamBlocking(streamId) }
+
+        assertTrue(error.message.orEmpty().contains("did not stop within 100ms"), error.message)
+        assertTrue(warnings().isEmpty())
+        failClose.countDown()
+        copies.shutdown()
+        assertTrue(copies.awaitTermination(5, TimeUnit.SECONDS))
+        assertCopyFailureLoggedOnce("close failed")
     }
 
     /**
@@ -1156,6 +1225,22 @@ class StreamManagerTest {
      * @throws Nothing.
      */
     private fun warnings() = ShadowLog.getLogsForTag("StreamManager").filter { it.type == Log.WARN }
+
+    /**
+     * Purpose: Assert that StreamManager logged exactly one copy failure no
+     *   caller could raise, naming its stream, with [cause] attached.
+     *
+     * @param cause the logged failure's message.
+     * @return Nothing.
+     * @throws AssertionError when no warning, another warning, or more than
+     *   one warning was logged.
+     */
+    private fun assertCopyFailureLoggedOnce(cause: String) {
+        val logged = warnings().single()
+        assertTrue(logged.msg.startsWith("stream "), logged.msg)
+        assertTrue(logged.msg.endsWith(": copy failed with no caller to raise it"), logged.msg)
+        assertEquals(cause, logged.throwable?.message)
+    }
 
     private fun readEnd() = createdPipes.single()[0]
 
