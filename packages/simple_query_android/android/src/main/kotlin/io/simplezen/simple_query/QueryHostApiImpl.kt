@@ -7,6 +7,8 @@ import android.database.Cursor
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -461,23 +463,46 @@ class QueryHostApiImpl(
      * name (UNFY-300).
      *
      * @param callback the Pigeon reply callback of the call.
-     * @param body the blocking work; its return value is the reply.
+     * @param body the work, which may block or suspend; its return value is
+     *   the reply.
      * @return Nothing; the reply is posted to the main looper.
      * @throws Nothing. Once [dispose] cancelled the scope the engine is
-     *   detached, and no reply is sent. A `CancellationException` the
-     *   blocking [body] raises is a failure like any other.
+     *   detached, and no reply is sent, including for a [body] that the
+     *   cancellation stopped while it was suspended. A failure whose reply
+     *   is dropped is logged instead, because no caller receives it; a
+     *   [CancellationException] is not, because the detach's cancellation
+     *   throws one.
      */
-    private fun <T> launchHostCall(callback: (Result<T>) -> Unit, body: () -> T) {
+    private fun <T> launchHostCall(callback: (Result<T>) -> Unit, body: suspend () -> T) {
         scope.launch {
             val result = try {
                 Result.success(body())
             } catch (e: Throwable) {
-                Result.failure(HostErrors.toFlutterError(e))
+                Result.failure(e)
             }
             // Checked on the main thread, where dispose() runs, so a reply
             // queued just before detach is dropped too.
-            mainHandler.post { if (scope.isActive) callback(result) }
+            mainHandler.post {
+                if (scope.isActive) {
+                    callback(result.exceptionOrNull()?.let { Result.failure(HostErrors.toFlutterError(it)) } ?: result)
+                } else {
+                    logDroppedFailure(result.exceptionOrNull())
+                }
+            }
         }
+    }
+
+    /**
+     * Purpose: Log a host call failure whose reply the detach dropped, so
+     * it is not lost.
+     *
+     * @param failure the call's failure as thrown, or null for a success.
+     * @return Nothing.
+     * @throws Nothing.
+     */
+    private fun logDroppedFailure(failure: Throwable?) {
+        if (failure == null || failure is CancellationException) return
+        Log.w(TAG, "a host call failed after the engine detached, with no caller to receive it", failure)
     }
 
     /**
@@ -582,6 +607,8 @@ class QueryHostApiImpl(
     }
 
     private companion object {
+        const val TAG = "QueryHostApiImpl"
+
         /**
          * The sort a `limit` gets when the caller gave none. Matches the Dart
          * `query()` default in `simple_query_android_api.dart`. A provider with

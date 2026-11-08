@@ -23,16 +23,48 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [30])
 class ObserverDispatchTest {
-    // Decode the native-to-Dart payload. The generated Kotlin decoder is for
-    // Dart-to-native messages, whose Pigeon codec writes all integers as int64.
+    /**
+     * Purpose: Decode the native-to-Dart observer payload, as Dart's Pigeon
+     * codec would.
+     *
+     * The generated Kotlin decoder is for Dart-to-native messages, whose
+     * Pigeon codec writes all integers as int64.
+     *
+     * @throws Nothing.
+     */
     private object FlutterObserverCodec : StandardMessageCodec() {
+        // Read from the generated encoder, so a Pigeon schema change that
+        // renumbers the types cannot break this decoder.
+        private val changeTypeId = pigeonTypeId(ContentChangeType.UNKNOWN)
+        private val changeEventId =
+            pigeonTypeId(ContentChangeEvent("", "", ContentChangeType.UNKNOWN, null, false))
+
+        /**
+         * Purpose: Decode the two Pigeon observer types, and leave every
+         * other type to the standard codec.
+         *
+         * @param type the type id read from [buffer].
+         * @param buffer the message, positioned after [type].
+         * @return a [ContentChangeType], the event's field list, or the
+         *   standard codec's value.
+         * @throws IllegalArgumentException from the standard codec for an
+         *   unknown type id.
+         */
         override fun readValueOfType(type: Byte, buffer: ByteBuffer): Any? = when (type) {
-            129.toByte() -> ContentChangeType.ofRaw((readValue(buffer) as Number).toInt())
-            // ContentChangeEvent's Pigeon type id in Query.g.kt (UNFY-365
-            // removed StreamError, which came before it).
-            145.toByte() -> readValue(buffer)
+            changeTypeId -> ContentChangeType.ofRaw((readValue(buffer) as Number).toInt())
+            changeEventId -> readValue(buffer)
             else -> super.readValueOfType(type, buffer)
         }
+
+        /**
+         * Purpose: Find the type id the generated Pigeon codec writes for
+         * [value]'s class.
+         *
+         * @param value a sample of the Pigeon class or enum.
+         * @return the type id, the first byte of the encoded message.
+         * @throws NullPointerException when the codec encodes nothing.
+         */
+        private fun pigeonTypeId(value: Any): Byte = QueryFlutterApi.codec.encodeMessage(value)!!.get(0)
     }
 
     private val events = mutableListOf<List<Any?>>()
@@ -181,5 +213,39 @@ class ObserverDispatchTest {
             ),
             events,
         )
+    }
+
+    /**
+     * Purpose: Pin that Kotlin's generated codec writes the observer type ids
+     *   that Dart's generated decoder reads (`lib/src/generated/query.g.dart`),
+     *   so the two sides of the channel cannot drift apart unnoticed.
+     *
+     * @return Nothing.
+     * @throws AssertionError when Kotlin writes another id for either type.
+     */
+    @Test
+    fun kotlinWritesTheObserverTypeIdsDartReads() {
+        assertEquals(DART_CHANGE_TYPE_ID, kotlinTypeId(ContentChangeType.UNKNOWN))
+        assertEquals(
+            DART_CHANGE_EVENT_ID,
+            kotlinTypeId(ContentChangeEvent("", "", ContentChangeType.UNKNOWN, null, false)),
+        )
+    }
+
+    /**
+     * Purpose: Read the type id Kotlin's generated codec writes for [value].
+     *
+     * @param value a sample of the Pigeon class or enum.
+     * @return the unsigned type id, the first byte of the encoded message.
+     * @throws NullPointerException when the codec encodes nothing.
+     */
+    private fun kotlinTypeId(value: Any): Int = QueryFlutterApi.codec.encodeMessage(value)!!.get(0).toInt() and 0xFF
+
+    private companion object {
+        /** The id Dart's generated decoder reads as a ContentChangeType. */
+        const val DART_CHANGE_TYPE_ID = 129
+
+        /** The id Dart's generated decoder reads as a ContentChangeEvent. */
+        const val DART_CHANGE_EVENT_ID = 145
     }
 }

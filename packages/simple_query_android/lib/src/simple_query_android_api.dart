@@ -25,6 +25,11 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
   final _activeObservers = <String, _ObserverRegistration>{};
   final _openBinaryHandles = <String, _OpenBinaryHandle>{};
 
+  /// Counts the times [dispose] has taken its binary-handle snapshot. An
+  /// [openBinary] that a snapshot overtook closes its own stream, so
+  /// [dispose] never waits on a host open that may never return.
+  int _binarySnapshots = 0;
+
   Future<iface.CapabilitySnapshot> getCapabilities() async {
     return iface.RuntimeContractValidation.validateCapabilitySnapshot(
       const iface.CapabilitySnapshot(
@@ -385,17 +390,24 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
       write: false,
     );
 
+    final snapshotsAtOpen = _binarySnapshots;
     final descriptor = await guardHostCall(
       () => _hostApi.openStream(contentUri),
       domain: request.domain,
       operation: iface.QueryOperation.read,
       contentUri: contentUri,
     );
-    _openBinaryHandles[descriptor.streamId] = _OpenBinaryHandle(
+    final handle = _OpenBinaryHandle(
       streamId: descriptor.streamId,
       domain: request.domain,
       contentUri: contentUri,
     );
+    // This check and the insert run without a gap, so dispose either finds
+    // the handle in its snapshot or has already moved the counter.
+    if (_binarySnapshots != snapshotsAtOpen) {
+      await _closeOvertakenOpen(handle);
+    }
+    _openBinaryHandles[descriptor.streamId] = handle;
 
     return iface.BinaryContentHandle(
       handleId: descriptor.streamId,
@@ -431,6 +443,29 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
         operation: iface.QueryOperation.read,
         contentUri: handle.contentUri,
       );
+
+  /// Purpose: Close a stream whose open returned after [dispose] took its
+  /// snapshot, so the stream does not outlive that dispose (UNFY-365).
+  ///
+  /// @param handle the stream the overtaken open returned.
+  /// @returns Never; it always throws.
+  /// @throws SimpleQueryError `transientFailure` with details
+  ///   `{reason: disposedWhileOpening, contentUri}` once the stream closed,
+  ///   because a retry opens it again; or the mapped failure of the close.
+  Future<Never> _closeOvertakenOpen(_OpenBinaryHandle handle) async {
+    await _closeBinaryStream(handle);
+    throw iface.SimpleQueryError(
+      code: iface.SimpleQueryErrorCode.transientFailure,
+      message: 'simple_query: dispose() ran while this binary stream was '
+          'opening, so the stream was closed; open it again to read it',
+      domain: handle.domain,
+      operation: iface.QueryOperation.read,
+      details: <String, Object?>{
+        'reason': 'disposedWhileOpening',
+        'contentUri': handle.contentUri,
+      },
+    );
+  }
 
   Future<Map<String, Object?>?> callExtension({
     required String namespace,
@@ -552,40 +587,50 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
   /// Purpose: Release every observer and binary handle.
   ///
   /// Every cleanup step runs even when an earlier host call fails, so one
-  /// failure cannot leak the rest (UNFY-300).
+  /// failure cannot leak the rest (UNFY-300). It never waits for an
+  /// [openBinary] still in flight; that open closes its own stream when it
+  /// returns. The binary handles close concurrently, because each close may
+  /// wait for its background copy to stop (UNFY-365).
   ///
   /// @returns Completion once every step has run.
-  /// @throws SimpleQueryError: the first host cleanup failure, with its
-  ///   stack trace, after every step has run.
+  /// @throws SimpleQueryError: the first host cleanup failure, in step
+  ///   order, with its stack trace, after every step has run.
   Future<void> dispose() async {
-    final failures = <AsyncError>[];
-    Future<void> attempt(Future<void> Function() cleanup) async {
+    Future<AsyncError?> attempt(Future<void> Function() cleanup) async {
       try {
         await cleanup();
+        return null;
       } on iface.SimpleQueryError catch (error, stackTrace) {
-        failures.add(AsyncError(error, stackTrace));
+        return AsyncError(error, stackTrace);
       }
     }
 
-    await attempt(() => guardHostCall(
-          _hostApi.unregisterAllObservers,
-          operation: iface.QueryOperation.observe,
-        ));
+    final failures = <AsyncError?>[
+      await attempt(() => guardHostCall(
+            _hostApi.unregisterAllObservers,
+            operation: iface.QueryOperation.observe,
+          )),
+    ];
     for (final registration in _activeObservers.values.toList()) {
-      await attempt(registration.unregister);
+      failures.add(await attempt(registration.unregister));
     }
     _activeObservers.clear();
 
-    for (final handle in _openBinaryHandles.values.toList(growable: false)) {
-      await attempt(() => _closeBinaryStream(handle));
-    }
+    // The counter moves with the snapshot, so an open in flight now closes
+    // its own stream when it returns. An open that starts after the
+    // snapshot keeps its handle for a later dispose to close.
+    _binarySnapshots++;
+    final handles = _openBinaryHandles.values.toList(growable: false);
     _openBinaryHandles.clear();
+    // Future.wait keeps the handles' order, so the failure raised does not
+    // depend on which close finishes first.
+    failures.addAll(await Future.wait([
+      for (final handle in handles) attempt(() => _closeBinaryStream(handle)),
+    ]));
 
-    if (failures.isNotEmpty) {
-      Error.throwWithStackTrace(
-        failures.first.error,
-        failures.first.stackTrace,
-      );
+    final firstFailure = failures.nonNulls.firstOrNull;
+    if (firstFailure != null) {
+      Error.throwWithStackTrace(firstFailure.error, firstFailure.stackTrace);
     }
   }
 
