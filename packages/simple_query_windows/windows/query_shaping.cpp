@@ -121,6 +121,20 @@ std::optional<int> CompareValues(const EncodableValue* lhs, const EncodableValue
   return (order > 0) - (order < 0);
 }
 
+// Purpose: Check two values for equality the way Dart's == does for filter
+// values: null equals only null, and other values compare as scalars. An
+// absent field counts as null, because Dart reads a missing field as null.
+// @param lhs is the first value, or null when the field is absent.
+// @param rhs is the second value, or null when the field is absent.
+// @returns Whether the values are equal.
+// @throws Nothing.
+bool ValuesEqual(const EncodableValue* lhs, const EncodableValue* rhs) {
+  if (IsAbsentOrNull(lhs) || IsAbsentOrNull(rhs)) {
+    return IsAbsentOrNull(lhs) && IsAbsentOrNull(rhs);
+  }
+  return CompareValues(lhs, rhs) == 0;
+}
+
 // Purpose: Check a contains filter: a list field holds the value, or a text
 // field holds it as a substring, ignoring ASCII case.
 // @param actual is the field value, or null when the field is absent.
@@ -130,7 +144,7 @@ std::optional<int> CompareValues(const EncodableValue* lhs, const EncodableValue
 bool Contains(const EncodableValue* actual, const EncodableValue* expected) {
   if (const auto* items = AsList(actual)) {
     return std::any_of(items->begin(), items->end(), [&](const EncodableValue& item) {
-      return CompareValues(&item, expected) == 0;
+      return ValuesEqual(&item, expected);
     });
   }
   const auto haystack = AsString(actual);
@@ -155,15 +169,17 @@ bool Passes(const EncodableMap& row, const QueryFilter& filter) {
   if (filter.op == FilterOperator::kInList) {
     const auto* options = AsList(expected);
     return std::any_of(options->begin(), options->end(), [&](const EncodableValue& option) {
-      return CompareValues(actual, &option) == 0;
+      return ValuesEqual(actual, &option);
     });
+  }
+  if (filter.op == FilterOperator::kEquals) {
+    return ValuesEqual(actual, expected);
+  }
+  if (filter.op == FilterOperator::kNotEquals) {
+    return !ValuesEqual(actual, expected);
   }
   const auto order = CompareValues(actual, expected);
   switch (filter.op) {
-    case FilterOperator::kEquals:
-      return order == 0;
-    case FilterOperator::kNotEquals:
-      return order != 0;
     case FilterOperator::kGreaterThan:
       return order.has_value() && *order > 0;
     case FilterOperator::kGreaterThanOrEqual:
@@ -172,6 +188,8 @@ bool Passes(const EncodableMap& row, const QueryFilter& filter) {
       return order.has_value() && *order < 0;
     case FilterOperator::kLessThanOrEqual:
       return order.has_value() && *order <= 0;
+    case FilterOperator::kEquals:
+    case FilterOperator::kNotEquals:
     case FilterOperator::kContains:
     case FilterOperator::kInList:
       break;
@@ -235,7 +253,7 @@ std::variant<std::vector<std::string>, std::string> ParseProjection(
 std::variant<std::optional<int64_t>, std::string> ParsePageNumber(const EncodableMap& page,
                                                                   const std::string& key) {
   const EncodableValue* value = FindValue(page, key);
-  if (value == nullptr || value->IsNull()) {
+  if (IsAbsentOrNull(value)) {
     return std::optional<int64_t>{};
   }
   const std::optional<int64_t> number = AsInt(value);
@@ -252,7 +270,7 @@ std::variant<std::optional<int64_t>, std::string> ParsePageNumber(const Encodabl
 // 3 for a list or map.
 // @throws Nothing.
 int SortRank(const EncodableValue* value) {
-  if (value == nullptr || value->IsNull()) {
+  if (IsAbsentOrNull(value)) {
     return 0;
   }
   if (AsDouble(*value).has_value()) {

@@ -71,7 +71,10 @@ jobs:
                 windows=true
                 ;;
             esac
-          done < <(git diff --name-only "${BASE_SHA}...${HEAD_SHA}")
+          # --no-renames lists a moved file under both its old and new
+          # path, so moving a file out of a watched folder still runs the
+          # Windows jobs.
+          done < <(git diff --no-renames --name-only "${BASE_SHA}...${HEAD_SHA}")
           echo "windows=${windows}" >> "${GITHUB_OUTPUT}"
 
   windows-consumer:

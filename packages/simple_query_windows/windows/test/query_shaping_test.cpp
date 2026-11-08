@@ -122,6 +122,29 @@ TEST(QueryShapingTest, MatchesContainsInTextAndLists) {
             (std::vector<std::string>{"report", "tagged"}));
 }
 
+// Purpose: Filters against null match a missing or null field, as Dart's ==
+// does; a files query uses this to find directories, which have no size.
+TEST(QueryShapingTest, MatchesNullAgainstMissingAndNullFields) {
+  const std::vector<EncodableMap> rows{
+      Row("folder", "size", EncodableValue()),
+      EncodableMap{{EncodableValue("id"), EncodableValue("missing")}},
+      Row("file", "size", EncodableValue(int64_t{3}))};
+  const auto filter_size = [&rows](const std::string& op, EncodableValue value) {
+    return IdsOf(
+        Shape(rows, RequestWithFilter({.field = "size", .op = op, .value = std::move(value)})));
+  };
+
+  EXPECT_EQ(filter_size("equals", EncodableValue()),
+            (std::vector<std::string>{"folder", "missing"}));
+  EXPECT_EQ(filter_size("notEquals", EncodableValue()), (std::vector<std::string>{"file"}));
+  EXPECT_EQ(filter_size("equals", EncodableValue(int64_t{3})), (std::vector<std::string>{"file"}));
+  EXPECT_EQ(filter_size("notEquals", EncodableValue(int64_t{3})),
+            (std::vector<std::string>{"folder", "missing"}));
+  EXPECT_EQ(filter_size("inList", EncodableValue(EncodableList{EncodableValue()})),
+            (std::vector<std::string>{"folder", "missing"}));
+  EXPECT_TRUE(filter_size("greaterThan", EncodableValue()).empty());
+}
+
 // Purpose: A parsed shape keeps filtering correctly after its request is
 // destroyed, since queries run on the background worker after the request
 // that carried them is gone.

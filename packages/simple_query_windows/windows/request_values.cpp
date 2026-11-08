@@ -21,6 +21,14 @@ const EncodableValue* FindValue(const EncodableMap& map, const std::string& key)
   return &it->second;
 }
 
+// Purpose: Check whether a request value is absent or null.
+// @param value is the value, or null when the key is absent.
+// @returns Whether the value is absent or null.
+// @throws Nothing.
+bool IsAbsentOrNull(const EncodableValue* value) {
+  return value == nullptr || value->IsNull();
+}
+
 // Purpose: Read a scalar request value as text.
 // @param value is the value, or null.
 // @returns The value as text, or nothing when it is absent or not a scalar.

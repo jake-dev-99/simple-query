@@ -17,6 +17,13 @@ namespace simple_query_windows {
 const flutter::EncodableValue* FindValue(const flutter::EncodableMap& map,
                                          const std::string& key);
 
+// Purpose: Check whether a request value is absent or null. Dart sends null
+// for an unset optional field, so callers treat both the same way.
+// @param value is the value, or null when the key is absent.
+// @returns Whether the value is absent or null.
+// @throws Nothing.
+bool IsAbsentOrNull(const flutter::EncodableValue* value);
+
 // Purpose: Read a scalar request value as text.
 // @param value is the value, or null.
 // @returns The value as text, or nothing when it is absent or not a scalar.

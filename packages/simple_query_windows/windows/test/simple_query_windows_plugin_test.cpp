@@ -434,6 +434,50 @@ TEST(SimpleQueryWindowsPluginTest, ReportsAnUnreadableBaselineWithoutStartingAnO
   messenger.CallHost("observeStop", EncodableList{EncodableValue(observer_id)});
 }
 
+// Purpose: observeStart takes the default interval when Dart sends a null
+// pollingIntervalMs, which it does whenever the caller sets no interval.
+TEST(SimpleQueryWindowsPluginTest, StartsAnObserverWhenTheIntervalIsNull) {
+  FakeMessenger messenger;
+  TempDirectory directory;
+  DetachedThreadsDrain drain;
+  SimpleQueryWindowsPlugin plugin(&messenger);
+  const EncodableMap observe_request{
+      {EncodableValue("domain"), EncodableValue("files")},
+      {EncodableValue("pollingIntervalMs"), EncodableValue()},
+      {EncodableValue("platformData"),
+       EncodableValue(EncodableMap{
+           {EncodableValue("rootPath"), EncodableValue(PathToUtf8(directory.path()))}})}};
+
+  const EncodableList reply = messenger.CallHost(
+      "observeStart", EncodableList{EncodableValue(observe_request)});
+
+  ASSERT_EQ(reply.size(), 1u);
+  const std::string observer_id = std::get<std::string>(reply.at(0));
+  EXPECT_EQ(observer_id, "windows_observer_1");
+  messenger.CallHost("observeStop", EncodableList{EncodableValue(observer_id)});
+}
+
+// Purpose: observeStart rejects a pollingIntervalMs that is not a number,
+// rather than guessing an interval, and starts no observer.
+TEST(SimpleQueryWindowsPluginTest, RejectsAnIntervalThatIsNotANumber) {
+  FakeMessenger messenger;
+  TempDirectory directory;
+  DetachedThreadsDrain drain;
+  SimpleQueryWindowsPlugin plugin(&messenger);
+  const EncodableMap observe_request{
+      {EncodableValue("domain"), EncodableValue("files")},
+      {EncodableValue("pollingIntervalMs"), EncodableValue("soon")},
+      {EncodableValue("platformData"),
+       EncodableValue(EncodableMap{
+           {EncodableValue("rootPath"), EncodableValue(PathToUtf8(directory.path()))}})}};
+
+  const EncodableList reply = messenger.CallHost(
+      "observeStart", EncodableList{EncodableValue(observe_request)});
+
+  ASSERT_EQ(reply.size(), 3u);
+  EXPECT_EQ(std::get<std::string>(reply.at(0)), "invalid-query");
+}
+
 // Purpose: A change made right after observeStart replies is reported,
 // because the baseline is taken before the reply.
 TEST(SimpleQueryWindowsPluginTest, ReportsAChangeMadeRightAfterTheStartReply) {

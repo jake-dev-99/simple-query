@@ -167,13 +167,15 @@ std::optional<std::string> BinaryPathText(const EncodableMap& request) {
 
 // Purpose: Read the polling interval an observe request asks for.
 // @param request may hold pollingIntervalMs as a number.
-// @returns The interval, raised to the floor; the default when absent; or an
-// error when it is not a number.
+// @returns The interval, raised to the floor; the default when absent or
+// null; or an error when it is not a number.
 // @throws Nothing.
 std::variant<std::chrono::milliseconds, FlutterError> PollingInterval(
     const EncodableMap& request) {
   const EncodableValue* value = FindValue(request, "pollingIntervalMs");
-  if (value == nullptr) {
+  // Dart's encoder always sends the key, with null when the caller set no
+  // interval, so null asks for the default just as an absent key does.
+  if (IsAbsentOrNull(value)) {
     return std::chrono::milliseconds(kDefaultPollingIntervalMs);
   }
   const std::optional<int64_t> interval_ms = AsInt(value);
