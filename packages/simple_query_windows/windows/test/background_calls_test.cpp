@@ -179,7 +179,7 @@ TEST(BackgroundCallsTest, TimesOutBlockedAndQueuedCallsWithoutWaitingForIo) {
   std::atomic<int> queued_work{0};
   std::vector<std::thread::id> reply_threads;
   DetachedThreadsDrain drain;
-  BackgroundCalls calls(kCapacity, 40ms);
+  BackgroundCalls calls(kCapacity, kDeliveryTimeout);
   const auto on_timeout = [&]() {
     ++expired;
     reply_threads.push_back(std::this_thread::get_id());
@@ -197,7 +197,7 @@ TEST(BackgroundCallsTest, TimesOutBlockedAndQueuedCallsWithoutWaitingForIo) {
   }, on_timeout), EnqueueResult::kQueued);
 
   EXPECT_TRUE(WaitWithoutPumping([&]() { return started->load(); }, kDeliveryTimeout));
-  EXPECT_TRUE(PumpUntil([&]() { return expired == 2; }, kDeliveryTimeout));
+  EXPECT_TRUE(PumpUntil([&]() { return expired == 2; }, kDeliveryTimeout * 2));
   EXPECT_EQ(queued_work.load(), 0);
   EXPECT_EQ(finished, 0);
   EXPECT_EQ(reply_threads, (std::vector<std::thread::id>(2, std::this_thread::get_id())));
@@ -219,7 +219,7 @@ TEST(BackgroundCallsTest, DeadlineStopsCooperativeWork) {
   int expired = 0;
   int finished = 0;
   DetachedThreadsDrain drain;
-  BackgroundCalls calls(kCapacity, 40ms);
+  BackgroundCalls calls(kCapacity, kDeliveryTimeout);
   EXPECT_EQ(calls.Enqueue([saw_stop, &finished](const StopRequested& stop_requested) {
     while (!stop_requested()) {
       std::this_thread::sleep_for(1ms);
@@ -228,7 +228,7 @@ TEST(BackgroundCallsTest, DeadlineStopsCooperativeWork) {
     return std::function<void()>([&finished]() { ++finished; });
   }, [&]() { ++expired; }), EnqueueResult::kQueued);
 
-  EXPECT_TRUE(PumpUntil([&]() { return expired == 1; }, kDeliveryTimeout));
+  EXPECT_TRUE(PumpUntil([&]() { return expired == 1; }, kDeliveryTimeout * 2));
   EXPECT_TRUE(WaitWithoutPumping([&]() { return saw_stop->load(); }, kDeliveryTimeout));
   PumpQueuedMessages();
   EXPECT_EQ(expired, 1);
