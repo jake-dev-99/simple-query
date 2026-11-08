@@ -10,6 +10,7 @@ import android.util.Log
 import android.os.ParcelFileDescriptor
 import io.flutter.plugin.common.BinaryMessenger
 import java.nio.ByteBuffer
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -369,13 +370,12 @@ class QueryHostApiImplTest {
      */
     @Test
     fun aFailureWhoseReplyTheDetachDropsIsLogged() {
-        var reply: ByteBuffer? = null
-        deliver("query", QueryRequest(contentUri = uri("broken"))) { reply = it }
+        val reply = deliver("query", QueryRequest(contentUri = uri("broken")))
 
         api.dispose()
         shadowOf(Looper.getMainLooper()).idle()
 
-        assertNull(reply)
+        assertNull(reply.get())
         val logged = ShadowLog.getLogsForTag("QueryHostApiImpl").single()
         assertEquals(Log.WARN, logged.type)
         assertEquals("provider state", (logged.throwable as IllegalStateException).message)
@@ -413,22 +413,39 @@ class QueryHostApiImplTest {
         return QueryHostApi.codec.decodeMessage(bytes) as List<Any?>
     }
 
-    /** Sends one Pigeon message and returns the raw reply, or null when none came. */
+    /**
+     * Purpose: Sends one Pigeon message and waits for the reply it posts.
+     *
+     * @param method the `QueryHostApi` method name.
+     * @param request the method's single argument.
+     * @return the raw reply, or null when none came.
+     * @throws NoSuchElementException when no handler serves [method].
+     */
     private fun send(method: String, request: Any): ByteBuffer? {
-        var reply: ByteBuffer? = null
-        deliver(method, request) { reply = it }
+        val reply = deliver(method, request)
 
         // The read runs inline (Unconfined); the reply is posted to the main looper.
         shadowOf(Looper.getMainLooper()).idle()
-        return reply
+        return reply.get()
     }
 
-    /** Delivers one Pigeon message; its reply waits on the main looper until it is idled. */
-    private fun deliver(method: String, request: Any, onReply: (ByteBuffer?) -> Unit) {
+    /**
+     * Purpose: Delivers one Pigeon message without idling the main looper,
+     * so a test can act before the posted reply arrives.
+     *
+     * @param method the `QueryHostApi` method name.
+     * @param request the method's single argument.
+     * @return a holder the reply fills once the main looper is idled; it
+     *   stays null when no reply comes.
+     * @throws NoSuchElementException when no handler serves [method].
+     */
+    private fun deliver(method: String, request: Any): AtomicReference<ByteBuffer?> {
+        val reply = AtomicReference<ByteBuffer?>(null)
         val handler = handlers.getValue("dev.flutter.pigeon.simple_query.QueryHostApi.$method")
         val message = QueryHostApi.codec.encodeMessage(listOf(request))!!
         message.flip()
-        handler.onMessage(message) { onReply(it) }
+        handler.onMessage(message) { reply.set(it) }
+        return reply
     }
 
     /** A Pigeon error reply is `[code, message, details]`. */
