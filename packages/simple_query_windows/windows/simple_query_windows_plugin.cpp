@@ -5,8 +5,10 @@
 #include <chrono>
 #include <cctype>
 #include <cstdlib>
+#include <deque>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -17,6 +19,7 @@
 #include <vector>
 
 #include <flutter/plugin_registrar_windows.h>
+#include <windows.h>
 #include <winrt/Windows.ApplicationModel.Appointments.h>
 #include <winrt/Windows.ApplicationModel.Contacts.h>
 #include <winrt/Windows.Foundation.Collections.h>
@@ -592,6 +595,91 @@ struct ObserverState {
   std::thread worker;
 };
 
+// Purpose: Run tasks from worker threads on the thread that created it.
+// Flutter's Windows embedder accepts channel messages only on the platform
+// thread, so observer workers post their events here instead of sending them.
+// The dispatcher owns a message-only window; the platform thread's message
+// loop drains queued tasks through that window's procedure. Tasks still
+// queued when the dispatcher is destroyed are dropped without running.
+class PlatformThreadDispatcher {
+ public:
+  PlatformThreadDispatcher() {
+    WNDCLASSEXW window_class{};
+    window_class.cbSize = sizeof(window_class);
+    window_class.lpfnWndProc = &PlatformThreadDispatcher::WindowProc;
+    window_class.hInstance = GetModuleHandleW(nullptr);
+    window_class.lpszClassName = kWindowClassName;
+    // A second engine registers the same class; that failure is expected.
+    RegisterClassExW(&window_class);
+    window_ = CreateWindowExW(0, kWindowClassName, L"", 0, 0, 0, 0, 0,
+                              HWND_MESSAGE, nullptr,
+                              GetModuleHandleW(nullptr), nullptr);
+    if (window_ != nullptr) {
+      SetWindowLongPtrW(window_, GWLP_USERDATA,
+                        reinterpret_cast<LONG_PTR>(this));
+    }
+  }
+
+  ~PlatformThreadDispatcher() {
+    if (window_ != nullptr) {
+      SetWindowLongPtrW(window_, GWLP_USERDATA, 0);
+      DestroyWindow(window_);
+    }
+  }
+
+  PlatformThreadDispatcher(const PlatformThreadDispatcher&) = delete;
+  PlatformThreadDispatcher& operator=(const PlatformThreadDispatcher&) = delete;
+
+  // Purpose: Report whether queued tasks can reach the platform thread.
+  bool IsReady() const { return window_ != nullptr; }
+
+  // Purpose: Queue [task] for the platform thread. Safe from any thread.
+  // Returns false when the dispatcher has no window, so nothing will run it.
+  bool Post(std::function<void()> task) {
+    if (window_ == nullptr) {
+      return false;
+    }
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      tasks_.push_back(std::move(task));
+    }
+    return PostMessageW(window_, kRunTasksMessage, 0, 0) != 0;
+  }
+
+ private:
+  static constexpr UINT kRunTasksMessage = WM_APP + 1;
+  static constexpr const wchar_t* kWindowClassName =
+      L"SimpleQueryWindowsPlatformThreadDispatcher";
+
+  static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam,
+                                     LPARAM lparam) {
+    if (message == kRunTasksMessage) {
+      auto* dispatcher = reinterpret_cast<PlatformThreadDispatcher*>(
+          GetWindowLongPtrW(window, GWLP_USERDATA));
+      if (dispatcher != nullptr) {
+        dispatcher->RunPendingTasks();
+      }
+      return 0;
+    }
+    return DefWindowProcW(window, message, wparam, lparam);
+  }
+
+  void RunPendingTasks() {
+    std::deque<std::function<void()>> tasks;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      tasks.swap(tasks_);
+    }
+    for (auto& task : tasks) {
+      task();
+    }
+  }
+
+  HWND window_ = nullptr;
+  std::mutex mutex_;
+  std::deque<std::function<void()>> tasks_;
+};
+
 }  // namespace
 
 class NativeQueryHostApiImpl : public NativeQueryHostApi {
@@ -912,6 +1000,12 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
                               " on Windows host");
     }
 
+    if (!dispatcher_.IsReady()) {
+      return FlutterError("unavailable",
+                          "simple_query: windows observe could not create its "
+                          "platform-thread message window");
+    }
+
     int64_t interval_ms = AsInt(FindValue(request, "pollingIntervalMs")).value_or(1000);
     interval_ms = std::max<int64_t>(250, interval_ms);
 
@@ -949,8 +1043,10 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
         event[EncodableValue("source")] = EncodableValue("windows-host");
         previous = std::move(current);
 
-        flutter_api_.OnObserveEvent(
-            observer_id, event, []() {}, [](const FlutterError&) {});
+        // Flutter accepts channel messages only on the platform thread.
+        dispatcher_.Post([this, observer_id, event = std::move(event)]() {
+          SendObserveEvent(observer_id, event);
+        });
       }
     });
 
@@ -1129,6 +1225,19 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
   }
 
  private:
+  // Purpose: Send one observe event from the platform thread, unless the
+  // observer stopped after its worker queued the event.
+  void SendObserveEvent(const std::string& observer_id, const EncodableMap& event) {
+    {
+      std::lock_guard<std::mutex> lock(observers_mutex_);
+      if (observers_.find(observer_id) == observers_.end()) {
+        return;
+      }
+    }
+    flutter_api_.OnObserveEvent(
+        observer_id, event, []() {}, [](const FlutterError&) {});
+  }
+
   void ShutdownObservers() {
     std::vector<std::unique_ptr<ObserverState>> states;
     {
@@ -1147,6 +1256,9 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
   }
 
   NativeQueryFlutterApi flutter_api_;
+  // Created on the platform thread with this object; see
+  // PlatformThreadDispatcher.
+  PlatformThreadDispatcher dispatcher_;
   int64_t handle_counter_ = 0;
   int64_t observer_counter_ = 0;
   std::map<std::string, std::string> open_handles_;
@@ -1156,18 +1268,23 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
 
 void SimpleQueryWindowsPlugin::RegisterWithRegistrar(
     flutter::PluginRegistrarWindows* registrar) {
-  auto plugin = std::make_unique<SimpleQueryWindowsPlugin>();
-  registrar->AddPlugin(std::move(plugin));
-
-  static std::unique_ptr<NativeQueryHostApiImpl> host_api;
-  if (!host_api) {
-    host_api = std::make_unique<NativeQueryHostApiImpl>(registrar->messenger());
-  }
-  NativeQueryHostApi::SetUp(registrar->messenger(), host_api.get());
+  // Each engine's registrar owns its own plugin and host API, so every
+  // engine's events go to its own messenger.
+  registrar->AddPlugin(
+      std::make_unique<SimpleQueryWindowsPlugin>(registrar->messenger()));
 }
 
-SimpleQueryWindowsPlugin::SimpleQueryWindowsPlugin() {}
+SimpleQueryWindowsPlugin::SimpleQueryWindowsPlugin(
+    flutter::BinaryMessenger* messenger)
+    : messenger_(messenger),
+      host_api_(std::make_unique<NativeQueryHostApiImpl>(messenger)) {
+  NativeQueryHostApi::SetUp(messenger_, host_api_.get());
+}
 
-SimpleQueryWindowsPlugin::~SimpleQueryWindowsPlugin() {}
+// The registrar destroys its plugins while the messenger is still alive, so
+// the handlers are removed and every observer stops before the engine goes.
+SimpleQueryWindowsPlugin::~SimpleQueryWindowsPlugin() {
+  NativeQueryHostApi::SetUp(messenger_, nullptr);
+}
 
 }  // namespace simple_query_windows

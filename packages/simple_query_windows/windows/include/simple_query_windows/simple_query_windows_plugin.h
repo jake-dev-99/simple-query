@@ -8,15 +8,22 @@
 
 namespace simple_query_windows {
 
+class NativeQueryHostApiImpl;
+
 class SimpleQueryWindowsPlugin : public flutter::Plugin {
  public:
   static void RegisterWithRegistrar(flutter::PluginRegistrarWindows *registrar);
 
-  SimpleQueryWindowsPlugin();
+  explicit SimpleQueryWindowsPlugin(flutter::BinaryMessenger *messenger);
   ~SimpleQueryWindowsPlugin() override;
 
   SimpleQueryWindowsPlugin(const SimpleQueryWindowsPlugin&) = delete;
   SimpleQueryWindowsPlugin& operator=(const SimpleQueryWindowsPlugin&) = delete;
+
+ private:
+  flutter::BinaryMessenger *messenger_;
+  // Owned per engine; stops its observers before the messenger goes away.
+  std::unique_ptr<NativeQueryHostApiImpl> host_api_;
 };
 
 }  // namespace simple_query_windows
