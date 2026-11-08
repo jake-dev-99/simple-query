@@ -6,6 +6,7 @@
 
 #include <flutter/encodable_value.h>
 #include <gtest/gtest.h>
+#include <gtest/internal/gtest-port.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -930,10 +931,13 @@ TEST(FileMutationsTest, ExceptionAfterStagingCreationClosesHandleAndRemovesStagi
   EXPECT_EQ(std::distance(fs::directory_iterator(directory.path()), fs::directory_iterator()), 1);
 }
 
-// Purpose: An exception after moving an original into recovery never deletes that copy.
+// Purpose: An exception retains original recovery while logs exclude personal path components.
 TEST(FileMutationsTest, ExceptionDuringReplacementRetainsOriginalRecovery) {
   TempDirectory directory;
-  const auto target = directory.WriteFile("original.txt");
+  const auto personal = directory.path() / "private_personal_marker";
+  fs::create_directory(personal);
+  const auto target = personal / "original.txt";
+  std::ofstream(target) << "changed";
   const EncodableMap request{
       {EncodableValue("type"), EncodableValue("update")},
       {EncodableValue("values"), EncodableValue(EncodableMap{
@@ -946,12 +950,19 @@ TEST(FileMutationsTest, ExceptionDuringReplacementRetainsOriginalRecovery) {
     fs::rename(replacement.original, original_backup);
     throw std::runtime_error("injected exception after moving original to recovery");
   };
+  testing::internal::CaptureStderr();
   EXPECT_THROW(Mutate({.request = request, .domain = "files", .root = directory.path(),
                        .write_effects = effects}), std::runtime_error);
+  const std::string log = testing::internal::GetCapturedStderr();
+  EXPECT_EQ(log.find("private_personal_marker"), std::string::npos);
+  EXPECT_EQ(log.find("\"path\":"), std::string::npos);
+  EXPECT_NE(log.find("\"event\":\"file_mutation_cleanup\""), std::string::npos);
+  EXPECT_NE(log.find("\"step\":\"retain_recovery\""), std::string::npos);
+  EXPECT_NE(log.find("\"resourceName\":\".simple-query-"), std::string::npos);
   ASSERT_FALSE(original_backup.empty());
   EXPECT_EQ(ReadText(original_backup), "changed");
   EXPECT_FALSE(fs::exists(target));
-  EXPECT_EQ(std::distance(fs::directory_iterator(directory.path()), fs::directory_iterator()), 1);
+  EXPECT_EQ(std::distance(fs::directory_iterator(personal), fs::directory_iterator()), 1);
 }
 
 // Purpose: Ordinary slash-separated paths normalize parent components before Win32 adaptation.

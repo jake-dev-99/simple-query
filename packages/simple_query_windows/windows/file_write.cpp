@@ -83,12 +83,12 @@ std::error_code WriteAll(const NativeWrite& write) {
 }
 
 // Purpose: Prepare a cleanup log before acquiring resources, avoiding allocation while unwinding.
-// @param path identifies the owned resource.
-// @returns A JSON prefix ready for an allocation-free cleanup outcome.
-// @throws std::exception when path conversion or log allocation fails.
+// @param path is a ShortSibling-generated staging or recovery path.
+// @returns A JSON prefix with only its generated resource name, excluding user directories.
+// @throws std::exception when resource-name conversion or log allocation fails.
 std::string CleanupLogPrefix(const fs::path& path) {
   auto line = FormatLogRecord({LogLevel::kError, "file_mutation_cleanup",
-                              {{"path", PathToUtf8(path)}}});
+                              {{"resourceName", PathToUtf8(path.filename())}}});
   line.pop_back();
   return line;
 }
