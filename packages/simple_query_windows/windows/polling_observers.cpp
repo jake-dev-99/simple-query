@@ -44,10 +44,10 @@ class RowHasher {
     AddSize(value.index());
     if (const auto* flag = std::get_if<bool>(&value)) {
       AddScalar(*flag);
-    } else if (const auto* small = std::get_if<int32_t>(&value)) {
-      AddScalar(*small);
-    } else if (const auto* large = std::get_if<int64_t>(&value)) {
-      AddScalar(*large);
+    } else if (const auto* int_value = std::get_if<int32_t>(&value)) {
+      AddScalar(*int_value);
+    } else if (const auto* long_value = std::get_if<int64_t>(&value)) {
+      AddScalar(*long_value);
     } else if (const auto* number = std::get_if<double>(&value)) {
       AddScalar(*number);
     } else if (const auto* text = std::get_if<std::string>(&value)) {
