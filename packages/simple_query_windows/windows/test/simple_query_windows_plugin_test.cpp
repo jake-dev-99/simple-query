@@ -16,6 +16,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -49,30 +50,11 @@ const std::string kRejectedEventLog = "\"event\":\"observe_event_rejected\"";
 
 // How the fake Dart side answers an observe event.
 enum class EventReply {
-  // Never answers, like a Dart side that has not replied yet.
-  kNone,
   // Answers that the event was handled.
   kAccept,
   // Answers with an error, like a Dart side that stopped listening.
   kReject,
 };
-
-// Purpose: Describe one sent message the fake Dart side may answer.
-// The references borrow Send's arguments, so build one only for that call.
-struct ReplyCandidate {
-  const std::string& channel;
-  const flutter::BinaryReply& reply;
-  EventReply event_reply;
-};
-
-// Purpose: Decide whether the fake Dart side answers a sent message.
-// @param message is the message and how observe events are answered.
-// @returns true for an observe event that wants a reply while answers are on.
-// @throws Nothing.
-bool AnswersObserveEvent(const ReplyCandidate& message) {
-  return message.channel == kObserveEventChannel && message.reply &&
-         message.event_reply != EventReply::kNone;
-}
 
 // Purpose: Hold one observe event sent through a fake messenger.
 struct SentObserveEvent {
@@ -87,7 +69,8 @@ struct SentObserveEvent {
 class FakeMessenger : public flutter::BinaryMessenger {
  public:
   // Purpose: Record one message and the thread that sent it, then answer an
-  // observe event as chosen by SetEventReply.
+  // observe event as chosen by SetEventReply. The plugin sends an
+  // observer's next event only after this answer.
   // @param channel is the channel name.
   // @param message is the encoded message.
   // @param message_size is the message length in bytes.
@@ -101,12 +84,10 @@ class FakeMessenger : public flutter::BinaryMessenger {
       sent_.push_back({channel, std::vector<uint8_t>(message, message + message_size),
                        std::this_thread::get_id()});
     }
-    const EventReply event_reply = GetEventReply();
-    if (!AnswersObserveEvent({.channel = channel,
-                              .reply = reply,
-                              .event_reply = event_reply})) {
+    if (channel != kObserveEventChannel || !reply) {
       return;
     }
+    const EventReply event_reply = GetEventReply();
     const EncodableList answer =
         event_reply == EventReply::kAccept
             ? EncodableList{}
@@ -141,7 +122,7 @@ class FakeMessenger : public flutter::BinaryMessenger {
   }
 
   // Purpose: Read how observe events are being answered.
-  // @returns The answer SetEventReply chose; kNone until it is called.
+  // @returns The answer SetEventReply chose; kAccept until it is called.
   // @throws Nothing.
   EventReply GetEventReply() const {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -156,11 +137,13 @@ class FakeMessenger : public flutter::BinaryMessenger {
     return handlers_.find(channel) != handlers_.end();
   }
 
-  // Purpose: Call one host API method the way Dart would.
+  // Purpose: Call one host API method the way Dart would, pumping this
+  // thread's messages until the reply arrives, since slow calls reply from
+  // the platform thread after their background work.
   // @param method is the Pigeon method name, such as "observeStart".
   // @param arguments are the method's arguments.
   // @returns The decoded reply list: one value on success, or an error's
-  // code, message and details. Empty when no handler answered.
+  // code, message and details. Empty when no handler answered in time.
   // @throws std::bad_variant_access when the reply is not a list.
   EncodableList CallHost(const std::string& method,
                          const EncodableList& arguments) {
@@ -171,13 +154,19 @@ class FakeMessenger : public flutter::BinaryMessenger {
     }
     const auto& codec = NativeQueryHostApi::GetCodec();
     const auto message = codec.EncodeMessage(EncodableValue(arguments));
-    EncodableList reply_list;
+    // Shared, so a reply arriving after a timed-out call writes to live
+    // memory.
+    auto reply_list = std::make_shared<std::optional<EncodableList>>();
     handler->second(message->data(), message->size(),
-                    [&codec, &reply_list](const uint8_t* reply, size_t reply_size) {
-                      reply_list = std::get<EncodableList>(
+                    [&codec, reply_list](const uint8_t* reply, size_t reply_size) {
+                      *reply_list = std::get<EncodableList>(
                           *codec.DecodeMessage(reply, reply_size));
                     });
-    return reply_list;
+    if (!PumpUntil([&reply_list]() { return reply_list->has_value(); }, kDeliveryTimeout)) {
+      ADD_FAILURE() << method << " did not reply";
+      return {};
+    }
+    return **reply_list;
   }
 
   // Purpose: Decode every observe event sent so far.
@@ -211,7 +200,7 @@ class FakeMessenger : public flutter::BinaryMessenger {
   mutable std::mutex mutex_;
   mutable std::vector<SentMessage> sent_;
   // Guarded by mutex_.
-  EventReply event_reply_ = EventReply::kNone;
+  EventReply event_reply_ = EventReply::kAccept;
   std::map<std::string, flutter::BinaryMessageHandler> handlers_;
 };
 
@@ -245,9 +234,10 @@ std::string StartFileObserver(const FileObserverRequest& request) {
   return std::get<std::string>(reply.at(0));
 }
 
-// Purpose: Write new files until the messenger receives an observe event.
-// The worker's first snapshot runs at an unknown moment, and a file written
-// before it is part of its baseline, so one write might never be reported.
+// Purpose: Write new files until the messenger receives another observe
+// event. A write that lands while the previous event waits for its answer
+// is folded into the next event, so the test writes again rather than
+// counting writes.
 // @param messenger is the engine's messenger.
 // @param directory is the watched directory.
 // @returns true when an event arrived before the delivery timeout.
@@ -282,6 +272,7 @@ size_t RejectedEventLines(const StandardErrorCapture& log) {
 TEST(SimpleQueryWindowsPluginTest, SendsObserveEventsOnThePlatformThread) {
   FakeMessenger messenger;
   TempDirectory directory;
+  DetachedThreadsDrain drain;
   SimpleQueryWindowsPlugin plugin(&messenger);
   const std::string observer_id =
       StartFileObserver({.messenger = messenger,
@@ -311,6 +302,7 @@ TEST(SimpleQueryWindowsPluginTest, KeepsEachEnginesObserversSeparate) {
   FakeMessenger second_messenger;
   TempDirectory first_directory;
   TempDirectory second_directory;
+  DetachedThreadsDrain drain;
   auto first_plugin = std::make_unique<SimpleQueryWindowsPlugin>(&first_messenger);
   SimpleQueryWindowsPlugin second_plugin(&second_messenger);
   ASSERT_FALSE(StartFileObserver({.messenger = first_messenger,
@@ -338,6 +330,7 @@ TEST(SimpleQueryWindowsPluginTest, KeepsEachEnginesObserversSeparate) {
 TEST(SimpleQueryWindowsPluginTest, TearsDownPromptlyWithALongPollingInterval) {
   FakeMessenger messenger;
   TempDirectory directory;
+  DetachedThreadsDrain drain;
   auto plugin = std::make_unique<SimpleQueryWindowsPlugin>(&messenger);
   ASSERT_FALSE(StartFileObserver({.messenger = messenger,
                                   .root = directory.path(),
@@ -356,6 +349,7 @@ TEST(SimpleQueryWindowsPluginTest, LogsEachRunOfRejectedEventsOnce) {
   {
     FakeMessenger messenger;
     TempDirectory directory;
+    DetachedThreadsDrain drain;
     SimpleQueryWindowsPlugin plugin(&messenger);
     ASSERT_FALSE(StartFileObserver({.messenger = messenger,
                                     .root = directory.path(),
@@ -369,7 +363,8 @@ TEST(SimpleQueryWindowsPluginTest, LogsEachRunOfRejectedEventsOnce) {
     ASSERT_TRUE(WriteFilesUntilObserveEvent(messenger, directory));
     messenger.SetEventReply(EventReply::kReject);
     ASSERT_TRUE(WriteFilesUntilObserveEvent(messenger, directory));
-    // Leaving the scope joins the plugin's workers before the log is read.
+    // Leaving the scope waits for the plugin's workers before the log is
+    // read, and a stopping worker logs nothing.
   }
 
   EXPECT_EQ(RejectedEventLines(log), 2u);
@@ -380,6 +375,7 @@ TEST(SimpleQueryWindowsPluginTest, LogsEachRunOfRejectedEventsOnce) {
 TEST(SimpleQueryWindowsPluginTest, ReportsAnUnreadableRootWithoutStartingAnObserver) {
   FakeMessenger messenger;
   TempDirectory directory;
+  DetachedThreadsDrain drain;
   SimpleQueryWindowsPlugin plugin(
       &messenger,
       {.current_directory = []() -> std::filesystem::path {
@@ -407,6 +403,59 @@ TEST(SimpleQueryWindowsPluginTest, ReportsAnUnreadableRootWithoutStartingAnObser
   messenger.CallHost("observeStop", EncodableList{EncodableValue(observer_id)});
 }
 
+// Purpose: An observe root whose records cannot be read fails observeStart
+// before it replies, with unavailable, and starts no observer.
+TEST(SimpleQueryWindowsPluginTest, ReportsAnUnreadableBaselineWithoutStartingAnObserver) {
+  FakeMessenger messenger;
+  TempDirectory directory;
+  const std::filesystem::path not_a_folder = directory.WriteFile("not_a_folder.txt");
+  DetachedThreadsDrain drain;
+  SimpleQueryWindowsPlugin plugin(&messenger);
+  const EncodableMap observe_request{
+      {EncodableValue("domain"), EncodableValue("files")},
+      {EncodableValue("pollingIntervalMs"), EncodableValue(kPluginLongPollMs)},
+      {EncodableValue("platformData"),
+       EncodableValue(EncodableMap{
+           {EncodableValue("rootPath"), EncodableValue(PathToUtf8(not_a_folder))}})}};
+
+  const EncodableList reply = messenger.CallHost(
+      "observeStart", EncodableList{EncodableValue(observe_request)});
+
+  ASSERT_EQ(reply.size(), 3u);
+  EXPECT_EQ(std::get<std::string>(reply.at(0)), "unavailable");
+  EXPECT_NE(std::get<std::string>(reply.at(1)).find("start again"), std::string::npos);
+  // Each Start call takes the next id, so getting the first id shows the
+  // failed call never reached Start.
+  const std::string observer_id =
+      StartFileObserver({.messenger = messenger,
+                         .root = directory.path(),
+                         .polling_interval_ms = kPluginLongPollMs});
+  EXPECT_EQ(observer_id, "windows_observer_1");
+  messenger.CallHost("observeStop", EncodableList{EncodableValue(observer_id)});
+}
+
+// Purpose: A change made right after observeStart replies is reported,
+// because the baseline is taken before the reply.
+TEST(SimpleQueryWindowsPluginTest, ReportsAChangeMadeRightAfterTheStartReply) {
+  FakeMessenger messenger;
+  TempDirectory directory;
+  DetachedThreadsDrain drain;
+  SimpleQueryWindowsPlugin plugin(&messenger);
+  const std::string observer_id =
+      StartFileObserver({.messenger = messenger,
+                         .root = directory.path(),
+                         .polling_interval_ms = kPluginFastPollMs});
+  ASSERT_FALSE(observer_id.empty());
+
+  const std::filesystem::path added = directory.WriteFile("added.txt");
+
+  ASSERT_TRUE(PumpUntil([&]() { return !messenger.ObserveEvents().empty(); },
+                        kDeliveryTimeout));
+  const auto events = messenger.ObserveEvents();
+  EXPECT_EQ(IdsOf(events[0].event), (std::vector<std::string>{PathToUtf8(added)}));
+  messenger.CallHost("observeStop", EncodableList{EncodableValue(observer_id)});
+}
+
 // Purpose: Read the error code of a failed host call.
 // @param reply is the decoded reply list.
 // @returns The code, or empty text when the call succeeded.
@@ -429,6 +478,7 @@ EncodableMap FilesQuery(const std::filesystem::path& root) {
 // Purpose: A query without a domain is rejected as invalid-query.
 TEST(SimpleQueryWindowsPluginTest, RejectsAQueryWithoutADomain) {
   FakeMessenger messenger;
+  DetachedThreadsDrain drain;
   SimpleQueryWindowsPlugin plugin(&messenger);
 
   const EncodableList reply =
@@ -442,6 +492,7 @@ TEST(SimpleQueryWindowsPluginTest, RejectsAQueryWithoutADomain) {
 TEST(SimpleQueryWindowsPluginTest, RejectsAQueryWithAnUnknownOperator) {
   FakeMessenger messenger;
   TempDirectory directory;
+  DetachedThreadsDrain drain;
   SimpleQueryWindowsPlugin plugin(&messenger);
   EncodableMap request = FilesQuery(directory.path());
   request[EncodableValue("filters")] = EncodableValue(EncodableList{EncodableValue(
@@ -464,6 +515,7 @@ TEST(SimpleQueryWindowsPluginTest, QueriesAUtf8RootAPageAtATime) {
   for (int file = 0; file < 3; ++file) {
     std::ofstream(root / ("file_" + std::to_string(file) + ".txt")) << "changed";
   }
+  DetachedThreadsDrain drain;
   SimpleQueryWindowsPlugin plugin(&messenger);
   EncodableMap request = FilesQuery(root);
   request[EncodableValue("page")] = EncodableValue(
@@ -493,6 +545,7 @@ TEST(SimpleQueryWindowsPluginTest, OpensABinaryByItsUtf8Path) {
   const std::filesystem::path file = directory.path() / PathFromUtf8(utf8_name);
   std::ofstream(file) << "changed";
   const std::string file_text = PathToUtf8(file);
+  DetachedThreadsDrain drain;
   SimpleQueryWindowsPlugin plugin(&messenger);
   const EncodableMap request{
       {EncodableValue("domain"), EncodableValue("files")},
@@ -515,6 +568,7 @@ TEST(SimpleQueryWindowsPluginTest, OpensABinaryByItsUtf8Path) {
 TEST(SimpleQueryWindowsPluginTest, ReportsAMissingBinaryAsUnavailable) {
   FakeMessenger messenger;
   TempDirectory directory;
+  DetachedThreadsDrain drain;
   SimpleQueryWindowsPlugin plugin(&messenger);
   const EncodableMap request{
       {EncodableValue("domain"), EncodableValue("files")},

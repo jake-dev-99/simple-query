@@ -65,30 +65,50 @@ PlatformThreadDispatcher::PlatformThreadDispatcher(
   }
 }
 
+// Purpose: Close the dispatcher if its owner has not.
+// @returns Nothing.
+// @throws Nothing.
+PlatformThreadDispatcher::~PlatformThreadDispatcher() { Close(); }
+
 // Purpose: Detach and destroy the window, then unregister the class when no
 // other dispatcher's window still uses it.
 // @returns Nothing.
 // @throws Nothing.
-PlatformThreadDispatcher::~PlatformThreadDispatcher() {
+void PlatformThreadDispatcher::Close() {
+  if (closed_) {
+    return;
+  }
+  closed_ = true;
   if (module_ == nullptr) {
     return;
   }
-  std::lock_guard<std::mutex> lock(WindowClassMutex());
-  if (window_ != nullptr) {
+  std::lock_guard<std::mutex> class_lock(WindowClassMutex());
+  HWND window = nullptr;
+  {
+    // Cleared before the window is destroyed, so a request racing with this
+    // close either posts to the live window or sees no window at all.
+    std::lock_guard<std::mutex> wake_lock(wake_mutex_);
+    window = window_;
+    window_ = nullptr;
+  }
+  if (window != nullptr) {
     // Detach first: the system discards messages queued for a destroyed
     // window, and a detached window ignores any it still receives.
-    SetWindowLongPtrW(window_, GWLP_USERDATA, 0);
-    DestroyWindow(window_);
+    SetWindowLongPtrW(window, GWLP_USERDATA, 0);
+    DestroyWindow(window);
   }
   // Fails with ERROR_CLASS_HAS_WINDOWS while another dispatcher's window
-  // exists, so only the last dispatcher destroyed removes the class.
+  // exists, so only the last dispatcher closed removes the class.
   UnregisterClassW(kWindowClassName, module_);
 }
 
 // Purpose: Report whether wake requests can reach the creating thread.
 // @returns true when the message window exists.
 // @throws Nothing.
-bool PlatformThreadDispatcher::IsReady() const { return window_ != nullptr; }
+bool PlatformThreadDispatcher::IsReady() const {
+  std::lock_guard<std::mutex> lock(wake_mutex_);
+  return window_ != nullptr;
+}
 
 // Purpose: Queue one wake on the creating thread, merging requests made
 // before the queued wake runs.
@@ -96,15 +116,16 @@ bool PlatformThreadDispatcher::IsReady() const { return window_ != nullptr; }
 // nothing could be queued.
 // @throws Nothing.
 bool PlatformThreadDispatcher::RequestWake() {
+  // The lock covers the post: a second request made while the first post is
+  // still in flight waits for its result instead of trusting a flag that a
+  // failed post is about to clear, and Close cannot destroy the window
+  // mid-post. lock_guard leaves the thread's last-error value that
+  // PostMessageW set untouched.
+  std::lock_guard<std::mutex> lock(wake_mutex_);
   if (window_ == nullptr) {
     SetLastError(ERROR_INVALID_WINDOW_HANDLE);
     return false;
   }
-  // The lock covers the post: a second request made while the first post is
-  // still in flight waits for its result instead of trusting a flag that a
-  // failed post is about to clear. lock_guard leaves the thread's last-error
-  // value that PostMessageW set untouched.
-  std::lock_guard<std::mutex> lock(wake_mutex_);
   if (wake_queued_) {
     return true;
   }

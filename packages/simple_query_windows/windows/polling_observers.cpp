@@ -1,6 +1,7 @@
 #include "polling_observers.h"
 
 #include "boundary_formats.h"
+#include "detached_threads.h"
 #include "structured_log.h"
 
 #include <chrono>
@@ -135,13 +136,17 @@ class RowHasher {
 
 }  // namespace
 
-// Purpose: Hold one observer's worker thread and how it is told to stop.
+// Purpose: Hold what one observer's worker needs once it may outlive the
+// PollingObservers that started it, and how it is told to stop.
 struct PollingObservers::WorkerLifecycle {
   // Read without the observer's mutex by snapshot scans; written under it.
   std::atomic<bool> stopping{false};
   // Wakes the worker early when the observer is stopping.
   std::condition_variable stop_signal;
-  std::thread worker;
+  // Shared with the owner, which closes it on teardown.
+  std::shared_ptr<PlatformThreadDispatcher> dispatcher;
+  // A copy of the owner's clock, safe to call from the worker.
+  std::function<int64_t()> now_epoch_ms;
 };
 
 // Purpose: Hold what one observer last delivered and what waits to go.
@@ -150,9 +155,12 @@ struct PollingObservers::DeliveryState {
   Snapshot delivered;
   // The change waiting for delivery, if any.
   std::optional<PendingChange> pending;
+  // True from sending an event until Dart answers it. No further event is
+  // sent meanwhile, so replies cannot pile up behind a slow isolate.
+  bool awaiting_reply = false;
 };
 
-// Purpose: Hold one observer's settings, worker and change state.
+// Purpose: Hold one observer's settings, worker state and change state.
 struct PollingObservers::Observer {
   // Purpose: Hold the settings for one observer before its worker starts.
   // @param observer_spec describes what to poll and how often.
@@ -178,113 +186,76 @@ struct PollingObservers::Observer {
 // @throws Nothing; a failed setup leaves IsReady() false.
 PollingObservers::PollingObservers(PollingObserverEffects effects)
     : effects_(std::move(effects)),
-      dispatcher_([this]() { DeliverPendingChanges(); }) {}
+      dispatcher_(std::make_shared<PlatformThreadDispatcher>(
+          [this]() { DeliverPendingChanges(); })) {}
 
-// Purpose: Stop every observer, then release delivery resources.
-// Changes not yet delivered are dropped.
+// Purpose: Stop every observer without waiting for its worker, then close
+// delivery. Changes not yet delivered are dropped.
 // @returns Nothing.
 // @throws Nothing.
 PollingObservers::~PollingObservers() {
-  std::vector<std::unique_ptr<Observer>> stopping;
-  {
-    std::lock_guard<std::mutex> lock(observers_mutex_);
-    for (auto& entry : observers_) {
-      stopping.push_back(std::move(entry.second));
-    }
-    observers_.clear();
+  for (auto& entry : observers_) {
+    RequestStop(*entry.second);
   }
-  // Signal every worker before joining any, so teardown waits for the
-  // slowest worker once instead of for each worker in turn.
-  for (auto& observer : stopping) {
-    RequestStop(*observer);
-  }
-  for (auto& observer : stopping) {
-    JoinWorker(*observer);
-  }
+  observers_.clear();
+  // Closed on the platform thread, so a worker still finishing a snapshot
+  // can no longer wake this destroyed object.
+  dispatcher_->Close();
 }
 
 // Purpose: Report whether events can reach the platform thread.
 // @returns true when observers can be started.
 // @throws Nothing.
-bool PollingObservers::IsReady() const { return dispatcher_.IsReady(); }
+bool PollingObservers::IsReady() const { return dispatcher_->IsReady(); }
 
 // Purpose: Start polling one domain on a new worker thread.
 // @param spec describes what to poll and how often.
+// @param baseline is the snapshot taken before the start was acknowledged.
 // @returns The new observer's id, used in its events and to stop it.
 // @throws std::system_error when the worker thread cannot be started.
-std::string PollingObservers::Start(ObserverSpec spec) {
-  auto observer = std::make_unique<Observer>(std::move(spec));
-  Observer* worker_observer = observer.get();
-  std::string observer_id;
-  {
-    // Stored before its worker starts, so a failed insert never leaves a
-    // running worker that nothing can stop.
-    std::lock_guard<std::mutex> lock(observers_mutex_);
-    observer_id = "windows_observer_" + std::to_string(++observer_counter_);
-    observers_[observer_id] = std::move(observer);
-  }
-  try {
-    worker_observer->lifecycle.worker =
-        std::thread([this, worker_observer]() { RunWorker(worker_observer); });
-  } catch (const std::system_error&) {
-    // No worker started, so the observer is removed and the caller told.
-    std::lock_guard<std::mutex> lock(observers_mutex_);
-    observers_.erase(observer_id);
-    throw;
-  }
+std::string PollingObservers::Start(ObserverSpec spec, Snapshot baseline) {
+  auto observer = std::make_shared<Observer>(std::move(spec));
+  observer->lifecycle.dispatcher = dispatcher_;
+  observer->lifecycle.now_epoch_ms = effects_.now_epoch_ms;
+  observer->delivery.delivered = std::move(baseline);
+  // Started before the observer is stored, so a failed start leaves nothing
+  // behind; no event can reach DeliverPendingChanges until it is stored,
+  // because wakes run on this same thread.
+  StartDetachedThread([observer]() { RunWorker(observer); });
+  const std::string observer_id = "windows_observer_" + std::to_string(++observer_counter_);
+  observers_[observer_id] = std::move(observer);
   return observer_id;
 }
 
-// Purpose: Stop one observer and wait for its worker to finish. Its
+// Purpose: Stop one observer without waiting for its worker. Its
 // undelivered change is dropped. An unknown id does nothing.
 // @param observer_id is the id Start returned.
 // @returns Nothing.
 // @throws Nothing.
 void PollingObservers::Stop(const std::string& observer_id) {
-  std::unique_ptr<Observer> observer;
-  {
-    std::lock_guard<std::mutex> lock(observers_mutex_);
-    auto it = observers_.find(observer_id);
-    if (it == observers_.end()) {
-      return;
-    }
-    observer = std::move(it->second);
-    observers_.erase(it);
+  auto it = observers_.find(observer_id);
+  if (it == observers_.end()) {
+    return;
   }
-  RequestStop(*observer);
-  JoinWorker(*observer);
+  RequestStop(*it->second);
+  observers_.erase(it);
 }
 
 // Purpose: Poll one observer until it is stopped.
-// @param observer is the observer this worker serves; it outlives the
-// worker, which is always joined before the observer is destroyed.
+// @param observer is the observer this worker serves.
 // @returns Nothing.
 // @throws Nothing.
-void PollingObservers::RunWorker(Observer* observer) {
+void PollingObservers::RunWorker(const std::shared_ptr<Observer>& observer) {
   FailureStreaks streaks;
-  // Without a first snapshot there is nothing to compare against, and an
-  // empty baseline would report every record as added.
-  std::optional<Snapshot> baseline = TakeSnapshot(observer, &streaks);
-  while (!baseline.has_value()) {
-    if (WaitForNextPoll(observer)) {
-      return;
-    }
-    baseline = TakeSnapshot(observer, &streaks);
-  }
-  {
-    std::lock_guard<std::mutex> lock(observer->mutex);
-    observer->delivery.delivered = std::move(*baseline);
-  }
-
-  while (!WaitForNextPoll(observer)) {
-    std::optional<Snapshot> current = TakeSnapshot(observer, &streaks);
+  while (!WaitForNextPoll(*observer)) {
+    std::optional<Snapshot> current = TakeSnapshot(*observer, &streaks);
     // A failed poll still retries the wake for a change found earlier, so a
     // wake the queue rejected is not stranded behind a run of failed reads.
     const bool change_pending = current.has_value()
-                                    ? RecordSnapshot(observer, std::move(*current))
-                                    : HasPendingChange(observer);
+                                    ? RecordSnapshot(*observer, std::move(*current))
+                                    : HasPendingChange(*observer);
     if (change_pending) {
-      RequestDelivery(&streaks);
+      RequestDelivery(*observer, &streaks);
     }
   }
 }
@@ -296,19 +267,19 @@ void PollingObservers::RunWorker(Observer* observer) {
 // @returns The snapshot, or nothing when it failed or the observer is
 // stopping.
 // @throws Nothing.
-std::optional<Snapshot> PollingObservers::TakeSnapshot(Observer* observer,
+std::optional<Snapshot> PollingObservers::TakeSnapshot(Observer& observer,
                                                        FailureStreaks* streaks) {
   std::optional<Snapshot> snapshot;
   std::string failure;
   try {
-    snapshot = observer->spec.take_snapshot(observer->stop_requested);
+    snapshot = observer.spec.take_snapshot(observer.stop_requested);
   } catch (const std::exception& error) {
     // An exception leaving a worker thread ends the app, so the worker is
     // the nearest place that can handle a failed read: the poll is skipped
     // and the next one tries again.
     failure = error.what();
   }
-  if (observer->lifecycle.stopping.load()) {
+  if (observer.lifecycle.stopping.load()) {
     return std::nullopt;
   }
   if (snapshot.has_value()) {
@@ -319,7 +290,7 @@ std::optional<Snapshot> PollingObservers::TakeSnapshot(Observer* observer,
     streaks->snapshot_failing = true;
     WriteLog({LogLevel::kError,
               "observe_snapshot_failed",
-              {{"domain", observer->spec.domain},
+              {{"domain", observer.spec.domain},
                {"error", failure},
                {"retry", "each poll"},
                {"next_log", "after a snapshot succeeds"}}});
@@ -331,27 +302,30 @@ std::optional<Snapshot> PollingObservers::TakeSnapshot(Observer* observer,
 // @param observer is the observer being polled.
 // @returns true when the observer is stopping.
 // @throws Nothing.
-bool PollingObservers::WaitForNextPoll(Observer* observer) {
-  std::unique_lock<std::mutex> lock(observer->mutex);
-  return observer->lifecycle.stop_signal.wait_for(
-      lock, observer->spec.polling_interval,
-      [observer]() { return observer->lifecycle.stopping.load(); });
+bool PollingObservers::WaitForNextPoll(Observer& observer) {
+  std::unique_lock<std::mutex> lock(observer.mutex);
+  return observer.lifecycle.stop_signal.wait_for(
+      lock, observer.spec.polling_interval,
+      [&observer]() { return observer.lifecycle.stopping.load(); });
 }
 
 // Purpose: Ask the platform thread to deliver pending changes, logging a
 // failure once per streak.
+// @param observer is the observer with a pending change.
 // @param streaks records which failures this worker has logged.
 // @returns Nothing; a pending change whose wake failed is retried after
 // the next poll.
 // @throws Nothing.
-void PollingObservers::RequestDelivery(FailureStreaks* streaks) {
-  if (dispatcher_.RequestWake()) {
+void PollingObservers::RequestDelivery(Observer& observer, FailureStreaks* streaks) {
+  if (observer.lifecycle.dispatcher->RequestWake()) {
     streaks->wake_failing = false;
     return;
   }
   // Read before logging, which can change the thread's last error.
   const DWORD error = GetLastError();
-  if (streaks->wake_failing) {
+  // A stopped observer's wake fails because its owner closed delivery;
+  // that is teardown, not a fault.
+  if (streaks->wake_failing || observer.lifecycle.stopping.load()) {
     return;
   }
   streaks->wake_failing = true;
@@ -368,19 +342,20 @@ void PollingObservers::RequestDelivery(FailureStreaks* streaks) {
 // @param current is the snapshot just taken.
 // @returns true when a change is pending and needs delivery.
 // @throws Nothing.
-bool PollingObservers::RecordSnapshot(Observer* observer, Snapshot current) {
-  std::lock_guard<std::mutex> lock(observer->mutex);
-  if (current == observer->delivery.delivered) {
+bool PollingObservers::RecordSnapshot(Observer& observer, Snapshot current) {
+  std::lock_guard<std::mutex> lock(observer.mutex);
+  DeliveryState& delivery = observer.delivery;
+  if (current == delivery.delivered) {
     // Back to what was last delivered: nothing is left to report.
-    observer->delivery.pending.reset();
+    delivery.pending.reset();
     return false;
   }
-  const bool already_pending = observer->delivery.pending.has_value() &&
-                               observer->delivery.pending->snapshot == current;
+  const bool already_pending =
+      delivery.pending.has_value() && delivery.pending->snapshot == current;
   if (!already_pending) {
-    observer->delivery.pending = PendingChange{ChangedIds(observer->delivery.delivered, current),
-                                      std::move(current),
-                                      effects_.now_epoch_ms()};
+    delivery.pending = PendingChange{ChangedIds(delivery.delivered, current),
+                                     std::move(current),
+                                     observer.lifecycle.now_epoch_ms()};
   }
   return true;
 }
@@ -389,33 +364,58 @@ bool PollingObservers::RecordSnapshot(Observer* observer, Snapshot current) {
 // @param observer is the observer to check.
 // @returns true when a change is pending.
 // @throws Nothing.
-bool PollingObservers::HasPendingChange(Observer* observer) {
-  std::lock_guard<std::mutex> lock(observer->mutex);
-  return observer->delivery.pending.has_value();
+bool PollingObservers::HasPendingChange(Observer& observer) {
+  std::lock_guard<std::mutex> lock(observer.mutex);
+  return observer.delivery.pending.has_value();
 }
 
-// Purpose: Deliver every pending change. Runs on the platform thread.
+// Purpose: Deliver every pending change of an observer with no event
+// awaiting Dart's reply. Runs on the platform thread.
 // @returns Nothing.
 // @throws Nothing beyond what effects.send_event throws.
 void PollingObservers::DeliverPendingChanges() {
   std::vector<std::pair<std::string, EncodableMap>> events;
-  {
-    std::lock_guard<std::mutex> lock(observers_mutex_);
-    for (auto& [observer_id, observer] : observers_) {
-      std::lock_guard<std::mutex> observer_lock(observer->mutex);
-      if (!observer->delivery.pending.has_value()) {
-        continue;
-      }
-      events.emplace_back(observer_id,
-                          BuildEvent(observer->spec.domain, *observer->delivery.pending));
-      observer->delivery.delivered = std::move(observer->delivery.pending->snapshot);
-      observer->delivery.pending.reset();
+  std::vector<std::weak_ptr<Observer>> senders;
+  for (auto& [observer_id, observer] : observers_) {
+    std::lock_guard<std::mutex> observer_lock(observer->mutex);
+    DeliveryState& delivery = observer->delivery;
+    if (!delivery.pending.has_value() || delivery.awaiting_reply) {
+      continue;
     }
+    events.emplace_back(observer_id, BuildEvent(observer->spec.domain, *delivery.pending));
+    senders.push_back(observer);
+    delivery.delivered = std::move(delivery.pending->snapshot);
+    delivery.pending.reset();
+    delivery.awaiting_reply = true;
   }
-  // Send outside the locks; Stop runs on this same thread, so no observer
+  // Sent outside the locks. Stop runs on this same thread, so no observer
   // can stop between collecting its event and sending it.
-  for (const auto& [observer_id, event] : events) {
-    effects_.send_event(observer_id, event);
+  for (size_t index = 0; index < events.size(); ++index) {
+    effects_.send_event(events[index].first, events[index].second,
+                        [sender = senders[index]]() { SettleEvent(sender); });
+  }
+}
+
+// Purpose: Mark an observer's event as answered, and ask for delivery of a
+// change that arrived meanwhile. Runs on the platform thread.
+// @param observer is the observer, or empty once it is gone.
+// @returns Nothing.
+// @throws Nothing.
+void PollingObservers::SettleEvent(const std::weak_ptr<Observer>& observer) {
+  const std::shared_ptr<Observer> live = observer.lock();
+  if (!live) {
+    return;
+  }
+  bool change_waiting = false;
+  {
+    std::lock_guard<std::mutex> lock(live->mutex);
+    live->delivery.awaiting_reply = false;
+    change_waiting = live->delivery.pending.has_value();
+  }
+  // A failed wake is retried by the worker, which asks again after each poll
+  // while the change is still pending.
+  if (change_waiting && !live->lifecycle.stopping.load()) {
+    live->lifecycle.dispatcher->RequestWake();
   }
 }
 
@@ -450,16 +450,6 @@ void PollingObservers::RequestStop(Observer& observer) {
     observer.lifecycle.stopping.store(true);
   }
   observer.lifecycle.stop_signal.notify_all();
-}
-
-// Purpose: Wait for an observer's worker to finish.
-// @param observer is an observer whose stop was already requested.
-// @returns Nothing.
-// @throws Nothing.
-void PollingObservers::JoinWorker(Observer& observer) {
-  if (observer.lifecycle.worker.joinable()) {
-    observer.lifecycle.worker.join();
-  }
 }
 
 // Purpose: List the ids whose values differ between two snapshots, including

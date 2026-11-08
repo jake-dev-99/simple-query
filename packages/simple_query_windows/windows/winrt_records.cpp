@@ -233,8 +233,10 @@ WinRtApartmentScope::WinRtApartmentScope() {
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
     joined_ = true;
   } catch (const winrt::hresult_error& error) {
-    // RPC_E_CHANGED_MODE means the thread already joined a single-threaded
-    // apartment, such as the platform thread; store calls still work there.
+    // RPC_E_CHANGED_MODE means the caller's thread already joined a
+    // single-threaded apartment. The plugin reads stores on its background
+    // worker, which joins the multithreaded one; a caller that chose a
+    // single-threaded apartment keeps it, and store calls still work there.
     if (static_cast<int32_t>(error.code()) != RPC_E_CHANGED_MODE) {
       throw;
     }

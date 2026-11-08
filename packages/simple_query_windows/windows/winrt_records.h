@@ -20,7 +20,7 @@ inline constexpr std::chrono::milliseconds kStopCheckInterval{50};
 // Purpose: Keep the calling thread in a Windows Runtime apartment while the
 // object lives. Apartments belong to threads, so every thread that reads a
 // store needs its own. A thread that already joined a single-threaded
-// apartment, such as the platform thread, keeps it.
+// apartment keeps it.
 class WinRtApartmentScope {
  public:
   // Purpose: Join the multithreaded apartment unless the thread is already in

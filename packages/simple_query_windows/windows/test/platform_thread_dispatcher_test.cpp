@@ -167,6 +167,24 @@ TEST(PlatformThreadDispatcherTest, DropsAQueuedWakeWhenDestroyed) {
   EXPECT_EQ(wakes, 0);
 }
 
+// Purpose: After Close, a wake request from a worker that still holds the
+// dispatcher fails and runs nothing, including a wake queued before it.
+TEST(PlatformThreadDispatcherTest, RefusesWakesOnceClosed) {
+  int wakes = 0;
+  auto dispatcher = std::make_shared<PlatformThreadDispatcher>([&]() { ++wakes; });
+  ASSERT_TRUE(dispatcher->RequestWake());
+
+  dispatcher->Close();
+  bool requested = true;
+  std::thread worker([dispatcher, &requested]() { requested = dispatcher->RequestWake(); });
+  worker.join();
+  PumpQueuedMessages();
+
+  EXPECT_FALSE(requested);
+  EXPECT_FALSE(dispatcher->IsReady());
+  EXPECT_EQ(wakes, 0);
+}
+
 // Purpose: Destroying the last dispatcher removes its window class, and a
 // later dispatcher registers it again.
 TEST(PlatformThreadDispatcherTest, RemovesItsWindowClassWithTheLastDispatcher) {

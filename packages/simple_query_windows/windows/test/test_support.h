@@ -10,6 +10,8 @@
 #include <windows.h>
 
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -20,6 +22,8 @@
 #include <system_error>
 #include <thread>
 #include <vector>
+
+#include "detached_threads.h"
 
 namespace simple_query_windows {
 namespace test {
@@ -156,6 +160,38 @@ class StandardErrorCapture {
  private:
   std::ostringstream captured_;
   std::streambuf* original_;
+};
+
+// Purpose: Wait, when destroyed, until every detached worker has finished.
+// Workers outlive the objects that start them, so a test declares this
+// after everything a worker reads, such as a temp directory or a snapshot
+// source, and before what starts the workers; those objects are then
+// destroyed only once no worker can touch them.
+class DetachedThreadsDrain {
+ public:
+  // Purpose: Prepare to wait for detached workers.
+  // @returns Nothing.
+  // @throws Nothing.
+  DetachedThreadsDrain() = default;
+
+  // Purpose: Wait until no detached worker is running.
+  // @returns Nothing.
+  // @throws Nothing; a worker still running after the delivery timeout ends
+  // the run, because destroying what it reads would crash it later in some
+  // other test.
+  ~DetachedThreadsDrain() {
+    if (!WaitWithoutPumping([]() { return RunningDetachedThreads() == 0; },
+                            kDeliveryTimeout)) {
+      // Written straight to the process's standard error: a test may be
+      // capturing std::cerr, and the run ends before gtest reports.
+      std::fprintf(stderr, "a detached worker was still running after %lld ms\n",
+                   static_cast<long long>(kDeliveryTimeout.count()));
+      std::abort();
+    }
+  }
+
+  DetachedThreadsDrain(const DetachedThreadsDrain&) = delete;
+  DetachedThreadsDrain& operator=(const DetachedThreadsDrain&) = delete;
 };
 
 // Purpose: Own an empty directory for one test, removed afterwards.

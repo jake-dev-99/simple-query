@@ -293,8 +293,8 @@ class NativeQueryHostApi {
   /// Purpose: Calls a namespaced Windows-only extension.
   ///
   /// @param extensionNamespace selects the registered Windows extension namespace.
-  /// The trailing underscore keeps the generated C++ parameter from using the
-  /// reserved word `namespace`.
+  /// It is not named `namespace`, a C++ keyword, and carries no trailing
+  /// underscore, which Pigeon would turn into a reserved C++ identifier.
   Future<Map<String?, Object?>?> callExtension(String extensionNamespace,
       String method, Map<String?, Object?>? args) async {
     final String pigeonVar_channelName =

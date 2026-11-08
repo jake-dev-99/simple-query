@@ -17,9 +17,15 @@ namespace simple_query_windows {
 // nothing. The platform thread's message queue therefore holds at most one
 // message from each dispatcher, however fast workers report changes.
 //
-// The dispatcher owns a message-only window. Create and destroy it on the
+// The dispatcher owns a message-only window. Create it and close it on the
 // platform thread, whose message loop delivers the wake. A wake still queued
-// when the dispatcher is destroyed is dropped without running.
+// when the dispatcher closes is dropped without running.
+//
+// Worker threads that outlive their owner can share the dispatcher. The
+// owner closes it on the platform thread when it goes away; after that every
+// wake request fails, so a late request never posts to a destroyed window or
+// to another window that reused its handle. A closed dispatcher may then be
+// destroyed on any thread.
 //
 // The window class is registered for the module that holds this code, and
 // the last dispatcher destroyed unregisters it, so an unloaded plugin leaves
@@ -32,7 +38,8 @@ class PlatformThreadDispatcher {
   // @throws Nothing; a window that cannot be created leaves IsReady() false.
   explicit PlatformThreadDispatcher(std::function<void()> on_wake);
 
-  // Purpose: Destroy the window so that no queued wake runs afterwards.
+  // Purpose: Close the dispatcher if its owner has not.
+  // Destroy an unclosed dispatcher on the creating thread.
   // @returns Nothing.
   // @throws Nothing.
   ~PlatformThreadDispatcher();
@@ -45,12 +52,19 @@ class PlatformThreadDispatcher {
   // @throws Nothing.
   bool IsReady() const;
 
+  // Purpose: Destroy the window, so that no queued or later wake runs. Call
+  // it on the creating thread. Closing twice does nothing.
+  // @returns Nothing.
+  // @throws Nothing.
+  void Close();
+
   // Purpose: Ask the creating thread to run on_wake. Safe from any thread.
   // @returns true when a wake is queued, either by this call or by an earlier
   // one that has not run yet. false when the wake could not be queued, for
-  // example because the thread's message queue is full; GetLastError() on the
-  // calling thread then holds the reason. Nothing is queued after a false
-  // return, so the caller must ask again later.
+  // example because the thread's message queue is full or the dispatcher is
+  // closed; GetLastError() on the calling thread then holds the reason.
+  // Nothing is queued after a false return, so the caller must ask again
+  // later.
   // @throws Nothing.
   bool RequestWake();
 
@@ -71,16 +85,20 @@ class PlatformThreadDispatcher {
   void RunWake();
 
   std::function<void()> on_wake_;
-  // Serializes the queued-wake flag with the post that sets it, so a request
-  // reports a queued wake only after a post has actually succeeded.
-  std::mutex wake_mutex_;
+  // Serializes the queued-wake flag and the window handle with the post that
+  // uses them, so a request reports a queued wake only after a post has
+  // actually succeeded, and never posts once the window is closing.
+  mutable std::mutex wake_mutex_;
   // True from a successful post until the creating thread starts running it.
   // Guarded by wake_mutex_.
   bool wake_queued_ = false;
   // The module that holds this code and owns the window class; null when it
   // could not be found, which leaves IsReady() false.
   HMODULE module_ = nullptr;
+  // Null before creation succeeds and after Close. Guarded by wake_mutex_.
   HWND window_ = nullptr;
+  // Set by the first Close, so the window class is released once.
+  bool closed_ = false;
 };
 
 }  // namespace simple_query_windows

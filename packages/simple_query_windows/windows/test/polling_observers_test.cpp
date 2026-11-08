@@ -107,20 +107,28 @@ struct SentEvent {
 // Purpose: Give the test runner's main thread as the platform thread.
 class PollingObserversTest : public ::testing::Test {
  protected:
-  // Purpose: Build effects that record each event and its sending thread.
+  // Purpose: Build effects that record each event and its sending thread,
+  // and answer it at once unless the test holds replies.
   // @returns Effects bound to this fixture.
   // @throws Nothing.
   PollingObserverEffects RecordingEffects() {
     return {.send_event =
-                [this](const std::string& observer_id, const EncodableMap& event) {
+                [this](const std::string& observer_id, const EncodableMap& event,
+                       std::function<void()> on_settled) {
                   events_.push_back(
                       {observer_id, event, std::this_thread::get_id()});
+                  if (hold_replies_) {
+                    held_replies_.push_back(std::move(on_settled));
+                  } else {
+                    on_settled();
+                  }
                 },
             .now_epoch_ms = []() { return kFixedNowEpochMs; }};
   }
 
   // Purpose: Describe an observer that reads a controlled source.
-  // @param source is the snapshot source; it must outlive the observer.
+  // @param source is the snapshot source; it must outlive the observer's
+  // worker, so declare a DetachedThreadsDrain after it.
   // @param interval is the polling interval.
   // @returns The observer spec.
   // @throws Nothing.
@@ -131,16 +139,11 @@ class PollingObserversTest : public ::testing::Test {
             .take_snapshot = source.SnapshotCallback()};
   }
 
-  // Purpose: Wait until an observer took its first snapshot.
-  // @param source is the observer's source.
-  // @returns true when it did before the delivery timeout.
-  // @throws Nothing.
-  static bool WaitForBaseline(const ControlledSource& source) {
-    return WaitWithoutPumping([&source]() { return source.Taken() >= 1; },
-                              kDeliveryTimeout);
-  }
-
   std::vector<SentEvent> events_;
+  // When true, events are recorded but Dart's reply is held back.
+  bool hold_replies_ = false;
+  // The replies held back, in the order their events were sent.
+  std::vector<std::function<void()>> held_replies_;
 };
 
 // Purpose: Changes seen before the platform thread runs arrive as one event
@@ -148,10 +151,11 @@ class PollingObserversTest : public ::testing::Test {
 TEST_F(PollingObserversTest, DeliversAllChangesSinceTheLastEventInOneEvent) {
   ControlledSource source;
   source.Set({{"a", 1}});
+  DetachedThreadsDrain drain;
   PollingObservers observers(RecordingEffects());
   ASSERT_TRUE(observers.IsReady());
-  const std::string observer_id = observers.Start(SpecFor(source, kFastPoll));
-  ASSERT_TRUE(WaitForBaseline(source));
+  const std::string observer_id =
+      observers.Start(SpecFor(source, kFastPoll), {{"a", 1}});
 
   source.Set({{"a", 1}, {"b", 1}});
   ASSERT_TRUE(source.WaitForPollToFinish());
@@ -173,9 +177,9 @@ TEST_F(PollingObserversTest, DeliversAllChangesSinceTheLastEventInOneEvent) {
 TEST_F(PollingObserversTest, SkipsAFailedPollAndKeepsReporting) {
   ControlledSource source;
   source.Set({{"a", 1}, {"b", 1}});
+  DetachedThreadsDrain drain;
   PollingObservers observers(RecordingEffects());
-  observers.Start(SpecFor(source, kFastPoll));
-  ASSERT_TRUE(WaitForBaseline(source));
+  observers.Start(SpecFor(source, kFastPoll), {{"a", 1}, {"b", 1}});
 
   source.SetReadOutcome({.failing = true});
   ASSERT_TRUE(source.WaitForPollToFinish());
@@ -197,9 +201,9 @@ TEST_F(PollingObserversTest, LogsEachRunOfFailedPollsOnce) {
   {
     ControlledSource source;
     source.Set({{"a", 1}});
+    DetachedThreadsDrain drain;
     PollingObservers observers(RecordingEffects());
-    observers.Start(SpecFor(source, kFastPoll));
-    ASSERT_TRUE(WaitForBaseline(source));
+    observers.Start(SpecFor(source, kFastPoll), {{"a", 1}});
 
     source.SetReadOutcome({.failing = true});
     ASSERT_TRUE(source.WaitForPollToFinish());
@@ -207,7 +211,8 @@ TEST_F(PollingObserversTest, LogsEachRunOfFailedPollsOnce) {
     ASSERT_TRUE(source.WaitForPollToFinish());
     source.SetReadOutcome({.failing = true});
     ASSERT_TRUE(source.WaitForPollToFinish());
-    // Leaving the scope joins the worker before the log is read.
+    // Leaving the scope waits for the worker before the log is read, and a
+    // worker that is stopping logs nothing.
   }
 
   const std::vector<std::string> lines = log.Lines();
@@ -218,23 +223,23 @@ TEST_F(PollingObserversTest, LogsEachRunOfFailedPollsOnce) {
   }
 }
 
-// Purpose: Until a first snapshot succeeds there is no baseline, so the
-// first success reports nothing and later changes are measured against it.
-TEST_F(PollingObserversTest, WaitsForAFirstSnapshotThatSucceeds) {
+// Purpose: The first change is measured against the baseline the caller
+// took before acknowledging the start, so a change made between that
+// snapshot and the first poll is reported, even after failed polls.
+TEST_F(PollingObserversTest, ReportsTheFirstChangeAgainstTheBaseline) {
   ControlledSource source;
-  source.Set({{"a", 1}});
+  source.Set({{"a", 1}, {"b", 1}});
   source.SetReadOutcome({.failing = true});
+  DetachedThreadsDrain drain;
   PollingObservers observers(RecordingEffects());
-  observers.Start(SpecFor(source, kFastPoll));
-  ASSERT_TRUE(source.WaitForPollToFinish());
-
-  source.SetReadOutcome({.failing = false});
+  observers.Start(SpecFor(source, kFastPoll), {{"a", 1}});
   ASSERT_TRUE(source.WaitForPollToFinish());
   PumpQueuedMessages();
   EXPECT_TRUE(events_.empty());
 
-  source.Set({{"a", 1}, {"b", 1}});
+  source.SetReadOutcome({.failing = false});
   ASSERT_TRUE(PumpUntil([&]() { return !events_.empty(); }, kDeliveryTimeout));
+  ASSERT_EQ(events_.size(), 1u);
   EXPECT_EQ(IdsOf(events_[0].event), (std::vector<std::string>{"b"}));
 }
 
@@ -242,9 +247,9 @@ TEST_F(PollingObserversTest, WaitsForAFirstSnapshotThatSucceeds) {
 TEST_F(PollingObserversTest, ReportsNothingForAChangeUndoneBeforeDelivery) {
   ControlledSource source;
   source.Set({{"a", 1}});
+  DetachedThreadsDrain drain;
   PollingObservers observers(RecordingEffects());
-  observers.Start(SpecFor(source, kFastPoll));
-  ASSERT_TRUE(WaitForBaseline(source));
+  observers.Start(SpecFor(source, kFastPoll), {{"a", 1}});
 
   source.Set({{"a", 1}, {"b", 1}});
   ASSERT_TRUE(source.WaitForPollToFinish());
@@ -259,9 +264,10 @@ TEST_F(PollingObserversTest, ReportsNothingForAChangeUndoneBeforeDelivery) {
 TEST_F(PollingObserversTest, DropsTheChangeOfAStoppedObserver) {
   ControlledSource source;
   source.Set({{"a", 1}});
+  DetachedThreadsDrain drain;
   PollingObservers observers(RecordingEffects());
-  const std::string observer_id = observers.Start(SpecFor(source, kFastPoll));
-  ASSERT_TRUE(WaitForBaseline(source));
+  const std::string observer_id =
+      observers.Start(SpecFor(source, kFastPoll), {{"a", 1}});
   source.Set({{"a", 1}, {"b", 1}});
   ASSERT_TRUE(source.WaitForPollToFinish());
 
@@ -276,9 +282,9 @@ TEST_F(PollingObserversTest, DropsTheChangeOfAStoppedObserver) {
 TEST_F(PollingObserversTest, RetriesAWakeThatCouldNotBeQueued) {
   ControlledSource source;
   source.Set({{"a", 1}});
+  DetachedThreadsDrain drain;
   PollingObservers observers(RecordingEffects());
-  observers.Start(SpecFor(source, kFastPoll));
-  ASSERT_TRUE(WaitForBaseline(source));
+  observers.Start(SpecFor(source, kFastPoll), {{"a", 1}});
   ASSERT_TRUE(FillMessageQueue());
 
   source.Set({{"a", 1}, {"b", 1}});
@@ -294,9 +300,9 @@ TEST_F(PollingObserversTest, RetriesAWakeThatCouldNotBeQueued) {
 TEST_F(PollingObserversTest, RetriesAWakeAfterFailedPolls) {
   ControlledSource source;
   source.Set({{"a", 1}});
+  DetachedThreadsDrain drain;
   PollingObservers observers(RecordingEffects());
-  observers.Start(SpecFor(source, kFastPoll));
-  ASSERT_TRUE(WaitForBaseline(source));
+  observers.Start(SpecFor(source, kFastPoll), {{"a", 1}});
   ASSERT_TRUE(FillMessageQueue());
 
   source.Set({{"a", 1}, {"b", 1}});
@@ -314,43 +320,109 @@ TEST_F(PollingObserversTest, RetriesAWakeAfterFailedPolls) {
 // Purpose: Stopping does not wait out a long polling interval.
 TEST_F(PollingObserversTest, StopsPromptlyDuringALongPollingInterval) {
   ControlledSource source;
+  DetachedThreadsDrain drain;
   PollingObservers observers(RecordingEffects());
-  const std::string observer_id = observers.Start(SpecFor(source, kLongPoll));
-  ASSERT_TRUE(WaitForBaseline(source));
+  const std::string observer_id = observers.Start(SpecFor(source, kLongPoll), {});
 
   EXPECT_LT(TimeOf([&]() { observers.Stop(observer_id); }), kPromptTeardown);
 }
 
-// Purpose: Teardown tells a snapshot in progress to stop, instead of waiting
-// for a long scan to finish.
+// Purpose: Teardown tells a snapshot in progress to stop.
 TEST_F(PollingObserversTest, TeardownStopsASnapshotInProgress) {
   std::atomic<bool> scanning{false};
+  std::atomic<bool> saw_stop{false};
+  DetachedThreadsDrain drain;
   auto observers = std::make_unique<PollingObservers>(RecordingEffects());
   observers->Start({.domain = "files",
-                    .polling_interval = kLongPoll,
-                    .take_snapshot = [&scanning](const StopRequested& stop_requested) {
-                      scanning.store(true);
-                      // Stands in for a scan that runs until it is told to stop.
-                      const auto give_up = std::chrono::steady_clock::now() + 10s;
-                      while (!stop_requested() &&
-                             std::chrono::steady_clock::now() < give_up) {
-                        std::this_thread::sleep_for(1ms);
-                      }
-                      return Snapshot{};
-                    }});
+                    .polling_interval = kFastPoll,
+                    .take_snapshot =
+                        [&scanning, &saw_stop](const StopRequested& stop_requested) {
+                          scanning.store(true);
+                          // Stands in for a scan that runs until it is told to stop.
+                          const auto give_up = std::chrono::steady_clock::now() + 10s;
+                          while (!stop_requested() &&
+                                 std::chrono::steady_clock::now() < give_up) {
+                            std::this_thread::sleep_for(1ms);
+                          }
+                          saw_stop.store(stop_requested());
+                          return Snapshot{};
+                        }},
+                   {});
+  ASSERT_TRUE(WaitWithoutPumping([&]() { return scanning.load(); },
+                                 kDeliveryTimeout));
+
+  observers.reset();
+
+  EXPECT_TRUE(WaitWithoutPumping([&]() { return saw_stop.load(); }, kDeliveryTimeout));
+}
+
+// Purpose: Teardown returns at once even while a snapshot ignores the stop
+// request, as filesystem or store I/O can, and that snapshot's result is
+// never delivered.
+TEST_F(PollingObserversTest, TeardownDoesNotWaitForASnapshotThatIgnoresStop) {
+  std::atomic<bool> scanning{false};
+  std::atomic<bool> released{false};
+  DetachedThreadsDrain drain;
+  auto observers = std::make_unique<PollingObservers>(RecordingEffects());
+  observers->Start({.domain = "files",
+                    .polling_interval = kFastPoll,
+                    .take_snapshot =
+                        [&scanning, &released](const StopRequested&) {
+                          scanning.store(true);
+                          // Stands in for blocking I/O that cannot be cancelled.
+                          while (!released.load()) {
+                            std::this_thread::sleep_for(1ms);
+                          }
+                          return Snapshot{{"b", 1}};
+                        }},
+                   {});
   ASSERT_TRUE(WaitWithoutPumping([&]() { return scanning.load(); },
                                  kDeliveryTimeout));
 
   EXPECT_LT(TimeOf([&]() { observers.reset(); }), kPromptTeardown);
+
+  released.store(true);
+  ASSERT_TRUE(WaitWithoutPumping([]() { return RunningDetachedThreads() == 0; },
+                                 kDeliveryTimeout));
+  PumpQueuedMessages();
+  EXPECT_TRUE(events_.empty());
+}
+
+// Purpose: Only one event per observer waits for Dart at a time. Changes
+// found meanwhile fold into one pending change, sent once Dart answers.
+TEST_F(PollingObserversTest, WaitsForDartsReplyAndThenSendsOneFoldedEvent) {
+  hold_replies_ = true;
+  ControlledSource source;
+  source.Set({{"a", 1}});
+  DetachedThreadsDrain drain;
+  PollingObservers observers(RecordingEffects());
+  observers.Start(SpecFor(source, kFastPoll), {{"a", 1}});
+  source.Set({{"a", 1}, {"b", 1}});
+  ASSERT_TRUE(PumpUntil([&]() { return events_.size() == 1; }, kDeliveryTimeout));
+
+  source.Set({{"a", 1}, {"b", 1}, {"c", 1}});
+  ASSERT_TRUE(source.WaitForPollToFinish());
+  source.Set({{"a", 1}, {"b", 1}, {"c", 1}, {"d", 1}});
+  ASSERT_TRUE(source.WaitForPollToFinish());
+  PumpQueuedMessages();
+  ASSERT_EQ(events_.size(), 1u);
+
+  ASSERT_EQ(held_replies_.size(), 1u);
+  held_replies_[0]();
+  ASSERT_TRUE(PumpUntil([&]() { return events_.size() == 2; }, kDeliveryTimeout));
+  EXPECT_EQ(IdsOf(events_[1].event), (std::vector<std::string>{"c", "d"}));
+  ASSERT_TRUE(source.WaitForPollToFinish());
+  PumpQueuedMessages();
+  EXPECT_EQ(events_.size(), 2u);
 }
 
 // Purpose: Teardown with a change queued for delivery sends nothing later.
 TEST_F(PollingObserversTest, TeardownDropsAQueuedChange) {
   ControlledSource source;
   source.Set({{"a", 1}});
+  DetachedThreadsDrain drain;
   auto observers = std::make_unique<PollingObservers>(RecordingEffects());
-  observers->Start(SpecFor(source, kFastPoll));
-  ASSERT_TRUE(WaitForBaseline(source));
+  observers->Start(SpecFor(source, kFastPoll), {{"a", 1}});
   source.Set({{"a", 1}, {"b", 1}});
   ASSERT_TRUE(source.WaitForPollToFinish());
 

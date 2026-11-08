@@ -6,11 +6,15 @@ set(PLUGIN_NAME "simple_query_windows_plugin")
 # Built into both the plugin library and the native test runner.
 set(PLUGIN_SOURCES
   "simple_query_windows_plugin.cpp"
+  "background_calls.cpp"
   "boundary_formats.cpp"
+  "detached_threads.cpp"
   "domain_snapshots.cpp"
   "file_mutations.cpp"
   "file_records.cpp"
+  "host_call_work.cpp"
   "native_query.g.cpp"
+  "observe_event_sender.cpp"
   "platform_thread_dispatcher.cpp"
   "polling_observers.cpp"
   "query_shaping.cpp"
@@ -82,7 +86,9 @@ if (${include_${PROJECT_NAME}_tests})
   # The C API wrapper adds nothing to test, so the runner builds the plugin
   # sources directly instead of loading the plugin DLL.
   add_executable(${TEST_RUNNER}
+    "test/background_calls_test.cpp"
     "test/file_mutations_test.cpp"
+    "test/host_call_work_test.cpp"
     "test/platform_thread_dispatcher_test.cpp"
     "test/polling_observers_test.cpp"
     "test/query_shaping_test.cpp"

@@ -13,7 +13,6 @@
 #include <mutex>
 #include <optional>
 #include <string>
-#include <thread>
 #include <vector>
 
 #include "platform_thread_dispatcher.h"
@@ -31,37 +30,49 @@ struct ObserverSpec {
   std::string domain;
   // How long the worker waits between snapshots.
   std::chrono::milliseconds polling_interval;
-  // Lists the watched records. Runs on the observer's worker thread. Throws
-  // a std::exception when the records could not be read; that poll is then
-  // skipped. Its stop check turns true once the observer is stopping, so a
-  // long scan can end early; a snapshot taken then is discarded.
+  // Lists the watched records. Runs on the observer's worker thread, which
+  // can outlive the caller, so it must hold by copy everything it reads.
+  // Throws a std::exception when the records could not be read; that poll
+  // is then skipped. Its stop check turns true once the observer is
+  // stopping, so a long scan can end early; a snapshot taken then is
+  // discarded.
   std::function<Snapshot(const StopRequested&)> take_snapshot;
 };
 
 // Purpose: Give PollingObservers its effects, so tests can supply their own.
 struct PollingObserverEffects {
   // Sends one event. Runs only on the thread that created PollingObservers.
+  // on_settled must run on that thread once Dart has accepted or rejected
+  // the event; until then the observer sends nothing more and keeps
+  // folding new changes into one pending change.
   std::function<void(const std::string& observer_id,
-                     const flutter::EncodableMap& event)>
+                     const flutter::EncodableMap& event,
+                     std::function<void()> on_settled)>
       send_event;
-  // Returns the current time in milliseconds since the Unix epoch.
+  // Returns the current time in milliseconds since the Unix epoch. Called on
+  // worker threads, so it must be safe to call from any thread.
   std::function<int64_t()> now_epoch_ms;
 };
 
 // Purpose: Poll each observed domain on its own worker thread and deliver
 // changes on the thread that created this object, the platform thread.
 //
-// Memory stays bounded however long the platform thread is busy. Each
-// observer keeps the snapshot it last delivered and at most one pending
-// change. A pending change holds the latest snapshot and the ids that differ
-// from the delivered one, so later polls replace it instead of queueing more.
-// Its ids still cover every change since the last delivery, because they are
-// measured against the delivered snapshot. A change that is undone before
-// delivery is not reported.
+// Memory stays bounded however long the platform thread or Dart is busy.
+// Each observer keeps the snapshot it last delivered, at most one pending
+// change, and at most one event awaiting Dart's reply. A pending change
+// holds the latest snapshot and the ids that differ from the delivered one,
+// so later polls replace it instead of queueing more. Its ids still cover
+// every change since the last delivery, because they are measured against
+// the delivered snapshot. A change that is undone before delivery is not
+// reported.
 //
 // A poll whose snapshot fails changes nothing, so a passing read error never
-// reports records as removed and then added again. Until the first snapshot
-// succeeds, the observer has no baseline and reports nothing.
+// reports records as removed and then added again.
+//
+// Workers are detached. Stopping an observer or destroying this object never
+// waits for a snapshot in progress, which can be filesystem or store I/O that
+// ignores the stop request; the worker holds its observer by shared
+// ownership, finishes on its own and then discards what it read.
 //
 // Create, call and destroy this object on the platform thread.
 class PollingObservers {
@@ -72,8 +83,8 @@ class PollingObservers {
   // @throws Nothing; a failed setup leaves IsReady() false.
   explicit PollingObservers(PollingObserverEffects effects);
 
-  // Purpose: Stop every observer, then release delivery resources.
-  // Changes not yet delivered are dropped.
+  // Purpose: Stop every observer without waiting for its worker, then close
+  // delivery. Changes not yet delivered are dropped.
   // @returns Nothing.
   // @throws Nothing.
   ~PollingObservers();
@@ -88,11 +99,13 @@ class PollingObservers {
 
   // Purpose: Start polling one domain on a new worker thread.
   // @param spec describes what to poll and how often.
+  // @param baseline is the snapshot the caller took before acknowledging the
+  // start; the first event reports what changed since it.
   // @returns The new observer's id, used in its events and to stop it.
   // @throws std::system_error when the worker thread cannot be started.
-  std::string Start(ObserverSpec spec);
+  std::string Start(ObserverSpec spec, Snapshot baseline);
 
-  // Purpose: Stop one observer and wait for its worker to finish. Its
+  // Purpose: Stop one observer without waiting for its worker. Its
   // undelivered change is dropped. An unknown id does nothing.
   // @param observer_id is the id Start returned.
   // @returns Nothing.
@@ -100,10 +113,11 @@ class PollingObservers {
   void Stop(const std::string& observer_id);
 
  private:
-  // Purpose: Hold one observer's settings, worker and change state.
+  // Purpose: Hold one observer's settings, worker state and change state.
   struct Observer;
 
-  // Purpose: Hold one observer's worker thread and how it is told to stop.
+  // Purpose: Hold what one observer's worker needs once it may outlive this
+  // object, and how it is told to stop.
   struct WorkerLifecycle;
 
   // Purpose: Hold what one observer last delivered and what waits to go.
@@ -124,11 +138,11 @@ class PollingObservers {
   };
 
   // Purpose: Poll one observer until it is stopped.
-  // @param observer is the observer this worker serves; it outlives the
-  // worker, which is always joined before the observer is destroyed.
+  // @param observer is the observer this worker serves, held so it outlives
+  // this object if need be.
   // @returns Nothing.
   // @throws Nothing.
-  void RunWorker(Observer* observer);
+  static void RunWorker(const std::shared_ptr<Observer>& observer);
 
   // Purpose: Take one snapshot for a worker, logging a failure once per
   // streak.
@@ -137,40 +151,49 @@ class PollingObservers {
   // @returns The snapshot, or nothing when it failed or the observer is
   // stopping.
   // @throws Nothing.
-  static std::optional<Snapshot> TakeSnapshot(Observer* observer,
+  static std::optional<Snapshot> TakeSnapshot(Observer& observer,
                                               FailureStreaks* streaks);
 
   // Purpose: Wait one polling interval, or less when the observer stops.
   // @param observer is the observer being polled.
   // @returns true when the observer is stopping.
   // @throws Nothing.
-  static bool WaitForNextPoll(Observer* observer);
+  static bool WaitForNextPoll(Observer& observer);
 
   // Purpose: Ask the platform thread to deliver pending changes, logging a
   // failure once per streak.
+  // @param observer is the observer with a pending change.
   // @param streaks records which failures this worker has logged.
   // @returns Nothing; a pending change whose wake failed is retried after
   // the next poll.
   // @throws Nothing.
-  void RequestDelivery(FailureStreaks* streaks);
+  static void RequestDelivery(Observer& observer, FailureStreaks* streaks);
 
   // Purpose: Store a new snapshot as the observer's pending change.
   // @param observer is the observer that took the snapshot.
   // @param current is the snapshot just taken.
   // @returns true when a change is pending and needs delivery.
   // @throws Nothing.
-  bool RecordSnapshot(Observer* observer, Snapshot current);
+  static bool RecordSnapshot(Observer& observer, Snapshot current);
 
   // Purpose: Report whether an observer holds a change not yet delivered.
   // @param observer is the observer to check.
   // @returns true when a change is pending.
   // @throws Nothing.
-  bool HasPendingChange(Observer* observer);
+  static bool HasPendingChange(Observer& observer);
 
-  // Purpose: Deliver every pending change. Runs on the platform thread.
+  // Purpose: Deliver every pending change of an observer with no event
+  // awaiting Dart's reply. Runs on the platform thread.
   // @returns Nothing.
   // @throws Nothing beyond what effects.send_event throws.
   void DeliverPendingChanges();
+
+  // Purpose: Mark an observer's event as answered, and ask for delivery of
+  // a change that arrived meanwhile. Runs on the platform thread.
+  // @param observer is the observer, or empty once it is gone.
+  // @returns Nothing.
+  // @throws Nothing.
+  static void SettleEvent(const std::weak_ptr<Observer>& observer);
 
   // Purpose: Build the event map sent for one change.
   // @param domain is the observed domain.
@@ -186,19 +209,13 @@ class PollingObservers {
   // @throws Nothing.
   static void RequestStop(Observer& observer);
 
-  // Purpose: Wait for an observer's worker to finish.
-  // @param observer is an observer whose stop was already requested.
-  // @returns Nothing.
-  // @throws Nothing.
-  static void JoinWorker(Observer& observer);
-
   PollingObserverEffects effects_;
-  std::mutex observers_mutex_;
+  // Touched only on the platform thread; workers hold their own observer.
   int64_t observer_counter_ = 0;
-  std::map<std::string, std::unique_ptr<Observer>> observers_;
-  // Declared last so it is destroyed first; the destructor has already
-  // joined every worker by then.
-  PlatformThreadDispatcher dispatcher_;
+  std::map<std::string, std::shared_ptr<Observer>> observers_;
+  // Shared with every worker. Closed by the destructor, after which a
+  // worker's wake request fails instead of reaching this destroyed object.
+  std::shared_ptr<PlatformThreadDispatcher> dispatcher_;
 };
 
 // Purpose: List the ids whose values differ between two snapshots, including

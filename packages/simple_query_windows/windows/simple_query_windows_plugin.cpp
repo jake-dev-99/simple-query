@@ -2,12 +2,15 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <filesystem>
 #include <functional>
 #include <map>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -16,11 +19,14 @@
 
 #include <flutter/plugin_registrar_windows.h>
 
+#include "background_calls.h"
+#include "host_call_work.h"
 #include "boundary_formats.h"
 #include "domain_snapshots.h"
 #include "file_mutations.h"
 #include "file_records.h"
 #include "native_query.g.h"
+#include "observe_event_sender.h"
 #include "polling_observers.h"
 #include "query_shaping.h"
 #include "request_values.h"
@@ -41,20 +47,6 @@ using flutter::EncodableValue;
 constexpr int64_t kDefaultPollingIntervalMs = 1000;
 constexpr int64_t kMinimumPollingIntervalMs = 250;
 
-// Purpose: Hold the rows a domain read returned, or the error Dart receives.
-using RowsOrError = std::variant<std::vector<EncodableMap>, FlutterError>;
-
-// Purpose: State what one domain supports on this machine.
-struct DomainCapability {
-  std::string domain;
-  bool can_read = false;
-  bool can_write = false;
-  bool can_observe = false;
-  bool can_stream = false;
-  // Why a capability is missing, when Dart should show the user.
-  std::optional<std::string> reason;
-};
-
 // Purpose: Read the wall clock for event timestamps.
 // @returns Milliseconds since the Unix epoch.
 // @throws Nothing.
@@ -62,111 +54,6 @@ int64_t EpochMsNow() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(
              std::chrono::system_clock::now().time_since_epoch())
       .count();
-}
-
-// Purpose: Report whether a domain lists files from a root directory.
-// @param domain is the domain name.
-// @returns true for files and media.
-// @throws Nothing.
-bool IsFileDomain(const std::string& domain) {
-  return domain == "files" || domain == "media";
-}
-
-// Purpose: Report whether this host can query and observe a domain.
-// @param domain is the domain name.
-// @returns true for files, media, contacts and calendar.
-// @throws Nothing.
-bool IsReadableDomain(const std::string& domain) {
-  return IsFileDomain(domain) || domain == "contacts" || domain == "calendar";
-}
-
-// Purpose: Build the error for a request that names no domain.
-// @returns An invalid-query error naming the domains this host serves.
-// @throws Nothing.
-FlutterError MissingDomainError() {
-  return FlutterError("invalid-query",
-                      "simple_query: the request names no domain. Set domain to "
-                      "files, media, contacts or calendar.");
-}
-
-// Purpose: Build the error for an operation this host does not offer.
-// @param operation names the host call, such as query.
-// @param domain is the domain the request named.
-// @returns A not-supported error naming the domains that do support it.
-// @throws Nothing.
-FlutterError NotSupportedError(const std::string& operation, const std::string& domain) {
-  const std::string supported =
-      operation == "query" || operation == "observe" ? "files, media, contacts or calendar"
-                                                     : "files or media";
-  return FlutterError("not-supported", "simple_query: " + operation +
-                                           " is not supported for domain " + domain +
-                                           " on Windows. Use " + supported + ".");
-}
-
-// Purpose: Build the capability entry Dart reads for one domain.
-// @param capability states what the domain supports.
-// @returns The capability map.
-// @throws Nothing.
-EncodableMap CapabilityMap(const DomainCapability& capability) {
-  EncodableMap map;
-  map[EncodableValue("domain")] = EncodableValue(capability.domain);
-  map[EncodableValue("canRead")] = EncodableValue(capability.can_read);
-  map[EncodableValue("canWrite")] = EncodableValue(capability.can_write);
-  map[EncodableValue("canObserve")] = EncodableValue(capability.can_observe);
-  map[EncodableValue("canStream")] = EncodableValue(capability.can_stream);
-  if (capability.reason.has_value()) {
-    map[EncodableValue("reason")] = EncodableValue(*capability.reason);
-  }
-  return map;
-}
-
-// Purpose: State a store-backed domain's capability from a probe of its store.
-// @param domain is the domain name.
-// @param probe is the outcome of listing the domain's stores.
-// @returns Read and observe when the probe succeeded; otherwise the probe's
-// error as the reason.
-// @throws Nothing.
-DomainCapability StoreCapability(const std::string& domain, const RowsResult& probe) {
-  const bool readable = !probe.error.has_value();
-  return {.domain = domain,
-          .can_read = readable,
-          .can_write = false,
-          .can_observe = readable,
-          .can_stream = false,
-          .reason = probe.error};
-}
-
-// Purpose: Convert a read's outcome into the rows or the error Dart receives.
-// A denial carries the permission id in details, as on Android, so Dart can
-// send the user to the right setting.
-// @param result is the read's outcome.
-// @returns The rows; permission-denied when access is off; unavailable for
-// any other failure.
-// @throws Nothing.
-RowsOrError RowsOrFlutterError(RowsResult result) {
-  if (!result.error.has_value()) {
-    return std::move(result.rows);
-  }
-  if (result.denied_capability.has_value()) {
-    EncodableMap details;
-    details[EncodableValue("permissions")] =
-        EncodableValue(EncodableList{EncodableValue(*result.denied_capability)});
-    return FlutterError("permission-denied", *result.error, EncodableValue(details));
-  }
-  return FlutterError("unavailable", *result.error);
-}
-
-// Purpose: Wrap a list of rows for a channel reply.
-// @param rows are the rows.
-// @returns The rows as one list value.
-// @throws Nothing.
-EncodableList RowsAsList(std::vector<EncodableMap> rows) {
-  EncodableList list;
-  list.reserve(rows.size());
-  for (auto& row : rows) {
-    list.push_back(EncodableValue(std::move(row)));
-  }
-  return list;
 }
 
 // Purpose: Find the directory a files or media request reads. Dart sends
@@ -191,30 +78,6 @@ std::filesystem::path ResolveRootPath(
   return current_directory();
 }
 
-// Purpose: Read every row of one readable domain.
-// @param domain is files, media, contacts or calendar.
-// @param root_for_files resolves the root of a files or media read.
-// @returns The rows, or the error Dart receives.
-// @throws Nothing; failures are returned as errors.
-RowsOrError ReadDomainRows(const std::string& domain,
-                           const std::function<std::filesystem::path()>& root_for_files) {
-  if (domain == "contacts") {
-    return RowsOrFlutterError(ListContactRecords({}));
-  }
-  if (domain == "calendar") {
-    return RowsOrFlutterError(ListCalendarRecords({}));
-  }
-  try {
-    return RowsOrFlutterError(
-        ListRecords({.root = root_for_files(), .media_only = domain == "media"}));
-  } catch (const std::system_error& error) {
-    return FlutterError("unavailable",
-                        std::string("simple_query: windows could not resolve the "
-                                    "query root. Check platformData.rootPath - ") +
-                            error.what());
-  }
-}
-
 // Purpose: Reject arguments for an extension method that takes none.
 // @param args are the method's arguments, or null.
 // @param method names the method for the error.
@@ -227,23 +90,6 @@ std::optional<FlutterError> RejectArguments(const EncodableMap* args,
   }
   return FlutterError("invalid-query",
                       "simple_query: " + method + " takes no arguments. Call it without args.");
-}
-
-// Purpose: Answer a store-listing extension with the stores read.
-// @param key is the reply key, such as stores.
-// @param listed is the outcome of listing the stores.
-// @returns The stores under key, or the error Dart receives.
-// @throws Nothing.
-ErrorOr<std::optional<EncodableMap>> StoresReply(const std::string& key,
-                                                 RowsResult listed) {
-  RowsOrError rows = RowsOrFlutterError(std::move(listed));
-  if (auto* error = std::get_if<FlutterError>(&rows)) {
-    return *error;
-  }
-  EncodableMap response;
-  response[EncodableValue(key)] =
-      EncodableValue(RowsAsList(std::get<std::vector<EncodableMap>>(std::move(rows))));
-  return std::make_optional(std::move(response));
 }
 
 // Purpose: Build one known-folder entry for resolveKnownFolders.
@@ -339,10 +185,49 @@ std::variant<std::chrono::milliseconds, FlutterError> PollingInterval(
   return std::chrono::milliseconds(std::max(kMinimumPollingIntervalMs, *interval_ms));
 }
 
+// The most host calls that may be queued or awaiting their reply at once,
+// so a stalled store or platform thread cannot grow memory without limit.
+constexpr size_t kMaxUnfinishedCalls = 64;
+
+// Purpose: Build the reply for a call the background worker did not take.
+// @param result says why the call was not queued.
+// @returns unavailable, saying whether to retry or restart.
+// @throws std::logic_error for kQueued, which is not a refusal.
+FlutterError NotQueuedError(EnqueueResult result) {
+  switch (result) {
+    case EnqueueResult::kFull:
+      return FlutterError("unavailable",
+                          "simple_query: windows has too many calls in progress. Try "
+                          "again after earlier calls finish.");
+    case EnqueueResult::kNotReady:
+      return FlutterError("unavailable",
+                          "simple_query: windows could not start its background worker. "
+                          "Restart the app.");
+    case EnqueueResult::kQueued:
+      break;
+  }
+  throw std::logic_error("simple_query_windows: a queued call has no refusal error");
+}
+
+// Purpose: Describe one host call split between the background worker and
+// the platform thread.
+template <typename Value, typename Reply>
+struct BackgroundCall {
+  // Runs on the background worker. It must not throw, and must hold by copy
+  // everything it reads, because the plugin can be destroyed while it runs.
+  std::function<Value(const StopRequested&)> work;
+  // Runs on the platform thread with work's value and builds the reply.
+  std::function<ErrorOr<Reply>(Value)> finish;
+  // Pigeon's reply callback. Runs on the platform thread.
+  std::function<void(ErrorOr<Reply>)> result;
+};
+
 }  // namespace
 
 // Purpose: Answer one engine's simple_query host calls on Windows.
-// Create and destroy it on that engine's platform thread.
+// Calls that read or write stores or the filesystem run on a background
+// worker and reply on the platform thread, so the platform thread never
+// waits for I/O. Create and destroy it on that engine's platform thread.
 class NativeQueryHostApiImpl : public NativeQueryHostApi {
  public:
   // Purpose: Serve host calls and send observe events through one engine.
@@ -353,135 +238,287 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
   NativeQueryHostApiImpl(flutter::BinaryMessenger* messenger,
                          PluginEffects effects)
       : current_directory_(std::move(effects.current_directory)),
-        flutter_api_(messenger),
+        event_sender_(messenger),
         observers_({.send_event =
-                        [this](const std::string& observer_id,
-                               const EncodableMap& event) {
-                          SendObserveEvent(observer_id, event);
+                        [this](const std::string& observer_id, const EncodableMap& event,
+                               std::function<void()> on_settled) {
+                          event_sender_.Send(observer_id, event, std::move(on_settled));
                         },
-                    .now_epoch_ms = &EpochMsNow}) {}
+                    .now_epoch_ms = &EpochMsNow}),
+        background_calls_(kMaxUnfinishedCalls) {}
 
   // Purpose: Report what each domain supports on this machine.
-  // @returns The capabilities and the platform extensions.
+  // @param result receives the capabilities and the platform extensions.
+  // @returns Nothing.
   // @throws Nothing; an unreadable store is reported in its capability.
-  ErrorOr<EncodableMap> GetCapabilities() override {
-    // Listing stores asks for access without reading every record.
-    const std::vector<DomainCapability> capabilities{
-        StoreCapability("contacts", ListContactStores({})),
-        {.domain = "media", .can_read = true, .can_write = true, .can_observe = true,
-         .can_stream = true, .reason = std::nullopt},
-        {.domain = "files", .can_read = true, .can_write = true, .can_observe = true,
-         .can_stream = true, .reason = std::nullopt},
-        StoreCapability("calendar", ListCalendarStores({})),
-        {.domain = "messages", .reason = "simple_query: messages is not supported on Windows"},
-        {.domain = "calls", .reason = "simple_query: calls is not supported on Windows"},
-        {.domain = "platformSpecific", .can_read = true, .reason = std::nullopt},
-    };
-    EncodableList capability_maps;
-    for (const auto& capability : capabilities) {
-      capability_maps.push_back(EncodableValue(CapabilityMap(capability)));
-    }
-
-    EncodableMap extensions;
-    extensions[EncodableValue("windows.contacts")] = EncodableValue(true);
-    extensions[EncodableValue("windows.calendar")] = EncodableValue(true);
-    extensions[EncodableValue("windows.storage")] = EncodableValue(true);
-
-    EncodableMap result;
-    result[EncodableValue("capabilities")] = EncodableValue(capability_maps);
-    result[EncodableValue("platformExtensions")] = EncodableValue(extensions);
-    return result;
+  void GetCapabilities(std::function<void(ErrorOr<EncodableMap> reply)> result) override {
+    RunInBackground<EncodableMap>(&ReadCapabilities, std::move(result));
   }
 
   // Purpose: Answer one query for files, media, contacts or calendar.
   // @param request names the domain, filters, sort, page and projection.
-  // @returns One page of records with the total count; invalid-query for a
-  // malformed request; permission-denied, with the permission id, when access
-  // is off; unavailable when the store cannot be read.
+  // @param result receives one page of records with the total count;
+  // invalid-query for a malformed request; permission-denied, with the
+  // permission id, when access is off; unavailable when the store cannot be
+  // read.
+  // @returns Nothing.
   // @throws Nothing.
-  ErrorOr<EncodableMap> Query(const EncodableMap& request) override {
+  void Query(const EncodableMap& request,
+             std::function<void(ErrorOr<EncodableMap> reply)> result) override {
     const std::optional<std::string> domain = StringAt(request, "domain");
     if (!domain.has_value()) {
-      return MissingDomainError();
+      return result(MissingDomainError());
     }
     if (!IsReadableDomain(*domain)) {
-      return NotSupportedError("query", *domain);
+      return result(NotSupportedError("query", *domain));
     }
     auto shape = ParseQueryShape(request);
     if (auto* invalid = std::get_if<std::string>(&shape)) {
-      return FlutterError("invalid-query", *invalid);
+      return result(FlutterError("invalid-query", *invalid));
     }
-    RowsOrError rows = ReadDomainRows(
-        *domain, [&]() { return ResolveRootPath(request, current_directory_); });
-    if (auto* error = std::get_if<FlutterError>(&rows)) {
-      return *error;
-    }
-    return ShapeQueryResult(std::get<std::vector<EncodableMap>>(std::move(rows)),
-                            std::get<QueryShape>(shape));
+    ValidatedQuery query{.domain = *domain,
+                         .shape = std::get<QueryShape>(std::move(shape)),
+                         .root = ResolveRoot(request)};
+    RunInBackground<EncodableMap>(
+        [query = std::move(query)](const StopRequested& stop_requested) {
+          return RunQuery(query, stop_requested);
+        },
+        std::move(result));
   }
 
   // Purpose: Insert, update or delete files or media.
   // @param request names the domain, the mutation type and its values.
-  // @returns The affected count, or an error for an invalid request or a
-  // filesystem step that failed.
+  // @param result receives the affected count, or an error for an invalid
+  // request or a filesystem step that failed.
+  // @returns Nothing.
   // @throws Nothing.
-  ErrorOr<EncodableMap> Mutate(const EncodableMap& request) override {
-    const std::optional<std::string> domain = StringAt(request, "domain");
-    if (!domain.has_value()) {
-      return MissingDomainError();
-    }
-    if (!IsFileDomain(*domain)) {
-      return NotSupportedError("mutate", *domain);
-    }
-    const std::function<std::filesystem::path()> resolve_root = [&]() {
-      return ResolveRootPath(request, current_directory_);
-    };
-    return MutateFiles({.request = request, .domain = *domain, .resolve_root = resolve_root});
+  void Mutate(const EncodableMap& request,
+              std::function<void(ErrorOr<EncodableMap> reply)> result) override {
+    RunInBackground<EncodableMap>(
+        [request, root = ResolveRoot(request)](const StopRequested&) {
+          return MutateRequest(request, root);
+        },
+        std::move(result));
   }
 
   // Purpose: Run several mutations in order, stopping at the first failure.
   // @param request holds the operations and a shared platformData.
-  // @returns Each mutation's result, or the first error.
+  // @param result receives each mutation's result, or the first error.
+  // @returns Nothing.
   // @throws Nothing.
-  ErrorOr<EncodableMap> Batch(const EncodableMap& request) override {
+  void Batch(const EncodableMap& request,
+             std::function<void(ErrorOr<EncodableMap> reply)> result) override {
     const EncodableList* operations = ListAt(request, "operations");
     if (operations == nullptr) {
-      return FlutterError("invalid-query",
-                          "simple_query: batch requires operations. Send a list of "
-                          "mutation maps.");
+      return result(FlutterError("invalid-query",
+                                 "simple_query: batch requires operations. Send a list "
+                                 "of mutation maps."));
     }
     const EncodableValue* shared_platform_data = FindValue(request, "platformData");
-
-    EncodableList results;
+    std::vector<BatchOperation> batch;
     for (const auto& operation_value : *operations) {
       const auto* operation = std::get_if<EncodableMap>(&operation_value);
       if (operation == nullptr) {
-        return FlutterError("invalid-query",
-                            "simple_query: each batch operation must be a map.");
+        return result(FlutterError("invalid-query",
+                                   "simple_query: each batch operation must be a map."));
       }
       EncodableMap merged = *operation;
       if (FindValue(*operation, "platformData") == nullptr &&
           shared_platform_data != nullptr) {
         merged[EncodableValue("platformData")] = *shared_platform_data;
       }
-      ErrorOr<EncodableMap> result = Mutate(merged);
-      if (result.has_error()) {
-        return result.error();
-      }
-      results.push_back(EncodableValue(result.value()));
+      ResolvedRoot root = ResolveRoot(merged);
+      batch.push_back({.request = std::move(merged), .root = std::move(root)});
     }
-
-    EncodableMap response;
-    response[EncodableValue("results")] = EncodableValue(results);
-    return response;
+    RunInBackground<EncodableMap>(
+        [batch = std::move(batch)](const StopRequested& stop_requested) {
+          return RunBatch(batch, stop_requested);
+        },
+        std::move(result));
   }
 
-  // Purpose: Start polling one domain and sending its changes to Dart.
+  // Purpose: Start polling one domain and sending its changes to Dart. The
+  // first snapshot is taken before replying, so the observer reports every
+  // change made after the reply.
   // @param request names the domain, the polling interval and the root.
-  // @returns The new observer's id; invalid-query for a malformed request; or
-  // unavailable when the root cannot be resolved or the worker cannot start.
+  // @param result receives the new observer's id; invalid-query for a
+  // malformed request; permission-denied, with the permission id, when
+  // access is off; or unavailable when the records cannot be read or the
+  // worker cannot start.
+  // @returns Nothing.
   // @throws Nothing.
-  ErrorOr<std::string> ObserveStart(const EncodableMap& request) override {
+  void ObserveStart(const EncodableMap& request,
+                    std::function<void(ErrorOr<std::string> reply)> result) override {
+    std::variant<ObserverSpec, FlutterError> spec = ObserverSpecFor(request);
+    if (auto* invalid = std::get_if<FlutterError>(&spec)) {
+      return result(*invalid);
+    }
+    const ObserverSpec& observer_spec = std::get<ObserverSpec>(spec);
+    RunInBackground<BaselineOrError, std::string>(
+        {.work = [observer_spec](const StopRequested& stop_requested) {
+           return TakeBaseline(observer_spec, stop_requested);
+         },
+         .finish = [this, observer_spec](BaselineOrError baseline) {
+           return StartObserver(observer_spec, std::move(baseline));
+         },
+         .result = std::move(result)});
+  }
+
+  // Purpose: Stop one observer. An unknown id does nothing.
+  // @param observer_id is the id ObserveStart returned.
+  // @returns Nothing on success.
+  // @throws Nothing.
+  std::optional<FlutterError> ObserveStop(const std::string& observer_id) override {
+    observers_.Stop(observer_id);
+    return std::nullopt;
+  }
+
+  // Purpose: Describe a file so Dart can read its bytes.
+  // @param request names the file by platformData.path or recordId, in UTF-8.
+  // @param result receives a handle, the file's UTF-8 path, MIME type and
+  // size, or an error.
+  // @returns Nothing.
+  // @throws Nothing.
+  void OpenBinary(const EncodableMap& request,
+                  std::function<void(ErrorOr<EncodableMap> reply)> result) override {
+    const std::optional<std::string> domain = StringAt(request, "domain");
+    if (!domain.has_value()) {
+      return result(MissingDomainError());
+    }
+    if (!IsFileDomain(*domain)) {
+      return result(NotSupportedError("openBinary", *domain));
+    }
+    const std::optional<std::string> path_text = BinaryPathText(request);
+    if (!path_text.has_value()) {
+      return result(FlutterError("invalid-query",
+                                 "simple_query: openBinary requires recordId or "
+                                 "platformData.path. Send the file's path."));
+    }
+    std::filesystem::path path;
+    try {
+      path = PathFromUtf8(*path_text);
+    } catch (const std::system_error& error) {
+      return result(FlutterError("unavailable",
+                                 std::string("simple_query: openBinary could not read the "
+                                             "path. Check that it is valid Unicode - ") +
+                                     error.what()));
+    }
+    RunInBackground<ErrorOr<EncodableMap>, EncodableMap>(
+        {.work = [path](const StopRequested&) { return DescribeBinaryFile(path); },
+         .finish = [this, path](ErrorOr<EncodableMap> described) {
+           return RegisterHandle(path, std::move(described));
+         },
+         .result = std::move(result)});
+  }
+
+  // Purpose: Forget a handle OpenBinary returned.
+  // @param handle_id is the handle to forget.
+  // @returns Nothing on success.
+  // @throws Nothing.
+  std::optional<FlutterError> CloseBinary(const std::string& handle_id) override {
+    open_handles_.erase(handle_id);
+    return std::nullopt;
+  }
+
+  // Purpose: Run one Windows-specific extension method. Store listings run
+  // on the background worker; the rest answer at once.
+  // @param extension_namespace is the extension namespace, such as
+  // windows.storage.
+  // @param method is the method name.
+  // @param args are the method's arguments, or null.
+  // @param result receives the method's result, or an error for an unknown
+  // method, invalid arguments, a denied store or an unreadable store.
+  // @returns Nothing.
+  // @throws Nothing.
+  void CallExtension(
+      const std::string& extension_namespace, const std::string& method,
+      const EncodableMap* args,
+      std::function<void(ErrorOr<std::optional<EncodableMap>> reply)> result) override {
+    const std::string qualified = extension_namespace + "." + method;
+    const bool lists_stores = qualified == "windows.contacts.listStores" ||
+                              qualified == "windows.calendar.listCalendars";
+    if (lists_stores) {
+      if (auto rejected = RejectArguments(args, qualified)) {
+        return result(*rejected);
+      }
+      const bool contacts = qualified == "windows.contacts.listStores";
+      return RunInBackground<std::optional<EncodableMap>>(
+          [contacts](const StopRequested& stop_requested) {
+            return contacts ? StoresReply("stores", ListContactStores(stop_requested))
+                            : StoresReply("calendars", ListCalendarStores(stop_requested));
+          },
+          std::move(result));
+    }
+    if (qualified == "windows.storage.resolveKnownFolders") {
+      return result(ResolveKnownFolders(args, current_directory_));
+    }
+    if (qualified == "windows.storage.listLibraries") {
+      if (auto rejected = RejectArguments(args, qualified)) {
+        return result(*rejected);
+      }
+      return result(ListLibraries());
+    }
+    result(FlutterError("not-supported", "simple_query: " + qualified +
+                                             " is not supported on Windows. Check "
+                                             "platformExtensions from getCapabilities."));
+  }
+
+ private:
+  // Purpose: Run a call's work on the background worker, then build and send
+  // its reply on the platform thread. A call the worker cannot take is
+  // answered at once.
+  // @param call is the work, the platform-thread step and the reply.
+  // @returns Nothing.
+  // @throws Nothing.
+  template <typename Value, typename Reply>
+  void RunInBackground(BackgroundCall<Value, Reply> call) {
+    std::function<void(ErrorOr<Reply>)> refused = call.result;
+    BackgroundJob job = [work = std::move(call.work), finish = std::move(call.finish),
+                         result = std::move(call.result)](
+                            const StopRequested& stop_requested) -> std::function<void()> {
+      Value value = work(stop_requested);
+      return [finish, result, value = std::move(value)]() mutable {
+        result(finish(std::move(value)));
+      };
+    };
+    const EnqueueResult queued = background_calls_.Enqueue(std::move(job));
+    if (queued != EnqueueResult::kQueued) {
+      refused(NotQueuedError(queued));
+    }
+  }
+
+  // Purpose: Run a call's work on the background worker and send its reply
+  // unchanged on the platform thread.
+  // @param work runs on the worker; see BackgroundCall::work.
+  // @param result is Pigeon's reply callback.
+  // @returns Nothing.
+  // @throws Nothing.
+  template <typename Reply>
+  void RunInBackground(std::function<ErrorOr<Reply>(const StopRequested&)> work,
+                       std::function<void(ErrorOr<Reply>)> result) {
+    RunInBackground<ErrorOr<Reply>, Reply>(
+        {.work = std::move(work),
+         .finish = [](ErrorOr<Reply> reply) { return reply; },
+         .result = std::move(result)});
+  }
+
+  // Purpose: Resolve a files or media request's root on the platform thread.
+  // @param request may name the root in platformData.rootPath.
+  // @returns The root, or why it could not be resolved.
+  // @throws Nothing.
+  ResolvedRoot ResolveRoot(const EncodableMap& request) {
+    try {
+      return {.path = ResolveRootPath(request, current_directory_), .error = std::nullopt};
+    } catch (const std::system_error& error) {
+      return {.path = std::nullopt, .error = error};
+    }
+  }
+
+  // Purpose: Validate an observe request and build its observer spec.
+  // @param request names the domain, the polling interval and the root.
+  // @returns The spec, or the error Dart receives.
+  // @throws Nothing.
+  std::variant<ObserverSpec, FlutterError> ObserverSpecFor(const EncodableMap& request) {
     const std::optional<std::string> domain = StringAt(request, "domain");
     if (!domain.has_value()) {
       return MissingDomainError();
@@ -498,22 +535,21 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
     if (auto* invalid = std::get_if<FlutterError>(&interval)) {
       return *invalid;
     }
-
     // Only files and media read a root. It is resolved once, here, so the
     // worker keeps only what its snapshots read.
     std::filesystem::path root;
     if (IsFileDomain(*domain)) {
-      try {
-        root = ResolveRootPath(request, current_directory_);
-      } catch (const std::system_error& error) {
+      ResolvedRoot resolved = ResolveRoot(request);
+      if (resolved.error.has_value()) {
         return FlutterError("unavailable",
                             std::string("simple_query: windows observe could not "
                                         "resolve its root directory. Check "
                                         "platformData.rootPath - ") +
-                                error.what());
+                                resolved.error->what());
       }
+      root = std::move(*resolved.path);
     }
-    ObserverSpec spec{
+    return ObserverSpec{
         .domain = *domain,
         .polling_interval = std::get<std::chrono::milliseconds>(interval),
         .take_snapshot =
@@ -522,8 +558,20 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
                   {.root = root, .domain = domain, .stop_requested = stop_requested});
             },
     };
+  }
+
+  // Purpose: Start an observer from its first snapshot. Runs on the
+  // platform thread.
+  // @param spec is the observer's spec.
+  // @param baseline is the first snapshot, or the error it failed with.
+  // @returns The observer's id, or the error Dart receives.
+  // @throws Nothing.
+  ErrorOr<std::string> StartObserver(const ObserverSpec& spec, BaselineOrError baseline) {
+    if (auto* error = std::get_if<FlutterError>(&baseline)) {
+      return *error;
+    }
     try {
-      return observers_.Start(std::move(spec));
+      return observers_.Start(spec, std::get<Snapshot>(std::move(baseline)));
     } catch (const std::system_error& error) {
       return FlutterError("unavailable",
                           std::string("simple_query: windows observe could not "
@@ -532,162 +580,35 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
     }
   }
 
-  // Purpose: Stop one observer. An unknown id does nothing.
-  // @param observer_id is the id ObserveStart returned.
-  // @returns Nothing on success.
-  // @throws Nothing.
-  std::optional<FlutterError> ObserveStop(const std::string& observer_id) override {
-    observers_.Stop(observer_id);
-    return std::nullopt;
-  }
-
-  // Purpose: Describe a file so Dart can read its bytes.
-  // @param request names the file by platformData.path or recordId, in UTF-8.
-  // @returns A handle, the file's UTF-8 path, MIME type and size, or an error.
-  // @throws Nothing.
-  ErrorOr<EncodableMap> OpenBinary(const EncodableMap& request) override {
-    const std::optional<std::string> domain = StringAt(request, "domain");
-    if (!domain.has_value()) {
-      return MissingDomainError();
-    }
-    if (!IsFileDomain(*domain)) {
-      return NotSupportedError("openBinary", *domain);
-    }
-    const std::optional<std::string> path_text = BinaryPathText(request);
-    if (!path_text.has_value()) {
-      return FlutterError("invalid-query",
-                          "simple_query: openBinary requires recordId or "
-                          "platformData.path. Send the file's path.");
-    }
-    try {
-      return DescribeBinary(PathFromUtf8(*path_text));
-    } catch (const std::system_error& error) {
-      return FlutterError("unavailable",
-                          std::string("simple_query: openBinary could not read the "
-                                      "path. Check that it is valid Unicode - ") +
-                              error.what());
-    }
-  }
-
-  // Purpose: Forget a handle OpenBinary returned.
-  // @param handle_id is the handle to forget.
-  // @returns Nothing on success.
-  // @throws Nothing.
-  std::optional<FlutterError> CloseBinary(const std::string& handle_id) override {
-    open_handles_.erase(handle_id);
-    return std::nullopt;
-  }
-
-  // Purpose: Run one Windows-specific extension method.
-  // @param extension_namespace is the extension namespace, such as
-  // windows.storage.
-  // @param method is the method name.
-  // @param args are the method's arguments, or null.
-  // @returns The method's result, or an error for an unknown method, invalid
-  // arguments, a denied store or an unreadable store.
-  // @throws Nothing.
-  ErrorOr<std::optional<EncodableMap>> CallExtension(
-      const std::string& extension_namespace, const std::string& method,
-      const EncodableMap* args) override {
-    const std::string qualified = extension_namespace + "." + method;
-    if (qualified == "windows.contacts.listStores") {
-      if (auto rejected = RejectArguments(args, qualified)) {
-        return *rejected;
-      }
-      return StoresReply("stores", ListContactStores({}));
-    }
-    if (qualified == "windows.calendar.listCalendars") {
-      if (auto rejected = RejectArguments(args, qualified)) {
-        return *rejected;
-      }
-      return StoresReply("calendars", ListCalendarStores({}));
-    }
-    if (qualified == "windows.storage.resolveKnownFolders") {
-      return ResolveKnownFolders(args, current_directory_);
-    }
-    if (qualified == "windows.storage.listLibraries") {
-      if (auto rejected = RejectArguments(args, qualified)) {
-        return *rejected;
-      }
-      return ListLibraries();
-    }
-    return FlutterError("not-supported", "simple_query: " + qualified +
-                                             " is not supported on Windows. Check "
-                                             "platformExtensions from getCapabilities.");
-  }
-
- private:
-  // Purpose: Register a handle for an existing file and describe it.
+  // Purpose: Give a described file a handle Dart can close. Runs on the
+  // platform thread.
   // @param path is the file's path.
-  // @returns The handle, UTF-8 path, MIME type and size, or unavailable when
-  // the file is missing or its metadata cannot be read.
-  // @throws std::system_error when the path is not valid Unicode.
-  ErrorOr<EncodableMap> DescribeBinary(const std::filesystem::path& path) {
-    std::error_code error;
-    const auto status = std::filesystem::status(path, error);
-    if (error || !std::filesystem::exists(status)) {
-      return FlutterError("unavailable",
-                          "simple_query: openBinary found no file at " + PathToUtf8(path) +
-                              ". Query again for its current path.");
+  // @param described is the file's description, or the error it failed with.
+  // @returns The description with its handle, or the error.
+  // @throws Nothing.
+  ErrorOr<EncodableMap> RegisterHandle(const std::filesystem::path& path,
+                                       ErrorOr<EncodableMap> described) {
+    if (described.has_error()) {
+      return described;
     }
-    EncodableMap result;
-    if (std::filesystem::is_regular_file(status)) {
-      const auto size = std::filesystem::file_size(path, error);
-      if (error) {
-        return FlutterError("unavailable", "simple_query: openBinary could not read the "
-                                           "size of " + PathToUtf8(path) + " - " +
-                                               error.message());
-      }
-      result[EncodableValue("size")] = EncodableValue(static_cast<int64_t>(size));
-    }
+    EncodableMap result = described.value();
     const std::string handle = "win_handle_" + std::to_string(++handle_counter_);
     open_handles_[handle] = path;
     result[EncodableValue("handleId")] = EncodableValue(handle);
-    result[EncodableValue("localPath")] = EncodableValue(PathToUtf8(path));
-    result[EncodableValue("mimeType")] = EncodableValue(MimeFromPath(path));
-    EncodableMap metadata;
-    metadata[EncodableValue("source")] = EncodableValue("windows-host");
-    result[EncodableValue("metadata")] = EncodableValue(metadata);
     return result;
-  }
-
-  // Purpose: Send one observe event to Dart. Runs on the platform thread.
-  // A run of rejected events is logged once, because a Dart side that stopped
-  // listening rejects every event after it. An accepted event ends the run,
-  // so the next rejection is logged again.
-  // @param observer_id is the observer the event belongs to.
-  // @param event is the change event map.
-  // @returns Nothing.
-  // @throws Nothing.
-  void SendObserveEvent(const std::string& observer_id, const EncodableMap& event) {
-    flutter_api_.OnObserveEvent(
-        observer_id, event,
-        [reported = rejected_event_reported_]() { *reported = false; },
-        [observer_id, reported = rejected_event_reported_](const FlutterError& error) {
-          if (*reported) {
-            return;
-          }
-          *reported = true;
-          WriteLog({LogLevel::kWarning,
-                    "observe_event_rejected",
-                    {{"observer_id", observer_id},
-                     {"code", error.code()},
-                     {"message", error.message()},
-                     {"next_log", "after an event is accepted"}}});
-        });
   }
 
   // Read only on the platform thread.
   const std::function<std::filesystem::path()> current_directory_;
-  NativeQueryFlutterApi flutter_api_;
-  // Shared with pending replies, which can arrive after this object is gone.
-  // Read and written only on the platform thread.
-  std::shared_ptr<bool> rejected_event_reported_ = std::make_shared<bool>(false);
+  ObserveEventSender event_sender_;
   int64_t handle_counter_ = 0;
   std::map<std::string, std::filesystem::path> open_handles_;
-  // Declared after flutter_api_ so it is destroyed first: its destructor
-  // stops every observer before the API it sends through goes away.
+  // Declared after event_sender_ so it is destroyed first: no worker can
+  // wake it once it is gone, and no event is sent after the sender goes.
   PollingObservers observers_;
+  // Declared last so it is destroyed first: its pending replies use this
+  // object, and are dropped before any member they touch goes away.
+  BackgroundCalls background_calls_;
 };
 
 // Each engine's registrar owns its own plugin and host API, so every engine's
