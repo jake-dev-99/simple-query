@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <set>
@@ -18,6 +19,7 @@
 #include <flutter/plugin_registrar_windows.h>
 #include <winrt/base.h>
 
+#include "domain_snapshots.h"
 #include "file_records.h"
 #include "native_query.g.h"
 #include "polling_observers.h"
@@ -32,6 +34,11 @@ using flutter::EncodableList;
 using flutter::EncodableMap;
 using flutter::EncodableValue;
 
+// Purpose: Look up one key of a request map.
+// @param map is the map to search.
+// @param key is the key's text.
+// @returns The value, or null when the key is absent.
+// @throws Nothing.
 const EncodableValue* FindValue(const EncodableMap& map, const std::string& key) {
   auto it = map.find(EncodableValue(key));
   if (it == map.end()) {
@@ -40,6 +47,10 @@ const EncodableValue* FindValue(const EncodableMap& map, const std::string& key)
   return &it->second;
 }
 
+// Purpose: Read a scalar request value as text.
+// @param value is the value, or null.
+// @returns The value as text, or nothing when it is absent or not a scalar.
+// @throws Nothing.
 std::optional<std::string> AsString(const EncodableValue* value) {
   if (value == nullptr) {
     return std::nullopt;
@@ -62,6 +73,12 @@ std::optional<std::string> AsString(const EncodableValue* value) {
   return std::nullopt;
 }
 
+// Purpose: Read one key of a map as text, with a default for a missing key.
+// @param map is the map to search.
+// @param key is the key's text.
+// @param fallback is returned when the key is absent or not a scalar.
+// @returns The value as text, or fallback.
+// @throws Nothing.
 std::string StringOr(const EncodableMap& map, const std::string& key,
                      const std::string& fallback) {
   const auto* value = FindValue(map, key);
@@ -69,6 +86,11 @@ std::string StringOr(const EncodableMap& map, const std::string& key,
   return parsed.value_or(fallback);
 }
 
+// Purpose: Read a numeric request value as an integer.
+// @param value is the value, or null.
+// @returns The value, truncated when it is a double, or nothing when it is
+// absent or not a number.
+// @throws Nothing.
 std::optional<int64_t> AsInt(const EncodableValue* value) {
   if (value == nullptr) {
     return std::nullopt;
@@ -85,6 +107,12 @@ std::optional<int64_t> AsInt(const EncodableValue* value) {
   return std::nullopt;
 }
 
+// Purpose: Read one key of a map as a bool, with a default for a missing key.
+// @param map is the map to search.
+// @param key is the key's text.
+// @param fallback is returned when the key is absent or not a bool.
+// @returns The value, or fallback.
+// @throws Nothing.
 bool BoolOr(const EncodableMap& map, const std::string& key, bool fallback) {
   const auto* value = FindValue(map, key);
   if (value == nullptr) {
@@ -96,6 +124,10 @@ bool BoolOr(const EncodableMap& map, const std::string& key, bool fallback) {
   return fallback;
 }
 
+// Purpose: View a request value as a map.
+// @param value is the value, or null.
+// @returns The map, or null when the value is absent or not a map.
+// @throws Nothing.
 const EncodableMap* AsMap(const EncodableValue* value) {
   if (value == nullptr) {
     return nullptr;
@@ -103,6 +135,10 @@ const EncodableMap* AsMap(const EncodableValue* value) {
   return std::get_if<EncodableMap>(value);
 }
 
+// Purpose: View a request value as a list.
+// @param value is the value, or null.
+// @returns The list, or null when the value is absent or not a list.
+// @throws Nothing.
 const EncodableList* AsList(const EncodableValue* value) {
   if (value == nullptr) {
     return nullptr;
@@ -110,12 +146,20 @@ const EncodableList* AsList(const EncodableValue* value) {
   return std::get_if<EncodableList>(value);
 }
 
+// Purpose: Read the wall clock for event timestamps.
+// @returns Milliseconds since the Unix epoch.
+// @throws Nothing.
 int64_t EpochMsNow() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(
              std::chrono::system_clock::now().time_since_epoch())
       .count();
 }
 
+// Purpose: Read one field of a row as text for filtering and sorting.
+// @param row is the record row.
+// @param key is the field name.
+// @returns The field as text, or empty when it is absent or not a scalar.
+// @throws Nothing.
 std::string ValueAsString(const EncodableMap& row, const std::string& key) {
   auto it = row.find(EncodableValue(key));
   if (it == row.end()) {
@@ -124,6 +168,15 @@ std::string ValueAsString(const EncodableMap& row, const std::string& key) {
   return AsString(&it->second).value_or("");
 }
 
+// Purpose: Build the capability entry Dart reads for one domain.
+// @param domain is the domain name.
+// @param can_read states whether the domain can be queried.
+// @param can_write states whether the domain can be mutated.
+// @param can_observe states whether the domain can be observed.
+// @param can_stream states whether the domain's binaries can be opened.
+// @param reason explains a missing capability, if any.
+// @returns The capability map.
+// @throws Nothing.
 EncodableMap Capability(const std::string& domain, bool can_read, bool can_write,
                         bool can_observe, bool can_stream,
                         const std::optional<std::string>& reason = std::nullopt) {
@@ -139,7 +192,16 @@ EncodableMap Capability(const std::string& domain, bool can_read, bool can_write
   return map;
 }
 
-std::filesystem::path ResolveRootPath(const EncodableMap& request) {
+// Purpose: Find the directory a files or media request reads.
+// @param request is the request; platformData.rootPath names the directory.
+// @param current_directory reads the working directory, used when the
+// request names none.
+// @returns The named directory, or the working directory.
+// @throws std::system_error when the named path cannot be converted to the
+// system code page, or the working directory cannot be read.
+std::filesystem::path ResolveRootPath(
+    const EncodableMap& request,
+    const std::function<std::filesystem::path()>& current_directory) {
   const EncodableMap* platform_data = AsMap(FindValue(request, "platformData"));
   if (platform_data != nullptr) {
     const auto root = AsString(FindValue(*platform_data, "rootPath"));
@@ -147,9 +209,15 @@ std::filesystem::path ResolveRootPath(const EncodableMap& request) {
       return std::filesystem::path(*root);
     }
   }
-  return std::filesystem::current_path();
+  return current_directory();
 }
 
+// Purpose: Keep the rows that pass every filter of a query.
+// @param rows are the rows to filter.
+// @param filters are the query's filter maps, or null for none. A filter
+// without a field or operator, or with an unknown operator, is ignored.
+// @returns The rows that pass, in their original order.
+// @throws Nothing.
 std::vector<EncodableMap> ApplyFilters(std::vector<EncodableMap> rows,
                                        const EncodableList* filters) {
   if (filters == nullptr || filters->empty()) {
@@ -210,6 +278,11 @@ std::vector<EncodableMap> ApplyFilters(std::vector<EncodableMap> rows,
   return filtered;
 }
 
+// Purpose: Sort rows by the query's first sort key, comparing values as text.
+// @param rows are the rows to sort in place.
+// @param sort is the query's sort list, or null for none.
+// @returns Nothing.
+// @throws Nothing.
 void ApplySort(std::vector<EncodableMap>* rows, const EncodableList* sort) {
   if (sort == nullptr || sort->empty()) {
     return;
@@ -232,6 +305,11 @@ void ApplySort(std::vector<EncodableMap>* rows, const EncodableList* sort) {
   });
 }
 
+// Purpose: Keep only the projected fields of each row.
+// @param rows are the rows to project.
+// @param projection lists the field names, or null for every field.
+// @returns The projected rows; a missing field is present as null.
+// @throws Nothing.
 EncodableList ApplyProjection(const std::vector<EncodableMap>& rows,
                               const EncodableList* projection) {
   EncodableList projected_rows;
@@ -256,36 +334,6 @@ EncodableList ApplyProjection(const std::vector<EncodableMap>& rows,
   return projected_rows;
 }
 
-// Purpose: Name what one observer snapshot covers.
-struct SnapshotRequest {
-  // The directory a files or media observer watches.
-  const std::filesystem::path& root;
-  const std::string& domain;
-  const StopRequested& stop_requested;
-};
-
-// Purpose: Take one observer snapshot of a domain's records.
-// @param source names the domain, its root directory and the stop check.
-// @returns Each record's id mapped to a fingerprint of its row.
-// @throws std::runtime_error when a contacts or calendar store cannot be
-// read, std::system_error when a file path cannot be converted to the system
-// code page, and std::invalid_argument for a domain observe does not support.
-Snapshot BuildSnapshotForDomain(const SnapshotRequest& source) {
-  const std::string& domain = source.domain;
-  if (domain == "files" || domain == "media") {
-    return FingerprintRecords(ListRecords({.root = source.root,
-                                           .media_only = domain == "media",
-                                           .stop_requested = source.stop_requested}));
-  }
-  if (domain == "contacts" || domain == "calendar") {
-    return FingerprintRecords(RowsOrThrow(domain == "contacts"
-                                              ? ListContactRecords(source.stop_requested)
-                                              : ListCalendarRecords(source.stop_requested)));
-  }
-  throw std::invalid_argument("simple_query: windows observe has no snapshot for domain " +
-                              domain);
-}
-
 }  // namespace
 
 // Purpose: Answer one engine's simple_query host calls on Windows.
@@ -294,10 +342,13 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
  public:
   // Purpose: Serve host calls and send observe events through one engine.
   // @param messenger is the engine's messenger; it must outlive this object.
+  // @param effects supplies the environment reads.
   // @returns Nothing.
   // @throws Nothing.
-  explicit NativeQueryHostApiImpl(flutter::BinaryMessenger* messenger)
-      : flutter_api_(messenger),
+  NativeQueryHostApiImpl(flutter::BinaryMessenger* messenger,
+                         PluginEffects effects)
+      : current_directory_(std::move(effects.current_directory)),
+        flutter_api_(messenger),
         observers_({.send_event =
                         [this](const std::string& observer_id,
                                const EncodableMap& event) {
@@ -305,6 +356,9 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
                         },
                     .now_epoch_ms = &EpochMsNow}) {}
 
+  // Purpose: Report what each domain supports on this machine.
+  // @returns The capabilities and the platform extensions.
+  // @throws Nothing; an unreadable store is reported in its capability.
   ErrorOr<EncodableMap> GetCapabilities() override {
     const auto contacts_probe = ListContactRecords({});
     const auto calendar_probe = ListCalendarRecords({});
@@ -341,6 +395,12 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
     return result;
   }
 
+  // Purpose: Answer one query for files, media, contacts or calendar.
+  // @param request names the domain, filters, sort, page and projection.
+  // @returns One page of records with the total count, or an error for an
+  // unsupported domain or an unreadable store.
+  // @throws std::system_error when a file path cannot be converted to the
+  // system code page.
   ErrorOr<EncodableMap> Query(const EncodableMap& request) override {
     const std::string domain = StringOr(request, "domain", "platformSpecific");
     if (domain != "files" && domain != "media" && domain != "contacts" &&
@@ -352,7 +412,7 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
 
     std::vector<EncodableMap> rows;
     if (domain == "files" || domain == "media") {
-      rows = ListRecords({.root = ResolveRootPath(request),
+      rows = ListRecords({.root = ResolveRootPath(request, current_directory_),
                           .media_only = domain == "media"});
     } else if (domain == "contacts") {
       auto contact_rows = ListContactRecords({});
@@ -397,6 +457,11 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
     return result;
   }
 
+  // Purpose: Insert, update or delete files or media.
+  // @param request names the domain, the mutation type and its values.
+  // @returns The affected count, or an error for an invalid request.
+  // @throws std::system_error when a file path cannot be converted to the
+  // system code page.
   ErrorOr<EncodableMap> Mutate(const EncodableMap& request) override {
     const std::string domain = StringOr(request, "domain", "platformSpecific");
     if (domain != "files" && domain != "media") {
@@ -578,6 +643,10 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
     return FlutterError("invalid-query", "simple_query: unknown mutation type " + type);
   }
 
+  // Purpose: Run several mutations in order, stopping at the first failure.
+  // @param request holds the operations and a shared platformData.
+  // @returns Each mutation's result, or the first error.
+  // @throws What Mutate throws.
   ErrorOr<EncodableMap> Batch(const EncodableMap& request) override {
     const auto* operations = AsList(FindValue(request, "operations"));
     if (operations == nullptr) {
@@ -608,6 +677,11 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
     return response;
   }
 
+  // Purpose: Start polling one domain and sending its changes to Dart.
+  // @param request names the domain, the polling interval and the root.
+  // @returns The new observer's id, or an unavailable error when the root
+  // cannot be resolved or the worker cannot start.
+  // @throws Nothing.
   ErrorOr<std::string> ObserveStart(const EncodableMap& request) override {
     const std::string domain = StringOr(request, "domain", "platformSpecific");
     if (domain != "files" && domain != "media" && domain != "contacts" &&
@@ -631,8 +705,10 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
     std::filesystem::path root;
     if (domain == "files" || domain == "media") {
       try {
-        root = ResolveRootPath(request);
-      } catch (const std::filesystem::filesystem_error& error) {
+        root = ResolveRootPath(request, current_directory_);
+      } catch (const std::system_error& error) {
+        // Covers an unreadable working directory and a root the system code
+        // page cannot represent.
         return FlutterError("unavailable",
                             std::string("simple_query: windows observe could not "
                                         "resolve its root directory: ") +
@@ -659,11 +735,19 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
     }
   }
 
+  // Purpose: Stop one observer. An unknown id does nothing.
+  // @param observer_id is the id ObserveStart returned.
+  // @returns Nothing on success.
+  // @throws Nothing.
   std::optional<FlutterError> ObserveStop(const std::string& observer_id) override {
     observers_.Stop(observer_id);
     return std::nullopt;
   }
 
+  // Purpose: Describe a file so Dart can read its bytes.
+  // @param request names the file by platformData.path or recordId.
+  // @returns A handle, the file's path, MIME type and size, or an error.
+  // @throws Nothing.
   ErrorOr<EncodableMap> OpenBinary(const EncodableMap& request) override {
     const std::string domain = StringOr(request, "domain", "platformSpecific");
     if (domain != "files" && domain != "media") {
@@ -707,11 +791,23 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
     return result;
   }
 
+  // Purpose: Forget a handle OpenBinary returned.
+  // @param handle_id is the handle to forget.
+  // @returns Nothing on success.
+  // @throws Nothing.
   std::optional<FlutterError> CloseBinary(const std::string& handle_id) override {
     open_handles_.erase(handle_id);
     return std::nullopt;
   }
 
+  // Purpose: Run one Windows-specific extension method.
+  // @param namespaze is the extension namespace, such as windows.storage.
+  // @param method is the method name.
+  // @param args are the method's arguments, or null.
+  // @returns The method's result, or an error for an unknown method, invalid
+  // arguments or an unreadable store.
+  // @throws std::system_error when the working directory or temp directory
+  // cannot be read.
   ErrorOr<std::optional<EncodableMap>> CallExtension(
       const std::string& namespaze, const std::string& method,
       const EncodableMap* args) override {
@@ -779,7 +875,7 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
       EncodableList folders;
       EncodableMap cwd;
       cwd[EncodableValue("id")] = EncodableValue("current");
-      cwd[EncodableValue("path")] = EncodableValue(std::filesystem::current_path().string());
+      cwd[EncodableValue("path")] = EncodableValue(current_directory_().string());
       folders.push_back(EncodableValue(cwd));
 
       if (include_temp) {
@@ -844,6 +940,8 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
         });
   }
 
+  // Read only on the platform thread.
+  const std::function<std::filesystem::path()> current_directory_;
   NativeQueryFlutterApi flutter_api_;
   // Shared with pending replies, which can arrive after this object is gone.
   // Read and written only on the platform thread.
@@ -857,21 +955,34 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
 
 // Each engine's registrar owns its own plugin and host API, so every engine's
 // events go to its own messenger.
+// Purpose: Create this engine's plugin and hand it to the registrar.
+// @param registrar is the engine's plugin registrar.
+// @returns Nothing.
+// @throws Nothing.
 void SimpleQueryWindowsPlugin::RegisterWithRegistrar(
     flutter::PluginRegistrarWindows* registrar) {
   registrar->AddPlugin(
       std::make_unique<SimpleQueryWindowsPlugin>(registrar->messenger()));
 }
 
+// Purpose: Start answering host API calls on one engine's messenger.
+// @param messenger is the engine's messenger; it must outlive the plugin.
+// @param effects supplies the environment reads.
+// @returns Nothing.
+// @throws Nothing.
 SimpleQueryWindowsPlugin::SimpleQueryWindowsPlugin(
-    flutter::BinaryMessenger* messenger)
+    flutter::BinaryMessenger* messenger, PluginEffects effects)
     : messenger_(messenger),
-      host_api_(std::make_unique<NativeQueryHostApiImpl>(messenger)) {
+      host_api_(std::make_unique<NativeQueryHostApiImpl>(messenger,
+                                                         std::move(effects))) {
   NativeQueryHostApi::SetUp(messenger_, host_api_.get());
 }
 
 // The registrar destroys its plugins while the messenger is still alive, so
 // the handlers are removed and every observer stops before the engine goes.
+// Purpose: Remove this engine's handlers, then stop every observer.
+// @returns Nothing.
+// @throws Nothing.
 SimpleQueryWindowsPlugin::~SimpleQueryWindowsPlugin() {
   NativeQueryHostApi::SetUp(messenger_, nullptr);
 }

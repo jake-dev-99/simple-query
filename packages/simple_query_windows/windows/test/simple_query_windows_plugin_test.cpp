@@ -16,6 +16,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -54,6 +55,19 @@ enum class EventReply {
   kReject,
 };
 
+// Purpose: Decide whether the fake Dart side answers a sent message.
+// @param channel is the channel the message was sent on.
+// @param reply is the sender's reply callback; empty when none is wanted.
+// @param event_reply is how observe events are being answered.
+// @returns true for an observe event that wants a reply while answers are on.
+// @throws Nothing.
+bool AnswersObserveEvent(const std::string& channel,
+                         const flutter::BinaryReply& reply,
+                         EventReply event_reply) {
+  return channel == kObserveEventChannel && reply &&
+         event_reply != EventReply::kNone;
+}
+
 // Purpose: Hold one observe event sent through a fake messenger.
 struct SentObserveEvent {
   std::string observer_id;
@@ -76,14 +90,13 @@ class FakeMessenger : public flutter::BinaryMessenger {
   // @throws Nothing beyond what reply throws.
   void Send(const std::string& channel, const uint8_t* message,
             size_t message_size, flutter::BinaryReply reply) const override {
-    EventReply event_reply = EventReply::kNone;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       sent_.push_back({channel, std::vector<uint8_t>(message, message + message_size),
                        std::this_thread::get_id()});
-      event_reply = event_reply_;
     }
-    if (channel != kObserveEventChannel || !reply || event_reply == EventReply::kNone) {
+    const EventReply event_reply = GetEventReply();
+    if (!AnswersObserveEvent(channel, reply, event_reply)) {
       return;
     }
     const EncodableList answer =
@@ -117,6 +130,14 @@ class FakeMessenger : public flutter::BinaryMessenger {
   void SetEventReply(EventReply event_reply) {
     std::lock_guard<std::mutex> lock(mutex_);
     event_reply_ = event_reply;
+  }
+
+  // Purpose: Read how observe events are being answered.
+  // @returns The answer SetEventReply chose; kNone until it is called.
+  // @throws Nothing.
+  EventReply GetEventReply() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return event_reply_;
   }
 
   // Purpose: Report whether a channel has a handler.
@@ -181,6 +202,7 @@ class FakeMessenger : public flutter::BinaryMessenger {
   // Send is const in the messenger interface, so its record is mutable.
   mutable std::mutex mutex_;
   mutable std::vector<SentMessage> sent_;
+  // Guarded by mutex_.
   EventReply event_reply_ = EventReply::kNone;
   std::map<std::string, flutter::BinaryMessageHandler> handlers_;
 };
@@ -341,6 +363,38 @@ TEST(SimpleQueryWindowsPluginTest, LogsEachRunOfRejectedEventsOnce) {
   }
 
   EXPECT_EQ(RejectedEventLines(log), 2u);
+}
+
+// Purpose: A working directory that cannot be read fails observeStart with
+// unavailable and starts no observer.
+TEST(SimpleQueryWindowsPluginTest, ReportsAnUnreadableRootWithoutStartingAnObserver) {
+  FakeMessenger messenger;
+  TempDirectory directory;
+  SimpleQueryWindowsPlugin plugin(
+      &messenger,
+      {.current_directory = []() -> std::filesystem::path {
+        throw std::system_error(
+            std::make_error_code(std::errc::no_such_file_or_directory),
+            "working directory unavailable");
+      }});
+  // No rootPath, so the root is the working directory.
+  const EncodableMap observe_request{
+      {EncodableValue("domain"), EncodableValue("files")},
+      {EncodableValue("pollingIntervalMs"), EncodableValue(kPluginLongPollMs)}};
+
+  const EncodableList reply = messenger.CallHost(
+      "observeStart", EncodableList{EncodableValue(observe_request)});
+
+  ASSERT_EQ(reply.size(), 3u);
+  EXPECT_EQ(std::get<std::string>(reply.at(0)), "unavailable");
+  // Each Start call takes the next id, so getting the first id shows the
+  // failed call never reached Start.
+  const std::string observer_id =
+      StartFileObserver({.messenger = messenger,
+                         .root = directory.path(),
+                         .polling_interval_ms = kPluginLongPollMs});
+  EXPECT_EQ(observer_id, "windows_observer_1");
+  messenger.CallHost("observeStop", EncodableList{EncodableValue(observer_id)});
 }
 
 }  // namespace

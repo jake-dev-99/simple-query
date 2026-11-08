@@ -133,6 +133,7 @@ class RowHasher {
 
 }  // namespace
 
+// Purpose: Hold one observer's worker thread and how it is told to stop.
 struct PollingObservers::WorkerLifecycle {
   // Read without the observer's mutex by snapshot scans; written under it.
   std::atomic<bool> stopping{false};
@@ -141,6 +142,7 @@ struct PollingObservers::WorkerLifecycle {
   std::thread worker;
 };
 
+// Purpose: Hold what one observer last delivered and what waits to go.
 struct PollingObservers::DeliveryState {
   // The snapshot the last delivered event described.
   Snapshot delivered;
@@ -148,6 +150,7 @@ struct PollingObservers::DeliveryState {
   std::optional<PendingChange> pending;
 };
 
+// Purpose: Hold one observer's settings, worker and change state.
 struct PollingObservers::Observer {
   // Purpose: Hold the settings for one observer before its worker starts.
   // @param observer_spec describes what to poll and how often.
@@ -167,10 +170,18 @@ struct PollingObservers::Observer {
   DeliveryState delivery;
 };
 
+// Purpose: Prepare to deliver events through effects.send_event.
+// @param effects supplies event delivery and the clock.
+// @returns Nothing; check IsReady() before starting observers.
+// @throws Nothing; a failed setup leaves IsReady() false.
 PollingObservers::PollingObservers(PollingObserverEffects effects)
     : effects_(std::move(effects)),
       dispatcher_([this]() { DeliverPendingChanges(); }) {}
 
+// Purpose: Stop every observer, then release delivery resources.
+// Changes not yet delivered are dropped.
+// @returns Nothing.
+// @throws Nothing.
 PollingObservers::~PollingObservers() {
   std::vector<std::unique_ptr<Observer>> stopping;
   {
@@ -190,8 +201,15 @@ PollingObservers::~PollingObservers() {
   }
 }
 
+// Purpose: Report whether events can reach the platform thread.
+// @returns true when observers can be started.
+// @throws Nothing.
 bool PollingObservers::IsReady() const { return dispatcher_.IsReady(); }
 
+// Purpose: Start polling one domain on a new worker thread.
+// @param spec describes what to poll and how often.
+// @returns The new observer's id, used in its events and to stop it.
+// @throws std::system_error when the worker thread cannot be started.
 std::string PollingObservers::Start(ObserverSpec spec) {
   auto observer = std::make_unique<Observer>(std::move(spec));
   Observer* worker_observer = observer.get();
@@ -215,6 +233,11 @@ std::string PollingObservers::Start(ObserverSpec spec) {
   return observer_id;
 }
 
+// Purpose: Stop one observer and wait for its worker to finish. Its
+// undelivered change is dropped. An unknown id does nothing.
+// @param observer_id is the id Start returned.
+// @returns Nothing.
+// @throws Nothing.
 void PollingObservers::Stop(const std::string& observer_id) {
   std::unique_ptr<Observer> observer;
   {
@@ -230,6 +253,11 @@ void PollingObservers::Stop(const std::string& observer_id) {
   JoinWorker(*observer);
 }
 
+// Purpose: Poll one observer until it is stopped.
+// @param observer is the observer this worker serves; it outlives the
+// worker, which is always joined before the observer is destroyed.
+// @returns Nothing.
+// @throws Nothing.
 void PollingObservers::RunWorker(Observer* observer) {
   FailureStreaks streaks;
   // Without a first snapshot there is nothing to compare against, and an
@@ -254,6 +282,13 @@ void PollingObservers::RunWorker(Observer* observer) {
   }
 }
 
+// Purpose: Take one snapshot for a worker, logging a failure once per
+// streak.
+// @param observer is the observer being polled.
+// @param streaks records which failures this worker has logged.
+// @returns The snapshot, or nothing when it failed or the observer is
+// stopping.
+// @throws Nothing.
 std::optional<Snapshot> PollingObservers::TakeSnapshot(Observer* observer,
                                                        FailureStreaks* streaks) {
   std::optional<Snapshot> snapshot;
@@ -285,6 +320,10 @@ std::optional<Snapshot> PollingObservers::TakeSnapshot(Observer* observer,
   return std::nullopt;
 }
 
+// Purpose: Wait one polling interval, or less when the observer stops.
+// @param observer is the observer being polled.
+// @returns true when the observer is stopping.
+// @throws Nothing.
 bool PollingObservers::WaitForNextPoll(Observer* observer) {
   std::unique_lock<std::mutex> lock(observer->mutex);
   return observer->lifecycle.stop_signal.wait_for(
@@ -292,6 +331,12 @@ bool PollingObservers::WaitForNextPoll(Observer* observer) {
       [observer]() { return observer->lifecycle.stopping.load(); });
 }
 
+// Purpose: Ask the platform thread to deliver pending changes, logging a
+// failure once per streak.
+// @param streaks records which failures this worker has logged.
+// @returns Nothing; a pending change whose wake failed is retried after
+// the next poll.
+// @throws Nothing.
 void PollingObservers::RequestDelivery(FailureStreaks* streaks) {
   if (dispatcher_.RequestWake()) {
     streaks->wake_failing = false;
@@ -311,6 +356,11 @@ void PollingObservers::RequestDelivery(FailureStreaks* streaks) {
              {"next_log", "after an event is scheduled"}}});
 }
 
+// Purpose: Store a new snapshot as the observer's pending change.
+// @param observer is the observer that took the snapshot.
+// @param current is the snapshot just taken.
+// @returns true when a change is pending and needs delivery.
+// @throws Nothing.
 bool PollingObservers::RecordSnapshot(Observer* observer, Snapshot current) {
   std::lock_guard<std::mutex> lock(observer->mutex);
   if (current == observer->delivery.delivered) {
@@ -328,6 +378,9 @@ bool PollingObservers::RecordSnapshot(Observer* observer, Snapshot current) {
   return true;
 }
 
+// Purpose: Deliver every pending change. Runs on the platform thread.
+// @returns Nothing.
+// @throws Nothing beyond what effects.send_event throws.
 void PollingObservers::DeliverPendingChanges() {
   std::vector<std::pair<std::string, EncodableMap>> events;
   {
@@ -350,6 +403,11 @@ void PollingObservers::DeliverPendingChanges() {
   }
 }
 
+// Purpose: Build the event map sent for one change.
+// @param domain is the observed domain.
+// @param change is the change being delivered.
+// @returns The event map.
+// @throws Nothing.
 EncodableMap PollingObservers::BuildEvent(const std::string& domain,
                                           const PendingChange& change) {
   EncodableMap event;
@@ -362,6 +420,10 @@ EncodableMap PollingObservers::BuildEvent(const std::string& domain,
   return event;
 }
 
+// Purpose: Wake an observer's worker and tell it to finish.
+// @param observer is the observer to stop.
+// @returns Nothing.
+// @throws Nothing.
 void PollingObservers::RequestStop(Observer& observer) {
   {
     // Set under the mutex so a worker between its stop check and its wait
@@ -372,12 +434,22 @@ void PollingObservers::RequestStop(Observer& observer) {
   observer.lifecycle.stop_signal.notify_all();
 }
 
+// Purpose: Wait for an observer's worker to finish.
+// @param observer is an observer whose stop was already requested.
+// @returns Nothing.
+// @throws Nothing.
 void PollingObservers::JoinWorker(Observer& observer) {
   if (observer.lifecycle.worker.joinable()) {
     observer.lifecycle.worker.join();
   }
 }
 
+// Purpose: List the ids whose values differ between two snapshots, including
+// ids present in only one of them.
+// @param before is the earlier snapshot.
+// @param after is the later snapshot.
+// @returns The differing ids, in ascending order.
+// @throws Nothing.
 EncodableList ChangedIds(const Snapshot& before, const Snapshot& after) {
   std::set<std::string> ids;
   for (const auto& [id, value] : before) {
@@ -399,6 +471,12 @@ EncodableList ChangedIds(const Snapshot& before, const Snapshot& after) {
   return values;
 }
 
+// Purpose: Build a snapshot that changes whenever any field of a row changes.
+// @param rows are the records, each with a string "id" field.
+// @returns Each id mapped to a hash of its whole row. Rows without a string id
+// are left out.
+// @throws std::invalid_argument when a row holds a custom value, which has no
+// bytes to hash; std::logic_error for a value type the hash does not know.
 Snapshot FingerprintRecords(const std::vector<EncodableMap>& rows) {
   Snapshot snapshot;
   for (const auto& row : rows) {

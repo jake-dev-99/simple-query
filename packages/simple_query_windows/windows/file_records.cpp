@@ -52,12 +52,20 @@ std::optional<int64_t> ModifiedEpochMs(const std::filesystem::directory_entry& e
 
 }  // namespace
 
+// Purpose: Lowercase the ASCII letters of a string.
+// @param value is the string to lowercase.
+// @returns The string with A to Z replaced by a to z.
+// @throws Nothing.
 std::string Lower(std::string value) {
   std::transform(value.begin(), value.end(), value.begin(),
                  [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
   return value;
 }
 
+// Purpose: Guess a file's MIME type from its extension.
+// @param path is the file's path.
+// @returns The MIME type, or application/octet-stream when unknown.
+// @throws Nothing.
 std::string MimeFromPath(const std::filesystem::path& path) {
   const std::string ext = Lower(path.extension().string());
   if (ext == ".jpg" || ext == ".jpeg") return "image/jpeg";
@@ -75,6 +83,13 @@ std::string MimeFromPath(const std::filesystem::path& path) {
   return "application/octet-stream";
 }
 
+// Purpose: List the files under a root directory as query rows.
+// @param options selects the root, the row shape and an early stop.
+// @returns One row per entry found, or the rows found before a stop. An entry
+// whose details cannot be read, such as one removed during the walk, is left
+// out.
+// @throws std::system_error when an entry's path cannot be converted to the
+// system code page, which happens for some non-ASCII names.
 std::vector<EncodableMap> ListRecords(const ListRecordsOptions& options) {
   const std::filesystem::path& root = options.root;
   const bool media_only = options.media_only;

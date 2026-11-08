@@ -112,6 +112,11 @@ EncodableMap AppointmentRow(
 
 }  // namespace
 
+// Purpose: Join the multithreaded apartment unless the thread is already in
+// a single-threaded one.
+// @returns Nothing.
+// @throws winrt::hresult_error when the apartment cannot be joined for any
+// other reason.
 WinRtApartmentScope::WinRtApartmentScope() {
   try {
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
@@ -125,12 +130,20 @@ WinRtApartmentScope::WinRtApartmentScope() {
   }
 }
 
+// Purpose: Leave the apartment this object joined, if it joined one.
+// @returns Nothing.
+// @throws Nothing.
 WinRtApartmentScope::~WinRtApartmentScope() {
   if (joined_) {
     winrt::uninit_apartment();
   }
 }
 
+// Purpose: Give a store read's rows, or fail when the store could not be
+// read, so a failed read is never mistaken for an empty store.
+// @param result is the store read's outcome.
+// @returns The rows read.
+// @throws std::runtime_error carrying the read's error when it failed.
 std::vector<EncodableMap> RowsOrThrow(WinRtRowsResult result) {
   if (result.error.has_value()) {
     throw std::runtime_error(*result.error);
@@ -138,6 +151,11 @@ std::vector<EncodableMap> RowsOrThrow(WinRtRowsResult result) {
   return std::move(result.rows);
 }
 
+// Purpose: List the user's contacts as query rows.
+// @param stop_requested ends the read early, cancelling any store call in
+// flight; empty means never.
+// @returns The contact rows, the rows read before a stop, or an error.
+// @throws Nothing; store failures are returned in error.
 WinRtRowsResult ListContactRecords(const StopRequested& stop_requested) {
   using namespace winrt::Windows::ApplicationModel::Contacts;
   WinRtRowsResult result;
@@ -176,6 +194,11 @@ WinRtRowsResult ListContactRecords(const StopRequested& stop_requested) {
   return result;
 }
 
+// Purpose: List the appointments from a year back to a year ahead as rows.
+// @param stop_requested ends the read early, cancelling any store call in
+// flight; empty means never.
+// @returns The appointment rows, the rows read before a stop, or an error.
+// @throws Nothing; store failures are returned in error.
 WinRtRowsResult ListCalendarRecords(const StopRequested& stop_requested) {
   using namespace winrt::Windows::ApplicationModel::Appointments;
   WinRtRowsResult result;
@@ -231,6 +254,9 @@ WinRtRowsResult ListCalendarRecords(const StopRequested& stop_requested) {
   return result;
 }
 
+// Purpose: List the user's contact lists.
+// @returns One row per contact list, with its id and name.
+// @throws winrt::hresult_error when the contact store cannot be read.
 EncodableList ListContactStores() {
   using namespace winrt::Windows::ApplicationModel::Contacts;
   const WinRtApartmentScope apartment;
@@ -249,6 +275,9 @@ EncodableList ListContactStores() {
   return stores;
 }
 
+// Purpose: List the user's appointment calendars.
+// @returns One row per calendar, with its id and title.
+// @throws winrt::hresult_error when the appointment store cannot be read.
 EncodableList ListCalendarStores() {
   using namespace winrt::Windows::ApplicationModel::Appointments;
   const WinRtApartmentScope apartment;

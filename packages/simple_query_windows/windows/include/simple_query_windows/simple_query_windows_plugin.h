@@ -4,11 +4,23 @@
 #include <flutter/method_channel.h>
 #include <flutter/plugin_registrar_windows.h>
 
+#include <filesystem>
+#include <functional>
 #include <memory>
 
 namespace simple_query_windows {
 
 class NativeQueryHostApiImpl;
+
+// Purpose: Give the plugin its reads of the process environment, so tests
+// can supply their own.
+struct PluginEffects {
+  // Returns the working directory, the root of a files or media request that
+  // names none. Throws std::system_error when it cannot be read.
+  std::function<std::filesystem::path()> current_directory = []() {
+    return std::filesystem::current_path();
+  };
+};
 
 // Purpose: Serve simple_query's Windows host API for one Flutter engine.
 // Each engine gets its own instance, so its calls and observe events stay on
@@ -24,9 +36,12 @@ class SimpleQueryWindowsPlugin : public flutter::Plugin {
   // Purpose: Start answering host API calls on one engine's messenger.
   // Construct it on that engine's platform thread.
   // @param messenger is the engine's messenger; it must outlive the plugin.
+  // @param effects supplies the environment reads; the default reads the
+  // real process.
   // @returns Nothing.
   // @throws Nothing.
-  explicit SimpleQueryWindowsPlugin(flutter::BinaryMessenger *messenger);
+  explicit SimpleQueryWindowsPlugin(flutter::BinaryMessenger *messenger,
+                                    PluginEffects effects = {});
 
   // Purpose: Remove this engine's handlers, then stop every observer.
   // The registrar destroys plugins while the messenger is still alive.

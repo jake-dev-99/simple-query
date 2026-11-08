@@ -38,6 +38,11 @@ HMODULE CodeModule() {
 
 }  // namespace
 
+// Purpose: Register the window class and create the message-only window that
+// carries wake requests to the creating thread.
+// @param on_wake runs on the creating thread once per delivered wake.
+// @returns Nothing; IsReady() reports whether the window exists.
+// @throws Nothing; a window that cannot be created leaves IsReady() false.
 PlatformThreadDispatcher::PlatformThreadDispatcher(
     std::function<void()> on_wake)
     : on_wake_(std::move(on_wake)), module_(CodeModule()) {
@@ -60,6 +65,10 @@ PlatformThreadDispatcher::PlatformThreadDispatcher(
   }
 }
 
+// Purpose: Detach and destroy the window, then unregister the class when no
+// other dispatcher's window still uses it.
+// @returns Nothing.
+// @throws Nothing.
 PlatformThreadDispatcher::~PlatformThreadDispatcher() {
   if (module_ == nullptr) {
     return;
@@ -76,8 +85,16 @@ PlatformThreadDispatcher::~PlatformThreadDispatcher() {
   UnregisterClassW(kWindowClassName, module_);
 }
 
+// Purpose: Report whether wake requests can reach the creating thread.
+// @returns true when the message window exists.
+// @throws Nothing.
 bool PlatformThreadDispatcher::IsReady() const { return window_ != nullptr; }
 
+// Purpose: Queue one wake on the creating thread, merging requests made
+// before the queued wake runs.
+// @returns true when a wake is queued; false with GetLastError() set when
+// nothing could be queued.
+// @throws Nothing.
 bool PlatformThreadDispatcher::RequestWake() {
   if (window_ == nullptr) {
     SetLastError(ERROR_INVALID_WINDOW_HANDLE);
@@ -95,6 +112,14 @@ bool PlatformThreadDispatcher::RequestWake() {
   return false;
 }
 
+// Purpose: Run the dispatcher's wake for a wake message and pass every other
+// message to the default window procedure.
+// @param window is the dispatcher's message-only window.
+// @param message is the message identifier.
+// @param wparam is the message's first parameter.
+// @param lparam is the message's second parameter.
+// @returns 0 for a wake message, otherwise the default window result.
+// @throws Nothing.
 LRESULT CALLBACK PlatformThreadDispatcher::WindowProc(HWND window,
                                                       UINT message,
                                                       WPARAM wparam,
@@ -110,6 +135,9 @@ LRESULT CALLBACK PlatformThreadDispatcher::WindowProc(HWND window,
   return 0;
 }
 
+// Purpose: Clear the queued-wake flag, then run on_wake.
+// @returns Nothing.
+// @throws Nothing beyond what on_wake throws.
 void PlatformThreadDispatcher::RunWake() {
   // Clear before running, so a request made while on_wake runs queues a new
   // wake instead of being absorbed by this one.
