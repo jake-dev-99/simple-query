@@ -1,5 +1,6 @@
 #include "platform_thread_dispatcher.h"
 
+#include <mutex>
 #include <utility>
 
 namespace simple_query_windows {
@@ -9,35 +10,70 @@ namespace {
 constexpr UINT kWakeMessage = WM_APP + 1;
 constexpr const wchar_t* kWindowClassName =
     L"SimpleQueryWindowsPlatformThreadDispatcher";
+// Its address lies in this module, which identifies the module.
+const char kModuleAnchor = 0;
+
+// Purpose: Guard the window class, so one dispatcher cannot unregister it
+// between another's registration and window creation.
+// @returns The process-wide window class mutex.
+// @throws Nothing.
+std::mutex& WindowClassMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+// Purpose: Find the module that holds this code. The plugin is a DLL, so the
+// executable's handle would register the class for the app instead.
+// @returns The module handle, or null when it cannot be found.
+// @throws Nothing.
+HMODULE CodeModule() {
+  HMODULE module = nullptr;
+  if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                              GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                          reinterpret_cast<LPCWSTR>(&kModuleAnchor), &module)) {
+    return nullptr;
+  }
+  return module;
+}
 
 }  // namespace
 
 PlatformThreadDispatcher::PlatformThreadDispatcher(
     std::function<void()> on_wake)
-    : on_wake_(std::move(on_wake)) {
+    : on_wake_(std::move(on_wake)), module_(CodeModule()) {
+  if (module_ == nullptr) {
+    return;
+  }
   WNDCLASSEXW window_class{};
   window_class.cbSize = sizeof(window_class);
   window_class.lpfnWndProc = &PlatformThreadDispatcher::WindowProc;
-  window_class.hInstance = GetModuleHandleW(nullptr);
+  window_class.hInstance = module_;
   window_class.lpszClassName = kWindowClassName;
-  // Every dispatcher after the first registers the same class again; that
-  // call fails with ERROR_CLASS_ALREADY_EXISTS and the class stays usable.
+  std::lock_guard<std::mutex> lock(WindowClassMutex());
+  // While another dispatcher exists, the class is already registered; this
+  // call then fails with ERROR_CLASS_ALREADY_EXISTS and the class stays usable.
   RegisterClassExW(&window_class);
   window_ = CreateWindowExW(0, kWindowClassName, L"", 0, 0, 0, 0, 0,
-                            HWND_MESSAGE, nullptr, GetModuleHandleW(nullptr),
-                            nullptr);
+                            HWND_MESSAGE, nullptr, module_, nullptr);
   if (window_ != nullptr) {
     SetWindowLongPtrW(window_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
   }
 }
 
 PlatformThreadDispatcher::~PlatformThreadDispatcher() {
+  if (module_ == nullptr) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(WindowClassMutex());
   if (window_ != nullptr) {
     // Detach first: the system discards messages queued for a destroyed
     // window, and a detached window ignores any it still receives.
     SetWindowLongPtrW(window_, GWLP_USERDATA, 0);
     DestroyWindow(window_);
   }
+  // Fails with ERROR_CLASS_HAS_WINDOWS while another dispatcher's window
+  // exists, so only the last dispatcher destroyed removes the class.
+  UnregisterClassW(kWindowClassName, module_);
 }
 
 bool PlatformThreadDispatcher::IsReady() const { return window_ != nullptr; }

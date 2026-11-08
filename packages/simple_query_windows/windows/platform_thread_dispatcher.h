@@ -20,6 +20,10 @@ namespace simple_query_windows {
 // The dispatcher owns a message-only window. Create and destroy it on the
 // platform thread, whose message loop delivers the wake. A wake still queued
 // when the dispatcher is destroyed is dropped without running.
+//
+// The window class is registered for the module that holds this code, and
+// the last dispatcher destroyed unregisters it, so an unloaded plugin leaves
+// no class pointing at its code.
 class PlatformThreadDispatcher {
  public:
   // Purpose: Create the message-only window that receives wake requests.
@@ -69,6 +73,9 @@ class PlatformThreadDispatcher {
   std::function<void()> on_wake_;
   // True from a queued wake until the creating thread starts running it.
   std::atomic<bool> wake_queued_{false};
+  // The module that holds this code and owns the window class; null when it
+  // could not be found, which leaves IsReady() false.
+  HMODULE module_ = nullptr;
   HWND window_ = nullptr;
 };
 

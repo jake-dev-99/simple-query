@@ -14,8 +14,10 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "platform_thread_dispatcher.h"
+#include "stop_requested.h"
 
 namespace simple_query_windows {
 
@@ -23,17 +25,16 @@ namespace simple_query_windows {
 // changes, such as its modification time.
 using Snapshot = std::map<std::string, int64_t>;
 
-// Returns true once the observer that asked for a snapshot is stopping, so a
-// long scan can end early. A partial snapshot taken then is discarded.
-using StopRequested = std::function<bool()>;
-
 // Purpose: Describe one polled observation.
 struct ObserverSpec {
   // The query domain reported in each event, such as "files".
   std::string domain;
   // How long the worker waits between snapshots.
   std::chrono::milliseconds polling_interval;
-  // Lists the watched records. Runs on the observer's worker thread.
+  // Lists the watched records. Runs on the observer's worker thread. Throws
+  // a std::exception when the records could not be read; that poll is then
+  // skipped. Its stop check turns true once the observer is stopping, so a
+  // long scan can end early; a snapshot taken then is discarded.
   std::function<Snapshot(const StopRequested&)> take_snapshot;
 };
 
@@ -57,6 +58,10 @@ struct PollingObserverEffects {
 // Its ids still cover every change since the last delivery, because they are
 // measured against the delivered snapshot. A change that is undone before
 // delivery is not reported.
+//
+// A poll whose snapshot fails changes nothing, so a passing read error never
+// reports records as removed and then added again. Until the first snapshot
+// succeeds, the observer has no baseline and reports nothing.
 //
 // Create, call and destroy this object on the platform thread.
 class PollingObservers {
@@ -98,6 +103,13 @@ class PollingObservers {
   // Purpose: Hold one observer's settings, worker and change state.
   struct Observer;
 
+  // Purpose: Remember which failures a worker has logged. A failure that
+  // repeats on every poll is logged once, then again only after it clears.
+  struct FailureStreaks {
+    bool snapshot_failing = false;
+    bool wake_failing = false;
+  };
+
   // Purpose: A change detected but not yet delivered.
   struct PendingChange {
     flutter::EncodableList ids;
@@ -111,6 +123,30 @@ class PollingObservers {
   // @returns Nothing.
   // @throws Nothing.
   void RunWorker(Observer* observer);
+
+  // Purpose: Take one snapshot for a worker, logging a failure once per
+  // streak.
+  // @param observer is the observer being polled.
+  // @param streaks records which failures this worker has logged.
+  // @returns The snapshot, or nothing when it failed or the observer is
+  // stopping.
+  // @throws Nothing.
+  static std::optional<Snapshot> TakeSnapshot(Observer* observer,
+                                              FailureStreaks* streaks);
+
+  // Purpose: Wait one polling interval, or less when the observer stops.
+  // @param observer is the observer being polled.
+  // @returns true when the observer is stopping.
+  // @throws Nothing.
+  static bool WaitForNextPoll(Observer* observer);
+
+  // Purpose: Ask the platform thread to deliver pending changes, logging a
+  // failure once per streak.
+  // @param streaks records which failures this worker has logged.
+  // @returns Nothing; a pending change whose wake failed is retried after
+  // the next poll.
+  // @throws Nothing.
+  void RequestDelivery(FailureStreaks* streaks);
 
   // Purpose: Store a new snapshot as the observer's pending change.
   // @param observer is the observer that took the snapshot.
@@ -160,6 +196,14 @@ class PollingObservers {
 // @returns The differing ids, in ascending order.
 // @throws Nothing.
 flutter::EncodableList ChangedIds(const Snapshot& before, const Snapshot& after);
+
+// Purpose: Build a snapshot that changes whenever any field of a row changes,
+// for records that carry no modification time.
+// @param rows are the records, each with a string "id" field.
+// @returns Each id mapped to a hash of its whole row. Rows without a string id
+// are left out.
+// @throws Nothing.
+Snapshot FingerprintRecords(const std::vector<flutter::EncodableMap>& rows);
 
 }  // namespace simple_query_windows
 

@@ -6,9 +6,11 @@ set(PLUGIN_NAME "simple_query_windows_plugin")
 # Built into both the plugin library and the native test runner.
 set(PLUGIN_SOURCES
   "simple_query_windows_plugin.cpp"
+  "file_records.cpp"
   "native_query.g.cpp"
   "platform_thread_dispatcher.cpp"
   "polling_observers.cpp"
+  "winrt_records.cpp"
 )
 
 add_library(${PLUGIN_NAME} SHARED

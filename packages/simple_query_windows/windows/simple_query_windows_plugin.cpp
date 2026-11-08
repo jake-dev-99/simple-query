@@ -2,29 +2,27 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <mutex>
+#include <memory>
 #include <optional>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <system_error>
 #include <utility>
 #include <vector>
 
 #include <flutter/plugin_registrar_windows.h>
-#include <winrt/Windows.ApplicationModel.Appointments.h>
-#include <winrt/Windows.ApplicationModel.Contacts.h>
-#include <winrt/Windows.Foundation.Collections.h>
-#include <winrt/Windows.Foundation.h>
 #include <winrt/base.h>
 
+#include "file_records.h"
 #include "native_query.g.h"
 #include "polling_observers.h"
+#include "winrt_records.h"
 
 namespace simple_query_windows {
 
@@ -112,229 +110,10 @@ const EncodableList* AsList(const EncodableValue* value) {
   return std::get_if<EncodableList>(value);
 }
 
-std::string Lower(std::string value) {
-  std::transform(value.begin(), value.end(), value.begin(),
-                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  return value;
-}
-
-std::string MimeFromPath(const std::filesystem::path& path) {
-  const std::string ext = Lower(path.extension().string());
-  if (ext == ".jpg" || ext == ".jpeg") return "image/jpeg";
-  if (ext == ".png") return "image/png";
-  if (ext == ".gif") return "image/gif";
-  if (ext == ".heic") return "image/heic";
-  if (ext == ".mp4") return "video/mp4";
-  if (ext == ".mov") return "video/quicktime";
-  if (ext == ".mp3") return "audio/mpeg";
-  if (ext == ".wav") return "audio/wav";
-  if (ext == ".aac") return "audio/aac";
-  if (ext == ".flac") return "audio/flac";
-  if (ext == ".txt") return "text/plain";
-  if (ext == ".json") return "application/json";
-  return "application/octet-stream";
-}
-
-bool IsMediaMime(const std::string& mime) {
-  return mime.rfind("image/", 0) == 0 || mime.rfind("video/", 0) == 0 ||
-         mime.rfind("audio/", 0) == 0;
-}
-
-std::string MediaType(const std::string& mime) {
-  if (mime.rfind("image/", 0) == 0) return "image";
-  if (mime.rfind("video/", 0) == 0) return "video";
-  if (mime.rfind("audio/", 0) == 0) return "audio";
-  return "other";
-}
-
 int64_t EpochMsNow() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(
              std::chrono::system_clock::now().time_since_epoch())
       .count();
-}
-
-void EnsureWinRtApartment() {
-  static std::once_flag flag;
-  std::call_once(flag, []() {
-    try {
-      winrt::init_apartment(winrt::apartment_type::multi_threaded);
-    } catch (...) {
-      // Already initialized with a different apartment type.
-    }
-  });
-}
-
-int64_t ToUnixEpochMs(winrt::Windows::Foundation::DateTime value) {
-  constexpr int64_t kWinRtToUnixEpochTicks = 116444736000000000LL;
-  const int64_t ticks = value.time_since_epoch().count();
-  return (ticks - kWinRtToUnixEpochTicks) / 10000;
-}
-
-struct WinRtRowsResult {
-  std::vector<EncodableMap> rows;
-  std::optional<std::string> error;
-};
-
-WinRtRowsResult ListContactRecords() {
-  using namespace winrt::Windows::ApplicationModel::Contacts;
-  WinRtRowsResult result;
-  try {
-    EnsureWinRtApartment();
-
-    const auto store =
-        ContactManager::RequestStoreAsync(ContactStoreAccessType::AllContactsReadOnly).get();
-    const auto contacts = store.FindContactsAsync().get();
-
-    for (const auto& contact : contacts) {
-      std::string id = winrt::to_string(contact.Id());
-      if (id.empty()) {
-        continue;
-      }
-
-      std::string display_name = winrt::to_string(contact.DisplayName());
-      if (display_name.empty()) {
-        display_name = winrt::to_string(contact.FirstName());
-        const auto last_name = winrt::to_string(contact.LastName());
-        if (!last_name.empty()) {
-          if (!display_name.empty()) {
-            display_name += " ";
-          }
-          display_name += last_name;
-        }
-      }
-
-      EncodableList phones;
-      for (const auto& phone : contact.Phones()) {
-        phones.push_back(EncodableValue(winrt::to_string(phone.Number())));
-      }
-
-      EncodableList emails;
-      for (const auto& email : contact.Emails()) {
-        emails.push_back(EncodableValue(winrt::to_string(email.Address())));
-      }
-
-      EncodableMap row;
-      row[EncodableValue("id")] = EncodableValue(id);
-      row[EncodableValue("displayName")] = EncodableValue(display_name);
-      row[EncodableValue("phones")] = EncodableValue(phones);
-      row[EncodableValue("emails")] = EncodableValue(emails);
-
-      if (contact.JobInfo().Size() > 0) {
-        const auto company = winrt::to_string(contact.JobInfo().GetAt(0).CompanyName());
-        if (!company.empty()) {
-          row[EncodableValue("organization")] = EncodableValue(company);
-        }
-      }
-
-      result.rows.push_back(std::move(row));
-    }
-  } catch (const winrt::hresult_error& error) {
-    result.error = "simple_query: windows contacts backend unavailable - " +
-                   winrt::to_string(error.message());
-  } catch (const std::exception& error) {
-    result.error = "simple_query: windows contacts backend unavailable - " +
-                   std::string(error.what());
-  }
-  return result;
-}
-
-WinRtRowsResult ListCalendarRecords() {
-  using namespace winrt::Windows::ApplicationModel::Appointments;
-  WinRtRowsResult result;
-  try {
-    EnsureWinRtApartment();
-
-    const auto store =
-        AppointmentManager::RequestStoreAsync(AppointmentStoreAccessType::AllCalendarsReadOnly)
-            .get();
-    const auto calendars = store.FindAppointmentCalendarsAsync().get();
-
-    const auto now = winrt::clock::now();
-    // C++/WinRT projects TimeSpan as a std::chrono::duration, so it is
-    // converted directly rather than through the ABI Duration field.
-    const auto lookback =
-        std::chrono::duration_cast<winrt::Windows::Foundation::TimeSpan>(
-            std::chrono::hours(24 * 365));
-    const auto start = now - lookback;
-    const auto range =
-        std::chrono::duration_cast<winrt::Windows::Foundation::TimeSpan>(
-            std::chrono::hours(24 * 365 * 2));
-
-    for (const auto& calendar : calendars) {
-      const auto appointments = calendar.FindAppointmentsAsync(start, range).get();
-      const std::string calendar_id = winrt::to_string(calendar.LocalId());
-      for (const auto& appointment : appointments) {
-        const auto start_time = appointment.StartTime();
-        const auto end_time = start_time + appointment.Duration();
-        const int64_t start_ms = ToUnixEpochMs(start_time);
-        const int64_t end_ms = ToUnixEpochMs(end_time);
-
-        std::string appointment_id = winrt::to_string(appointment.LocalId());
-        if (appointment_id.empty()) {
-          appointment_id = calendar_id + ":" + std::to_string(start_ms);
-        }
-
-        EncodableMap row;
-        row[EncodableValue("id")] = EncodableValue(appointment_id);
-        row[EncodableValue("title")] = EncodableValue(winrt::to_string(appointment.Subject()));
-        row[EncodableValue("startAt")] = EncodableValue(std::to_string(start_ms));
-        row[EncodableValue("endAt")] = EncodableValue(std::to_string(end_ms));
-        row[EncodableValue("isAllDay")] = EncodableValue(appointment.AllDay());
-        row[EncodableValue("calendarId")] = EncodableValue(calendar_id);
-        row[EncodableValue("updatedAt")] = EncodableValue(std::to_string(start_ms));
-        result.rows.push_back(std::move(row));
-      }
-    }
-  } catch (const winrt::hresult_error& error) {
-    result.error = "simple_query: windows calendar backend unavailable - " +
-                   winrt::to_string(error.message());
-  } catch (const std::exception& error) {
-    result.error = "simple_query: windows calendar backend unavailable - " +
-                   std::string(error.what());
-  }
-  return result;
-}
-
-EncodableList ListContactStores() {
-  using namespace winrt::Windows::ApplicationModel::Contacts;
-  EnsureWinRtApartment();
-
-  const auto store =
-      ContactManager::RequestStoreAsync(ContactStoreAccessType::AllContactsReadOnly).get();
-  const auto lists = store.FindContactListsAsync().get();
-
-  EncodableList stores;
-  for (const auto& list : lists) {
-    EncodableMap row;
-    row[EncodableValue("id")] = EncodableValue(winrt::to_string(list.Id()));
-    row[EncodableValue("name")] = EncodableValue(winrt::to_string(list.DisplayName()));
-    stores.push_back(EncodableValue(row));
-  }
-  return stores;
-}
-
-EncodableList ListCalendarStores() {
-  using namespace winrt::Windows::ApplicationModel::Appointments;
-  EnsureWinRtApartment();
-
-  const auto store =
-      AppointmentManager::RequestStoreAsync(AppointmentStoreAccessType::AllCalendarsReadOnly)
-          .get();
-  const auto calendars = store.FindAppointmentCalendarsAsync().get();
-
-  EncodableList rows;
-  for (const auto& calendar : calendars) {
-    EncodableMap row;
-    row[EncodableValue("id")] = EncodableValue(winrt::to_string(calendar.LocalId()));
-    row[EncodableValue("title")] = EncodableValue(winrt::to_string(calendar.DisplayName()));
-    rows.push_back(EncodableValue(row));
-  }
-  return rows;
-}
-
-int64_t ModifiedEpochMs(const std::filesystem::directory_entry& entry) {
-  auto ticks = entry.last_write_time().time_since_epoch();
-  return std::chrono::duration_cast<std::chrono::milliseconds>(ticks).count();
 }
 
 std::string ValueAsString(const EncodableMap& row, const std::string& key) {
@@ -369,84 +148,6 @@ std::filesystem::path ResolveRootPath(const EncodableMap& request) {
     }
   }
   return std::filesystem::current_path();
-}
-
-// Purpose: Select what ListRecords walks and when it gives up.
-struct ListRecordsOptions {
-  std::filesystem::path root;
-  // Lists only image, video and audio files, as media rows.
-  bool media_only = false;
-  // Ends the walk early when it returns true. Empty means never.
-  StopRequested stop_requested;
-};
-
-// Purpose: List the files under a root directory as query rows.
-// @param options selects the root, the row shape and an early stop.
-// @returns One row per entry found, or the rows found before a stop.
-// @throws Nothing; unreadable entries are skipped.
-std::vector<EncodableMap> ListRecords(const ListRecordsOptions& options) {
-  const std::filesystem::path& root = options.root;
-  const bool media_only = options.media_only;
-  std::vector<EncodableMap> rows;
-  std::error_code ec;
-  if (!std::filesystem::exists(root, ec)) {
-    return rows;
-  }
-
-  for (auto it = std::filesystem::recursive_directory_iterator(
-           root, std::filesystem::directory_options::skip_permission_denied, ec);
-       it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
-    // A recursive walk of a large tree can outlast an observer's teardown.
-    if (options.stop_requested && options.stop_requested()) {
-      break;
-    }
-    if (ec) {
-      ec.clear();
-      continue;
-    }
-
-    const auto& entry = *it;
-    const auto path = entry.path();
-    const bool is_dir = entry.is_directory(ec);
-    const std::string mime = MimeFromPath(path);
-
-    if (media_only) {
-      if (is_dir || !IsMediaMime(mime)) {
-        continue;
-      }
-      EncodableMap row;
-      row[EncodableValue("id")] = EncodableValue(path.string());
-      row[EncodableValue("uriOrPath")] = EncodableValue(path.string());
-      row[EncodableValue("mediaType")] = EncodableValue(MediaType(mime));
-      row[EncodableValue("mimeType")] = EncodableValue(mime);
-      if (entry.is_regular_file(ec)) {
-        row[EncodableValue("size")] = EncodableValue(static_cast<int64_t>(entry.file_size(ec)));
-      }
-      const auto modified = ModifiedEpochMs(entry);
-      row[EncodableValue("createdAt")] = EncodableValue(std::to_string(modified));
-      row[EncodableValue("modifiedAt")] = EncodableValue(std::to_string(modified));
-      rows.push_back(std::move(row));
-      continue;
-    }
-
-    EncodableMap row;
-    row[EncodableValue("id")] = EncodableValue(path.string());
-    row[EncodableValue("path")] = EncodableValue(path.string());
-    row[EncodableValue("name")] = EncodableValue(path.filename().string());
-    row[EncodableValue("isDirectory")] = EncodableValue(is_dir);
-    if (entry.is_regular_file(ec)) {
-      row[EncodableValue("size")] = EncodableValue(static_cast<int64_t>(entry.file_size(ec)));
-    }
-    const auto modified = ModifiedEpochMs(entry);
-    row[EncodableValue("modifiedAt")] = EncodableValue(std::to_string(modified));
-    row[EncodableValue("mimeType")] = EncodableValue(mime);
-    row[EncodableValue("type")] = EncodableValue(is_dir ? "directory" : "file");
-    row[EncodableValue("extension")] = EncodableValue(path.extension().string());
-    row[EncodableValue("modifiedEpochMs")] = EncodableValue(modified);
-    rows.push_back(std::move(row));
-  }
-
-  return rows;
 }
 
 std::vector<EncodableMap> ApplyFilters(std::vector<EncodableMap> rows,
@@ -557,42 +258,36 @@ EncodableList ApplyProjection(const std::vector<EncodableMap>& rows,
 
 // Purpose: Name what one observer snapshot covers.
 struct SnapshotRequest {
-  const EncodableMap& request;
+  // The directory a files or media observer watches.
+  const std::filesystem::path& root;
   const std::string& domain;
   const StopRequested& stop_requested;
 };
 
 // Purpose: Take one observer snapshot of a domain's records.
-// @param source names the observe request, its domain and the stop check.
-// @returns Each record's id mapped to its modification time.
-// @throws Nothing; unreadable records are left out.
+// @param source names the domain, its root directory and the stop check.
+// @returns Each record's id mapped to a fingerprint of its row.
+// @throws std::runtime_error when a contacts or calendar store cannot be
+// read, std::system_error when a file path cannot be converted to the system
+// code page, and std::invalid_argument for a domain observe does not support.
 Snapshot BuildSnapshotForDomain(const SnapshotRequest& source) {
   const std::string& domain = source.domain;
-  Snapshot snapshot;
-  std::vector<EncodableMap> rows;
-
   if (domain == "files" || domain == "media") {
-    rows = ListRecords({.root = ResolveRootPath(source.request),
-                        .media_only = domain == "media",
-                        .stop_requested = source.stop_requested});
-  } else if (domain == "contacts") {
-    rows = ListContactRecords().rows;
-  } else if (domain == "calendar") {
-    rows = ListCalendarRecords().rows;
+    return FingerprintRecords(ListRecords({.root = source.root,
+                                           .media_only = domain == "media",
+                                           .stop_requested = source.stop_requested}));
   }
-
-  for (const auto& row : rows) {
-    const auto id = AsString(FindValue(row, "id"));
-    if (!id.has_value()) {
-      continue;
+  if (domain == "contacts" || domain == "calendar") {
+    const WinRtRowsResult result = domain == "contacts"
+                                       ? ListContactRecords(source.stop_requested)
+                                       : ListCalendarRecords(source.stop_requested);
+    if (result.error.has_value()) {
+      throw std::runtime_error(*result.error);
     }
-    int64_t modified = AsInt(FindValue(row, "modifiedEpochMs"))
-                           .value_or(AsInt(FindValue(row, "updatedAt"))
-                                         .value_or(AsInt(FindValue(row, "startAt"))
-                                                       .value_or(0)));
-    snapshot[*id] = modified;
+    return FingerprintRecords(result.rows);
   }
-  return snapshot;
+  throw std::invalid_argument("simple_query: windows observe has no snapshot for domain " +
+                              domain);
 }
 
 }  // namespace
@@ -615,8 +310,8 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
                     .now_epoch_ms = &EpochMsNow}) {}
 
   ErrorOr<EncodableMap> GetCapabilities() override {
-    const auto contacts_probe = ListContactRecords();
-    const auto calendar_probe = ListCalendarRecords();
+    const auto contacts_probe = ListContactRecords({});
+    const auto calendar_probe = ListCalendarRecords({});
 
     EncodableList capabilities;
     capabilities.push_back(
@@ -664,13 +359,13 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
       rows = ListRecords({.root = ResolveRootPath(request),
                           .media_only = domain == "media"});
     } else if (domain == "contacts") {
-      auto contact_rows = ListContactRecords();
+      auto contact_rows = ListContactRecords({});
       if (contact_rows.error.has_value()) {
         return FlutterError("unavailable", *contact_rows.error);
       }
       rows = std::move(contact_rows.rows);
     } else {
-      auto calendar_rows = ListCalendarRecords();
+      auto calendar_rows = ListCalendarRecords({});
       if (calendar_rows.error.has_value()) {
         return FlutterError("unavailable", *calendar_rows.error);
       }
@@ -935,12 +630,14 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
     int64_t interval_ms = AsInt(FindValue(request, "pollingIntervalMs")).value_or(1000);
     interval_ms = std::max<int64_t>(250, interval_ms);
 
+    // Resolved once, so the worker keeps only what its snapshots read.
+    const std::filesystem::path root = ResolveRootPath(request);
     ObserverSpec spec{
         .domain = domain,
         .polling_interval = std::chrono::milliseconds(interval_ms),
         .take_snapshot =
-            [request, domain](const StopRequested& stop_requested) {
-              return BuildSnapshotForDomain({.request = request,
+            [root, domain](const StopRequested& stop_requested) {
+              return BuildSnapshotForDomain({.root = root,
                                              .domain = domain,
                                              .stop_requested = stop_requested});
             },
@@ -1115,6 +812,8 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
 
  private:
   // Purpose: Send one observe event to Dart. Runs on the platform thread.
+  // Only the first event Dart rejects is logged, because a Dart side that
+  // stopped listening rejects every event after it.
   // @param observer_id is the observer the event belongs to.
   // @param event is the change event map.
   // @returns Nothing.
@@ -1122,15 +821,23 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
   void SendObserveEvent(const std::string& observer_id, const EncodableMap& event) {
     flutter_api_.OnObserveEvent(
         observer_id, event, []() {},
-        [observer_id](const FlutterError& error) {
+        [observer_id, reported = rejected_event_reported_](const FlutterError& error) {
+          if (*reported) {
+            return;
+          }
+          *reported = true;
           std::cerr << "simple_query_windows: Dart did not accept the observe "
                        "event for "
                     << observer_id << " (" << error.code() << ": "
-                    << error.message() << ").\n";
+                    << error.message()
+                    << "); later rejected events are not logged.\n";
         });
   }
 
   NativeQueryFlutterApi flutter_api_;
+  // Shared with pending replies, which can arrive after this object is gone.
+  // Read and written only on the platform thread.
+  std::shared_ptr<bool> rejected_event_reported_ = std::make_shared<bool>(false);
   int64_t handle_counter_ = 0;
   std::map<std::string, std::string> open_handles_;
   // Declared after flutter_api_ so it is destroyed first: its destructor

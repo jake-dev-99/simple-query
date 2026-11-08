@@ -1,9 +1,12 @@
 #include "polling_observers.h"
 
+#include <flutter/standard_message_codec.h>
+
+#include <exception>
 #include <iostream>
 #include <set>
+#include <string_view>
 #include <utility>
-#include <vector>
 
 namespace simple_query_windows {
 
@@ -17,11 +20,14 @@ struct PollingObservers::Observer {
   // @returns Nothing.
   // @throws Nothing.
   explicit Observer(ObserverSpec observer_spec)
-      : spec(std::move(observer_spec)) {}
+      : spec(std::move(observer_spec)),
+        stop_requested([this]() { return stopping.load(); }) {}
 
   const ObserverSpec spec;
   // Read without the mutex by snapshot scans; written under it.
   std::atomic<bool> stopping{false};
+  // Given to each snapshot so a long scan ends once the observer stops.
+  const StopRequested stop_requested;
   std::mutex mutex;
   // Wakes the worker early when the observer is stopping.
   std::condition_variable stop_signal;
@@ -60,14 +66,23 @@ bool PollingObservers::IsReady() const { return dispatcher_.IsReady(); }
 std::string PollingObservers::Start(ObserverSpec spec) {
   auto observer = std::make_unique<Observer>(std::move(spec));
   Observer* worker_observer = observer.get();
-  // The worker never reads the observer map, so it may start first.
-  observer->worker =
-      std::thread([this, worker_observer]() { RunWorker(worker_observer); });
-
-  std::lock_guard<std::mutex> lock(observers_mutex_);
-  std::string observer_id =
-      "windows_observer_" + std::to_string(++observer_counter_);
-  observers_[observer_id] = std::move(observer);
+  std::string observer_id;
+  {
+    // Stored before its worker starts, so a failed insert never leaves a
+    // running worker that nothing can stop.
+    std::lock_guard<std::mutex> lock(observers_mutex_);
+    observer_id = "windows_observer_" + std::to_string(++observer_counter_);
+    observers_[observer_id] = std::move(observer);
+  }
+  try {
+    worker_observer->worker =
+        std::thread([this, worker_observer]() { RunWorker(worker_observer); });
+  } catch (...) {
+    // No worker started, so the observer is removed and the caller told.
+    std::lock_guard<std::mutex> lock(observers_mutex_);
+    observers_.erase(observer_id);
+    throw;
+  }
   return observer_id;
 }
 
@@ -87,37 +102,81 @@ void PollingObservers::Stop(const std::string& observer_id) {
 }
 
 void PollingObservers::RunWorker(Observer* observer) {
-  const StopRequested stop_requested = [observer]() {
-    return observer->stopping.load();
-  };
-  Snapshot initial = observer->spec.take_snapshot(stop_requested);
-  {
-    std::lock_guard<std::mutex> lock(observer->mutex);
-    observer->delivered = std::move(initial);
-  }
-
-  while (true) {
-    {
-      std::unique_lock<std::mutex> lock(observer->mutex);
-      const bool stop = observer->stop_signal.wait_for(
-          lock, observer->spec.polling_interval,
-          [observer]() { return observer->stopping.load(); });
-      if (stop) {
-        return;
-      }
-    }
-    Snapshot current = observer->spec.take_snapshot(stop_requested);
-    if (stop_requested()) {
+  FailureStreaks streaks;
+  // Without a first snapshot there is nothing to compare against, and an
+  // empty baseline would report every record as added.
+  std::optional<Snapshot> baseline = TakeSnapshot(observer, &streaks);
+  while (!baseline.has_value()) {
+    if (WaitForNextPoll(observer)) {
       return;
     }
-    if (RecordSnapshot(observer, std::move(current)) &&
-        !dispatcher_.RequestWake()) {
-      // The pending change stays recorded, so the next poll asks again.
-      std::cerr << "simple_query_windows: could not schedule an observe event "
-                   "on the platform thread (Windows error "
-                << GetLastError() << "); retrying after the next poll.\n";
+    baseline = TakeSnapshot(observer, &streaks);
+  }
+  {
+    std::lock_guard<std::mutex> lock(observer->mutex);
+    observer->delivered = std::move(*baseline);
+  }
+
+  while (!WaitForNextPoll(observer)) {
+    std::optional<Snapshot> current = TakeSnapshot(observer, &streaks);
+    if (current.has_value() && RecordSnapshot(observer, std::move(*current))) {
+      RequestDelivery(&streaks);
     }
   }
+}
+
+std::optional<Snapshot> PollingObservers::TakeSnapshot(Observer* observer,
+                                                       FailureStreaks* streaks) {
+  std::optional<Snapshot> snapshot;
+  std::string failure;
+  try {
+    snapshot = observer->spec.take_snapshot(observer->stop_requested);
+  } catch (const std::exception& error) {
+    // An exception leaving a worker thread ends the app, so the worker is
+    // the nearest place that can handle a failed read: the poll is skipped
+    // and the next one tries again.
+    failure = error.what();
+  }
+  if (observer->stopping.load()) {
+    return std::nullopt;
+  }
+  if (snapshot.has_value()) {
+    streaks->snapshot_failing = false;
+    return snapshot;
+  }
+  if (!streaks->snapshot_failing) {
+    streaks->snapshot_failing = true;
+    std::cerr << "simple_query_windows: an observe snapshot of "
+              << observer->spec.domain << " failed (" << failure
+              << "); retrying each poll, and not logging again until one "
+                 "succeeds.\n";
+  }
+  return std::nullopt;
+}
+
+bool PollingObservers::WaitForNextPoll(Observer* observer) {
+  std::unique_lock<std::mutex> lock(observer->mutex);
+  return observer->stop_signal.wait_for(
+      lock, observer->spec.polling_interval,
+      [observer]() { return observer->stopping.load(); });
+}
+
+void PollingObservers::RequestDelivery(FailureStreaks* streaks) {
+  if (dispatcher_.RequestWake()) {
+    streaks->wake_failing = false;
+    return;
+  }
+  // Read before logging, which can change the thread's last error.
+  const DWORD error = GetLastError();
+  if (streaks->wake_failing) {
+    return;
+  }
+  streaks->wake_failing = true;
+  // The pending change stays recorded, so the next poll asks again.
+  std::cerr << "simple_query_windows: could not schedule an observe event "
+               "on the platform thread (Windows error "
+            << error << "); retrying after each poll, and not logging again "
+                        "until one is scheduled.\n";
 }
 
 bool PollingObservers::RecordSnapshot(Observer* observer, Snapshot current) {
@@ -206,6 +265,28 @@ EncodableList ChangedIds(const Snapshot& before, const Snapshot& after) {
     values.push_back(EncodableValue(id));
   }
   return values;
+}
+
+Snapshot FingerprintRecords(const std::vector<EncodableMap>& rows) {
+  const auto& codec = flutter::StandardMessageCodec::GetInstance();
+  Snapshot snapshot;
+  for (const auto& row : rows) {
+    const auto id = row.find(EncodableValue("id"));
+    if (id == row.end()) {
+      continue;
+    }
+    const auto* id_text = std::get_if<std::string>(&id->second);
+    if (id_text == nullptr) {
+      continue;
+    }
+    // The map's keys are ordered, so equal rows always encode to equal bytes.
+    const auto bytes = codec.EncodeMessage(EncodableValue(row));
+    const std::string_view encoded(reinterpret_cast<const char*>(bytes->data()),
+                                   bytes->size());
+    snapshot[*id_text] =
+        static_cast<int64_t>(std::hash<std::string_view>{}(encoded));
+  }
+  return snapshot;
 }
 
 }  // namespace simple_query_windows

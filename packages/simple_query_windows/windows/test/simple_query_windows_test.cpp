@@ -1,6 +1,6 @@
 // Native tests for observe delivery: the platform-thread dispatcher, the
-// polling observers, and the plugin as one engine sees it through a fake
-// messenger. Each test runs on the test runner's main thread, which plays
+// polling observers, file listing and record fingerprints, and the plugin as
+// one engine sees it through a fake messenger. Each test runs on the test runner's main thread, which plays
 // the platform thread and pumps its own message queue.
 
 #include <flutter/binary_messenger.h>
@@ -14,14 +14,18 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iostream>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
 #include <vector>
 
+#include "file_records.h"
 #include "include/simple_query_windows/simple_query_windows_plugin.h"
 #include "native_query.g.h"
 #include "platform_thread_dispatcher.h"
@@ -46,6 +50,9 @@ constexpr std::chrono::milliseconds kLongPoll = 10min;
 constexpr int64_t kPluginFastPollMs = 250;
 constexpr int64_t kPluginLongPollMs = 600000;
 constexpr int64_t kFixedNowEpochMs = 1700000000000;
+
+constexpr const wchar_t* kDispatcherWindowClass =
+    L"SimpleQueryWindowsPlatformThreadDispatcher";
 
 const std::string kHostChannelPrefix =
     "dev.flutter.pigeon.simple_query_windows.NativeQueryHostApi.";
@@ -150,6 +157,12 @@ class ControlledSource {
     snapshot_ = std::move(snapshot);
   }
 
+  // Purpose: Make every snapshot from now on fail, or succeed again.
+  // @param failing is true to make snapshots throw.
+  // @returns Nothing.
+  // @throws Nothing.
+  void SetFailing(bool failing) { failing_.store(failing); }
+
   // Purpose: Report how many snapshots were taken.
   // @returns The number of snapshots taken so far.
   // @throws Nothing.
@@ -168,12 +181,16 @@ class ControlledSource {
   }
 
   // Purpose: Build the observer callback that reads this source.
-  // @returns A snapshot callback; it must not outlive this source.
+  // @returns A snapshot callback; it must not outlive this source. It throws
+  // std::runtime_error while the source is failing.
   // @throws Nothing.
   std::function<Snapshot(const StopRequested&)> SnapshotCallback() {
     return [this](const StopRequested&) {
       std::lock_guard<std::mutex> lock(mutex_);
       ++taken_;
+      if (failing_.load()) {
+        throw std::runtime_error("controlled snapshot failure");
+      }
       return snapshot_;
     };
   }
@@ -182,6 +199,33 @@ class ControlledSource {
   std::mutex mutex_;
   Snapshot snapshot_;
   std::atomic<int> taken_{0};
+  std::atomic<bool> failing_{false};
+};
+
+// Purpose: Capture standard error until destroyed. Destroy it only after
+// every thread that writes to it has been joined.
+class StandardErrorCapture {
+ public:
+  StandardErrorCapture() : original_(std::cerr.rdbuf(captured_.rdbuf())) {}
+  ~StandardErrorCapture() { std::cerr.rdbuf(original_); }
+  StandardErrorCapture(const StandardErrorCapture&) = delete;
+  StandardErrorCapture& operator=(const StandardErrorCapture&) = delete;
+
+  // Purpose: Split what was written so far into lines.
+  // @returns The captured lines, without their line endings.
+  // @throws Nothing.
+  std::vector<std::string> Lines() const {
+    std::vector<std::string> lines;
+    std::istringstream text(captured_.str());
+    for (std::string line; std::getline(text, line);) {
+      lines.push_back(line);
+    }
+    return lines;
+  }
+
+ private:
+  std::ostringstream captured_;
+  std::streambuf* original_;
 };
 
 // Purpose: Hold one event sent through PollingObservers.
@@ -330,10 +374,11 @@ class TempDirectory {
 
   // Purpose: Create one small file in the directory.
   // @param name is the file name.
-  // @returns Nothing.
+  // @returns The new file's path.
   // @throws Nothing; a failed write shows up as a missing change.
-  void WriteFile(const std::string& name) const {
+  std::filesystem::path WriteFile(const std::string& name) const {
     std::ofstream(path_ / name) << "changed";
+    return path_ / name;
   }
 
  private:
@@ -514,6 +559,104 @@ TEST_F(PollingObserversTest, DeliversAllChangesSinceTheLastEventInOneEvent) {
             std::to_string(kFixedNowEpochMs));
 }
 
+// Purpose: Destroying the last dispatcher removes its window class, and a
+// later dispatcher registers it again.
+TEST(PlatformThreadDispatcherTest, RemovesItsWindowClassWithTheLastDispatcher) {
+  WNDCLASSEXW info{};
+  info.cbSize = sizeof(info);
+  {
+    PlatformThreadDispatcher first([]() {});
+    PlatformThreadDispatcher second([]() {});
+    ASSERT_TRUE(first.IsReady());
+    ASSERT_TRUE(second.IsReady());
+    EXPECT_TRUE(GetClassInfoExW(GetModuleHandleW(nullptr), kDispatcherWindowClass, &info));
+  }
+  EXPECT_FALSE(GetClassInfoExW(GetModuleHandleW(nullptr), kDispatcherWindowClass, &info));
+
+  PlatformThreadDispatcher again([]() {});
+  EXPECT_TRUE(again.IsReady());
+}
+
+// Purpose: Destroying one dispatcher leaves another one delivering wakes.
+TEST(PlatformThreadDispatcherTest, KeepsDeliveringAfterAnotherIsDestroyed) {
+  int wakes = 0;
+  PlatformThreadDispatcher survivor([&]() { ++wakes; });
+  { PlatformThreadDispatcher destroyed([]() {}); }
+
+  ASSERT_TRUE(survivor.RequestWake());
+  EXPECT_TRUE(PumpUntil([&]() { return wakes == 1; }, kDeliveryTimeout));
+}
+
+// Purpose: A failed poll reports nothing, so a passing read error never
+// reports records as removed and added again, and later changes still arrive.
+TEST_F(PollingObserversTest, SkipsAFailedPollAndKeepsReporting) {
+  ControlledSource source;
+  source.Set({{"a", 1}, {"b", 1}});
+  PollingObservers observers(RecordingEffects());
+  observers.Start(SpecFor(source, kFastPoll));
+  ASSERT_TRUE(WaitForBaseline(source));
+
+  source.SetFailing(true);
+  ASSERT_TRUE(source.WaitForPollToFinish());
+  source.SetFailing(false);
+  ASSERT_TRUE(source.WaitForPollToFinish());
+  PumpQueuedMessages();
+  EXPECT_TRUE(events_.empty());
+
+  source.Set({{"a", 1}, {"b", 1}, {"c", 1}});
+  ASSERT_TRUE(PumpUntil([&]() { return !events_.empty(); }, kDeliveryTimeout));
+  ASSERT_EQ(events_.size(), 1u);
+  EXPECT_EQ(IdsOf(events_[0].event), (std::vector<std::string>{"c"}));
+}
+
+// Purpose: Each run of failed polls is logged once, naming the domain, so a
+// lasting failure cannot flood the log.
+TEST_F(PollingObserversTest, LogsEachRunOfFailedPollsOnce) {
+  StandardErrorCapture log;
+  {
+    ControlledSource source;
+    source.Set({{"a", 1}});
+    PollingObservers observers(RecordingEffects());
+    observers.Start(SpecFor(source, kFastPoll));
+    ASSERT_TRUE(WaitForBaseline(source));
+
+    source.SetFailing(true);
+    ASSERT_TRUE(source.WaitForPollToFinish());
+    source.SetFailing(false);
+    ASSERT_TRUE(source.WaitForPollToFinish());
+    source.SetFailing(true);
+    ASSERT_TRUE(source.WaitForPollToFinish());
+    // Leaving the scope joins the worker before the log is read.
+  }
+
+  const std::vector<std::string> lines = log.Lines();
+  ASSERT_EQ(lines.size(), 2u);
+  for (const auto& line : lines) {
+    EXPECT_NE(line.find("files"), std::string::npos);
+    EXPECT_NE(line.find("controlled snapshot failure"), std::string::npos);
+  }
+}
+
+// Purpose: Until a first snapshot succeeds there is no baseline, so the
+// first success reports nothing and later changes are measured against it.
+TEST_F(PollingObserversTest, WaitsForAFirstSnapshotThatSucceeds) {
+  ControlledSource source;
+  source.Set({{"a", 1}});
+  source.SetFailing(true);
+  PollingObservers observers(RecordingEffects());
+  observers.Start(SpecFor(source, kFastPoll));
+  ASSERT_TRUE(source.WaitForPollToFinish());
+
+  source.SetFailing(false);
+  ASSERT_TRUE(source.WaitForPollToFinish());
+  PumpQueuedMessages();
+  EXPECT_TRUE(events_.empty());
+
+  source.Set({{"a", 1}, {"b", 1}});
+  ASSERT_TRUE(PumpUntil([&]() { return !events_.empty(); }, kDeliveryTimeout));
+  EXPECT_EQ(IdsOf(events_[0].event), (std::vector<std::string>{"b"}));
+}
+
 // Purpose: A change undone before delivery is not reported.
 TEST_F(PollingObserversTest, ReportsNothingForAChangeUndoneBeforeDelivery) {
   ControlledSource source;
@@ -625,6 +768,85 @@ TEST(ChangedIdsTest, ListsChangedRemovedAndAddedIds) {
   }
 
   EXPECT_EQ(ids, (std::vector<std::string>{"added", "changed", "removed"}));
+}
+
+// Purpose: Equal rows give equal fingerprints.
+TEST(FingerprintRecordsTest, GivesEqualRowsEqualFingerprints) {
+  const EncodableMap row{{EncodableValue("id"), EncodableValue("a")},
+                         {EncodableValue("title"), EncodableValue("Lunch")}};
+
+  EXPECT_EQ(FingerprintRecords({row}), FingerprintRecords({row}));
+}
+
+// Purpose: Changing any field changes the row's fingerprint.
+TEST(FingerprintRecordsTest, ChangesWhenAnyFieldChanges) {
+  const EncodableMap before{{EncodableValue("id"), EncodableValue("a")},
+                            {EncodableValue("title"), EncodableValue("Lunch")}};
+  EncodableMap after = before;
+  after[EncodableValue("title")] = EncodableValue("Dinner");
+
+  EXPECT_NE(FingerprintRecords({before}).at("a"), FingerprintRecords({after}).at("a"));
+}
+
+// Purpose: A row without a string id is left out.
+TEST(FingerprintRecordsTest, LeavesOutRowsWithoutAStringId) {
+  const EncodableMap no_id{{EncodableValue("title"), EncodableValue("Lunch")}};
+  const EncodableMap number_id{{EncodableValue("id"), EncodableValue(7)}};
+
+  EXPECT_TRUE(FingerprintRecords({no_id, number_id}).empty());
+}
+
+// Purpose: Rewriting a media file changes its fingerprint, so media
+// observers see modifications and not only additions and removals.
+TEST(FingerprintRecordsTest, ChangesWhenAMediaFileIsRewritten) {
+  TempDirectory directory;
+  const auto photo = directory.WriteFile("photo.jpg");
+  const auto list_media = [&directory]() {
+    return FingerprintRecords(
+        ListRecords({.root = directory.path(), .media_only = true}));
+  };
+  const Snapshot before = list_media();
+
+  std::filesystem::last_write_time(photo,
+                                   std::filesystem::last_write_time(photo) + 1h);
+
+  ASSERT_EQ(before.size(), 1u);
+  EXPECT_NE(before.at(photo.string()), list_media().at(photo.string()));
+}
+
+// Purpose: Without a stop check the walk lists every file.
+TEST(ListRecordsTest, ListsEveryFileWithoutAStopCheck) {
+  TempDirectory directory;
+  for (int file = 0; file < 5; ++file) {
+    directory.WriteFile("file_" + std::to_string(file) + ".txt");
+  }
+
+  EXPECT_EQ(ListRecords({.root = directory.path()}).size(), 5u);
+}
+
+// Purpose: The walk ends as soon as its stop check turns true.
+TEST(ListRecordsTest, StopsWalkingOnceAskedTo) {
+  TempDirectory directory;
+  for (int file = 0; file < 5; ++file) {
+    directory.WriteFile("file_" + std::to_string(file) + ".txt");
+  }
+  int checks = 0;
+  // Checked once before each entry, so the third check ends the walk after
+  // two entries.
+  const auto rows = ListRecords(
+      {.root = directory.path(), .stop_requested = [&checks]() { return ++checks > 2; }});
+
+  EXPECT_EQ(rows.size(), 2u);
+}
+
+// Purpose: A walk asked to stop before it starts lists nothing.
+TEST(ListRecordsTest, ListsNothingWhenAlreadyStopped) {
+  TempDirectory directory;
+  directory.WriteFile("file.txt");
+
+  EXPECT_TRUE(
+      ListRecords({.root = directory.path(), .stop_requested = []() { return true; }})
+          .empty());
 }
 
 // Purpose: The plugin sends file observe events on the platform thread.
