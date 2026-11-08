@@ -5,12 +5,19 @@ import java.io.ByteArrayInputStream
 import java.io.IOException
 import java.io.InputStream
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.CoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -229,4 +236,84 @@ class StreamManagerLateFailureTest {
         assertTrue(copies.awaitTermination(5, TimeUnit.SECONDS))
         fixture.assertCopyFailureLoggedOnce("close failed")
     }
+
+    /**
+     * Purpose: Pin that a copy finishing just as closeStream's wait times
+     *   out has its failures raised, not logged (UNFY-365).
+     *
+     * The copy records "disk read failed", then waits in its write-end
+     * close. closeStream resumes from its timed-out wait only after the copy
+     * has finished, which is the narrowest gap between the timeout and the
+     * hand-off to the log.
+     *
+     * @return Nothing.
+     * @throws AssertionError when closeStream raises only the timeout, or a
+     *   failure reaches the log.
+     */
+    @Test
+    fun closeStreamRaisesTheFailuresOfACopyThatFinishesAsItsWaitTimesOut() {
+        val failClose = CountDownLatch(1)
+        val (streamId, copies) = fixture.openStreamWaitingInWriteEndClose(
+            failClose,
+            copyStopTimeoutMs = 100,
+            content = { FailsAfterFirstChunk(IOException("disk read failed")) },
+        )
+        val resumeAfterTheCopy = RunFirstOnResume {
+            failClose.countDown()
+            copies.shutdown()
+            assertTrue(copies.awaitTermination(5, TimeUnit.SECONDS))
+        }
+
+        val outcome = runBlocking {
+            // Undispatched, so the only dispatch is the timed-out wait's resume.
+            async(resumeAfterTheCopy, CoroutineStart.UNDISPATCHED) {
+                runCatching { fixture.manager.closeStream(streamId) }.exceptionOrNull()
+            }.await()
+        }
+        resumeAfterTheCopy.close()
+
+        val error = assertIs<IOException>(outcome)
+        assertEquals("disk read failed", error.message)
+        val suppressed = error.suppressed.map { it.message.orEmpty() }
+        assertTrue(suppressed.contains("close failed"), "$suppressed")
+        assertTrue(suppressed.any { it.contains("did not stop within 100ms") }, "$suppressed")
+        assertTrue(fixture.warnings().isEmpty())
+    }
+}
+
+/**
+ * Purpose: Dispatch coroutines on one thread, running [beforeFirstResume]
+ * just before the first one, so a test controls what happens while a
+ * coroutine is about to resume.
+ *
+ * @param beforeFirstResume runs once, on the dispatch thread.
+ * @throws Nothing.
+ */
+private class RunFirstOnResume(private val beforeFirstResume: () -> Unit) : CoroutineDispatcher(), AutoCloseable {
+    private val thread = Executors.newSingleThreadExecutor()
+    private val pending = AtomicBoolean(true)
+
+    /**
+     * Purpose: Run [block] on the dispatch thread, after [beforeFirstResume]
+     * the first time.
+     *
+     * @param context the coroutine's context.
+     * @param block the coroutine's next step.
+     * @return Nothing.
+     * @throws Nothing.
+     */
+    override fun dispatch(context: CoroutineContext, block: Runnable) {
+        thread.execute {
+            if (pending.getAndSet(false)) beforeFirstResume()
+            block.run()
+        }
+    }
+
+    /**
+     * Purpose: Stop the dispatch thread.
+     *
+     * @return Nothing.
+     * @throws Nothing.
+     */
+    override fun close() = thread.shutdown()
 }

@@ -20,16 +20,11 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * Manages streaming of binary content via named pipes.
+ * Purpose: Stream binary content to Dart through pipes, which avoids the
+ * MethodChannel size limit.
  *
- * Uses ParcelFileDescriptor.createPipe() to create a zero-copy streaming
- * mechanism that avoids MethodChannel size limits.
- *
- * [executor] runs the background copies, and it alone bounds how many run
- * at once: the default pool runs 8 and queues the rest. [createPipe] makes
- * each stream's pipe pair. [copyStopTimeoutMs] bounds how long closeStream
- * waits for a running copy. All three are injectable so tests can observe
- * them.
+ * Each stream copies the provider content into a pipe from
+ * ParcelFileDescriptor.createPipe() on a background thread.
  *
  * No pipe end is closed twice from two threads (UNFY-300): the write end
  * closes through [Pipe.closeWriteEndOnce], and only whoever removes a
@@ -43,6 +38,16 @@ import kotlinx.coroutines.withTimeoutOrNull
  * failure the copy records while the reader is already closing is still
  * raised. A failure no caller can raise any more (after dispose(), or after
  * closeStream stopped waiting) is logged once instead.
+ *
+ * @param context the context whose content resolver opens the content.
+ * @param executor runs the background copies, and alone bounds how many run
+ *   at once: the default pool runs 8 and queues the rest. Injectable so
+ *   tests can control the copies.
+ * @param createPipe makes each stream's pipe pair; injectable so tests can
+ *   observe the ends.
+ * @param copyStopTimeoutMs how long closeStream waits for a running copy;
+ *   injectable so tests can time it out.
+ * @throws Nothing.
  */
 class StreamManager(
     private val context: Context,
@@ -71,6 +76,7 @@ class StreamManager(
      *
      * @param readEnd the end the reader reads; only a release closes it.
      * @param writeEnd the end the copy writes.
+     * @throws Nothing.
      */
     private class Pipe(val readEnd: ParcelFileDescriptor, val writeEnd: ParcelFileDescriptor) {
         private val writeClosed = AtomicBoolean(false)
@@ -88,7 +94,9 @@ class StreamManager(
 
     /**
      * Purpose: Track one stream's background copy: whether it runs, when it
-     * finishes, and the failure it leaves for closeStream or the log.
+     * finishes, and the failures it leaves for closeStream or the log.
+     *
+     * @throws Nothing.
      */
     private class CopyState {
         /**
@@ -103,11 +111,10 @@ class StreamManager(
         /** Set once no caller will raise the failure, so the copy logs it when it finishes. */
         val logFailureOnFinish = AtomicBoolean(false)
 
-        private var failure: Exception? = null
+        private val failures = mutableListOf<Exception>()
 
         /**
-         * Purpose: Keep the copy's first failure, attaching a later one to it
-         * as suppressed.
+         * Purpose: Record one copy failure, in the order it happened.
          *
          * @param error the failure, kept as thrown so [HostErrors] classifies
          *   it by type.
@@ -116,19 +123,19 @@ class StreamManager(
          */
         @Synchronized
         fun record(error: Exception) {
-            val first = failure
-            if (first == null) failure = error else first.addSuppressed(error)
+            failures.add(error)
         }
 
         /**
-         * Purpose: Take the recorded failure out, so it is raised or logged
-         * exactly once.
+         * Purpose: Take the recorded failures out, so each is raised or
+         * logged exactly once.
          *
-         * @return the failure, or null when none is left.
+         * @return the first failure with the later ones suppressed onto it,
+         *   or null when none is left.
          * @throws Nothing.
          */
         @Synchronized
-        fun takeFailure(): Exception? = failure.also { failure = null }
+        fun takeFailure(): Exception? = firstWithRestSuppressed(failures.toList()).also { failures.clear() }
     }
 
     /**
@@ -137,6 +144,7 @@ class StreamManager(
      *
      * @param contentUri the content being streamed.
      * @param pipe the stream's pipe pair.
+     * @throws Nothing.
      */
     private class StreamInfo(val contentUri: String, val pipe: Pipe) {
         /** Set once the stream is released; its copy then stops, or never starts. */
@@ -284,11 +292,10 @@ class StreamManager(
      */
     suspend fun closeStream(streamId: String) {
         val streamInfo = claim(streamId) ?: return
-        val closeFailure = releaseEnds(streamInfo)
-        val stopFailure = awaitCopy(streamId, streamInfo)
+        val closeFailures = releaseEnds(streamInfo)
         // The copy's own failure explains the content best, then a copy that
         // would not stop, then a failed close.
-        raiseFirst(listOfNotNull(streamInfo.copy.takeFailure(), stopFailure, closeFailure))
+        raiseFirst(copyFailures(streamId, streamInfo) + closeFailures)
     }
 
     /**
@@ -306,7 +313,7 @@ class StreamManager(
         disposed.set(true)
         for (id in activeStreams.keys.toList()) {
             val streamInfo = claim(id) ?: continue
-            releaseEnds(streamInfo)?.let { Log.e(TAG, "dispose: closing stream $id failed", it) }
+            releaseEnds(streamInfo).forEach { Log.e(TAG, "dispose: closing stream $id failed", it) }
             logFailureWhenFinished(id, streamInfo)
         }
         executor.shutdown()
@@ -332,36 +339,59 @@ class StreamManager(
     }
 
     /**
-     * Purpose: Wait for a released stream's copy to finish, so every failure
-     * it records is visible to closeStream.
+     * Purpose: Collect the failures a released stream's copy leaves for
+     * closeStream to raise, after waiting for the copy to stop.
      *
-     * When the wait ends early, by its timeout or by cancellation, no caller
-     * will raise a failure the copy records afterwards, so it is logged.
+     * When the copy does not stop in time, the failures recorded so far are
+     * taken first, and only then is the rest handed to the log. Handing off
+     * first would let a copy that finishes in between log a failure this
+     * caller can still raise.
      *
      * @param streamId the released stream.
      * @param streamInfo the released stream's state.
-     * @return null when the copy never started or has finished; otherwise an
-     *   [IOException] saying the copy did not stop within
-     *   [copyStopTimeoutMs], so its content may be incomplete.
+     * @return the copy's failure, if any, then an [IOException] saying the
+     *   copy did not stop within [copyStopTimeoutMs], when it did not.
      * @throws CancellationException when the calling coroutine is cancelled
      *   while waiting.
      */
-    private suspend fun awaitCopy(streamId: String, streamInfo: StreamInfo): IOException? {
+    private suspend fun copyFailures(streamId: String, streamInfo: StreamInfo): List<Exception> {
+        val stopped = awaitCopy(streamId, streamInfo)
+        val copyFailure = streamInfo.copy.takeFailure()
+        if (stopped) return listOfNotNull(copyFailure)
+        logFailureWhenFinished(streamId, streamInfo)
+        return listOfNotNull(
+            copyFailure,
+            IOException(
+                "simple_query: the copy of ${streamInfo.contentUri} did not stop within " +
+                    "${copyStopTimeoutMs}ms of its release; treat the content as incomplete",
+            ),
+        )
+    }
+
+    /**
+     * Purpose: Wait for a released stream's copy to finish, so every failure
+     * it records is visible to closeStream.
+     *
+     * A cancelled wait leaves no caller to raise a failure the copy records
+     * afterwards, so that failure is handed to the log.
+     *
+     * @param streamId the released stream.
+     * @param streamInfo the released stream's state.
+     * @return true when the copy never started or has finished; false when
+     *   it did not stop within [copyStopTimeoutMs].
+     * @throws CancellationException when the calling coroutine is cancelled
+     *   while waiting.
+     */
+    private suspend fun awaitCopy(streamId: String, streamInfo: StreamInfo): Boolean {
         val copy = streamInfo.copy
         // Claiming the copy first means it never starts.
-        if (copy.claimed.compareAndSet(false, true)) return null
-        val finished = try {
-            withTimeoutOrNull(copyStopTimeoutMs) { copy.finished.await() }
+        if (copy.claimed.compareAndSet(false, true)) return true
+        try {
+            return withTimeoutOrNull(copyStopTimeoutMs) { copy.finished.await() } != null
         } catch (e: CancellationException) {
             logFailureWhenFinished(streamId, streamInfo)
             throw e
         }
-        if (finished != null) return null
-        logFailureWhenFinished(streamId, streamInfo)
-        return IOException(
-            "simple_query: the copy of ${streamInfo.contentUri} did not stop within " +
-                "${copyStopTimeoutMs}ms of its release; treat the content as incomplete",
-        )
     }
 
     /**
@@ -373,9 +403,7 @@ class StreamManager(
      * @throws Exception the first of [failures].
      */
     private fun raiseFirst(failures: List<Exception>) {
-        val primary = failures.firstOrNull() ?: return
-        failures.drop(1).forEach { primary.addSuppressed(it) }
-        throw primary
+        firstWithRestSuppressed(failures)?.let { throw it }
     }
 
     /**
@@ -417,7 +445,7 @@ class StreamManager(
         streamInfo.released.set(true)
         // A concurrent dispose() that claimed the stream first releases it itself.
         if (activeStreams.remove(streamId, streamInfo)) {
-            releaseEnds(streamInfo)?.let { error.addSuppressed(it) }
+            releaseEnds(streamInfo).forEach { error.addSuppressed(it) }
         }
         return error
     }
@@ -427,27 +455,26 @@ class StreamManager(
      * each attempted even when another fails.
      *
      * @param streamInfo the stream's pipes and active input.
-     * @return the first close failure, with any later one suppressed onto
-     *   it; null when all closed. A provider stream's close may fail with an
-     *   unchecked exception, so every [Exception] is collected, and no
-     *   failure skips the ends after it.
+     * @return the close failures, in close order; empty when all closed. A
+     *   provider stream's close may fail with an unchecked exception, so
+     *   every [Exception] is collected, and no failure skips the ends after
+     *   it.
      * @throws Nothing.
      */
-    private fun releaseEnds(streamInfo: StreamInfo): Exception? {
-        var failure: Exception? = null
+    private fun releaseEnds(streamInfo: StreamInfo): List<Exception> {
         val closes = listOf(
             { streamInfo.activeInput.getAndSet(null)?.close() },
             { streamInfo.pipe.closeWriteEndOnce() },
             { streamInfo.pipe.readEnd.close() },
         )
-        for (close in closes) {
+        return closes.mapNotNull { close ->
             try {
                 close()
+                null
             } catch (e: Exception) {
-                failure = failure?.also { it.addSuppressed(e) } ?: e
+                e
             }
         }
-        return failure
     }
 
     /**
@@ -502,7 +529,6 @@ class StreamManager(
     private fun copyContentToPipe(streamInfo: StreamInfo) {
         // Null when a release already closed the input openStream opened.
         val input = streamInfo.activeInput.get() ?: return
-        var failure: Exception? = null
         try {
             copyChunks(input, streamInfo)
         } catch (e: Exception) {
@@ -512,7 +538,7 @@ class StreamManager(
             // write end). Only a release closes this manager's read end, so
             // a broken pipe on the write end needs no special case, and a
             // provider's own "Broken pipe" is a real copy failure.
-            if (!streamInfo.released.get()) failure = e
+            if (!streamInfo.released.get()) streamInfo.copy.record(e)
         } finally {
             // The input stays in activeInput during the copy, so a release
             // can close it to unblock a stalled read; whichever takes it out
@@ -520,10 +546,9 @@ class StreamManager(
             try {
                 streamInfo.activeInput.getAndSet(null)?.close()
             } catch (e: Exception) {
-                failure = failure?.also { it.addSuppressed(e) } ?: e
+                streamInfo.copy.record(e)
             }
         }
-        failure?.let { streamInfo.copy.record(it) }
     }
 
     /**
@@ -579,4 +604,19 @@ class StreamManager(
     private fun logCopyFailure(streamId: String, copy: CopyState) {
         copy.takeFailure()?.let { Log.w(TAG, "stream $streamId: copy failed with no caller to raise it", it) }
     }
+}
+
+/**
+ * Purpose: Merge failures into one, so a caller raises or logs a single
+ * exception that still carries every cause.
+ *
+ * @param failures the failures, most informative first.
+ * @return the first of [failures] with the rest suppressed onto it, or null
+ *   when [failures] is empty.
+ * @throws Nothing.
+ */
+private fun firstWithRestSuppressed(failures: List<Exception>): Exception? {
+    val first = failures.firstOrNull() ?: return null
+    failures.drop(1).forEach { first.addSuppressed(it) }
+    return first
 }

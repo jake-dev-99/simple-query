@@ -23,8 +23,15 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [30])
 class ObserverDispatchTest {
-    // Decode the native-to-Dart payload. The generated Kotlin decoder is for
-    // Dart-to-native messages, whose Pigeon codec writes all integers as int64.
+    /**
+     * Purpose: Decode the native-to-Dart observer payload, as Dart's Pigeon
+     * codec would.
+     *
+     * The generated Kotlin decoder is for Dart-to-native messages, whose
+     * Pigeon codec writes all integers as int64.
+     *
+     * @throws Nothing.
+     */
     private object FlutterObserverCodec : StandardMessageCodec() {
         // Read from the generated encoder, so a Pigeon schema change that
         // renumbers the types cannot break this decoder.
@@ -32,6 +39,17 @@ class ObserverDispatchTest {
         private val changeEventId =
             pigeonTypeId(ContentChangeEvent("", "", ContentChangeType.UNKNOWN, null, false))
 
+        /**
+         * Purpose: Decode the two Pigeon observer types, and leave every
+         * other type to the standard codec.
+         *
+         * @param type the type id read from [buffer].
+         * @param buffer the message, positioned after [type].
+         * @return a [ContentChangeType], the event's field list, or the
+         *   standard codec's value.
+         * @throws IllegalArgumentException from the standard codec for an
+         *   unknown type id.
+         */
         override fun readValueOfType(type: Byte, buffer: ByteBuffer): Any? = when (type) {
             changeTypeId -> ContentChangeType.ofRaw((readValue(buffer) as Number).toInt())
             changeEventId -> readValue(buffer)

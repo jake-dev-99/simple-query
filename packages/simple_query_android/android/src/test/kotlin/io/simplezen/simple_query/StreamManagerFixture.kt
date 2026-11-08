@@ -86,14 +86,16 @@ internal class StreamManagerFixture {
      * @param failClose counted down to let the write-end close fail with
      *   "close failed".
      * @param copyStopTimeoutMs how long closeStream waits for the copy.
+     * @param content builds the provider content the copy reads.
      * @return the stream's id and its copy thread.
      * @throws AssertionError when the copy never reaches the write-end close.
      */
     fun openStreamWaitingInWriteEndClose(
         failClose: CountDownLatch,
         copyStopTimeoutMs: Long = 5_000L,
+        content: () -> InputStream = { ByteArrayInputStream(byteArrayOf(1, 2, 3)) },
     ): Pair<String, ExecutorService> {
-        register(CONTENT) { ByteArrayInputStream(byteArrayOf(1, 2, 3)) }
+        register(CONTENT, content)
         val closing = CountDownLatch(1)
         pipes.wrapWriteEnd = {
             SignalingEnd(it, closing) {

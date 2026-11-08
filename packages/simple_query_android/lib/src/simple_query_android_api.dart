@@ -552,40 +552,45 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
   /// Purpose: Release every observer and binary handle.
   ///
   /// Every cleanup step runs even when an earlier host call fails, so one
-  /// failure cannot leak the rest (UNFY-300).
+  /// failure cannot leak the rest (UNFY-300). The binary handles close
+  /// concurrently, because each close may wait for its background copy to
+  /// stop (UNFY-365).
   ///
   /// @returns Completion once every step has run.
-  /// @throws SimpleQueryError: the first host cleanup failure, with its
-  ///   stack trace, after every step has run.
+  /// @throws SimpleQueryError: the first host cleanup failure, in step
+  ///   order, with its stack trace, after every step has run.
   Future<void> dispose() async {
-    final failures = <AsyncError>[];
-    Future<void> attempt(Future<void> Function() cleanup) async {
+    Future<AsyncError?> attempt(Future<void> Function() cleanup) async {
       try {
         await cleanup();
+        return null;
       } on iface.SimpleQueryError catch (error, stackTrace) {
-        failures.add(AsyncError(error, stackTrace));
+        return AsyncError(error, stackTrace);
       }
     }
 
-    await attempt(() => guardHostCall(
-          _hostApi.unregisterAllObservers,
-          operation: iface.QueryOperation.observe,
-        ));
+    final failures = <AsyncError?>[
+      await attempt(() => guardHostCall(
+            _hostApi.unregisterAllObservers,
+            operation: iface.QueryOperation.observe,
+          )),
+    ];
     for (final registration in _activeObservers.values.toList()) {
-      await attempt(registration.unregister);
+      failures.add(await attempt(registration.unregister));
     }
     _activeObservers.clear();
 
-    for (final handle in _openBinaryHandles.values.toList(growable: false)) {
-      await attempt(() => _closeBinaryStream(handle));
-    }
+    // Future.wait keeps the handles' order, so the failure raised does not
+    // depend on which close finishes first.
+    failures.addAll(await Future.wait([
+      for (final handle in _openBinaryHandles.values.toList(growable: false))
+        attempt(() => _closeBinaryStream(handle)),
+    ]));
     _openBinaryHandles.clear();
 
-    if (failures.isNotEmpty) {
-      Error.throwWithStackTrace(
-        failures.first.error,
-        failures.first.stackTrace,
-      );
+    final firstFailure = failures.nonNulls.firstOrNull;
+    if (firstFailure != null) {
+      Error.throwWithStackTrace(firstFailure.error, firstFailure.stackTrace);
     }
   }
 

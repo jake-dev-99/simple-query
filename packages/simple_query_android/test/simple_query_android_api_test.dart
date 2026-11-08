@@ -1134,6 +1134,33 @@ void main() {
       await subscription.cancel();
     });
 
+    test('dispose closes every binary handle at once', () async {
+      final host = _FakeHostApi()..nextStreamIds.addAll(<String>['a', 'b']);
+      final api = apiFor(host);
+      for (final id in <int>[7, 8]) {
+        await api.openBinary(
+          iface.BinaryRequest(
+            domain: iface.QueryDomain.media,
+            platformData: <String, Object?>{
+              'contentUri': 'content://media/external/images/media/$id',
+            },
+          ),
+        );
+      }
+      final gate = Completer<void>();
+      host.closeStreamGate = gate;
+
+      final disposing = api.dispose();
+      await Future<void>.delayed(Duration.zero);
+
+      // Both closes started while neither has finished.
+      expect(host.closeStreamAttempts, <String>['a', 'b']);
+      expect(host.closedStreams, isEmpty);
+      gate.complete();
+      await disposing;
+      expect(host.closedStreams, unorderedEquals(<String>['a', 'b']));
+    });
+
     test('dispose reports a failed stream close instead of swallowing it',
         () async {
       final host = _FakeHostApi();
@@ -2157,10 +2184,18 @@ class _FakeHostApi extends p.QueryHostApi {
     return 0;
   }
 
+  /// Stream ids handed out by [openStream], in order; `s` once they run out.
+  final List<String> nextStreamIds = <String>[];
+
+  /// When set, every [closeStream] waits for it after recording its attempt,
+  /// so a test can see which closes are in flight at once.
+  Completer<void>? closeStreamGate;
+
   @override
   Future<p.StreamDescriptor> openStream(String contentUri) async {
     _failIfConfigured('openStream');
-    return p.StreamDescriptor(streamId: 's', pipePath: '/tmp/p');
+    final streamId = nextStreamIds.isEmpty ? 's' : nextStreamIds.removeAt(0);
+    return p.StreamDescriptor(streamId: streamId, pipePath: '/tmp/p');
   }
 
   @override
@@ -2172,6 +2207,7 @@ class _FakeHostApi extends p.QueryHostApi {
   @override
   Future<void> closeStream(String streamId) async {
     closeStreamAttempts.add(streamId);
+    await closeStreamGate?.future;
     _failIfConfigured('closeStream');
     closedStreams.add(streamId);
   }
