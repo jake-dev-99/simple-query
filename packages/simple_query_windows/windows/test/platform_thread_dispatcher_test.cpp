@@ -99,7 +99,8 @@ TEST(PlatformThreadDispatcherTest, RunsTheWakeOnTheCreatingThread) {
 // blocked worker cannot prevent its call deadline from being checked.
 TEST(PlatformThreadDispatcherTest, TimerWakesWithoutAWorkerPostAndStopsWhenClosed) {
   int wakes = 0;
-  PlatformThreadDispatcher dispatcher([&]() { ++wakes; }, std::chrono::milliseconds(10));
+  PlatformThreadDispatcher dispatcher(
+      [&]() { ++wakes; }, {.wake_interval = std::chrono::milliseconds(10)});
   ASSERT_TRUE(dispatcher.IsReady());
   ASSERT_TRUE(PumpUntil([&]() { return wakes >= 2; }, kDeliveryTimeout));
 
@@ -107,6 +108,26 @@ TEST(PlatformThreadDispatcherTest, TimerWakesWithoutAWorkerPostAndStopsWhenClose
   const int before = wakes;
   PumpQueuedMessages();
   EXPECT_EQ(wakes, before);
+}
+
+// Purpose: Timer setup failure destroys the window and refuses all wakes.
+TEST(PlatformThreadDispatcherTest, FailedTimerInstallationDisablesTheDispatcher) {
+  bool attempted = false;
+  int wakes = 0;
+  PlatformThreadDispatcher dispatcher([&]() { ++wakes; }, {
+      .wake_interval = std::chrono::milliseconds(10),
+      .install_timer = [&](const DispatcherTimerRequest& request) {
+        attempted = true;
+        EXPECT_NE(request.window, nullptr);
+        EXPECT_EQ(request.interval_ms, UINT{10});
+        return false;
+      }});
+
+  EXPECT_TRUE(attempted);
+  EXPECT_FALSE(dispatcher.IsReady());
+  EXPECT_FALSE(dispatcher.RequestWake());
+  PumpQueuedMessages();
+  EXPECT_EQ(wakes, 0);
 }
 
 // Purpose: Requests made while a wake is queued add no further messages.

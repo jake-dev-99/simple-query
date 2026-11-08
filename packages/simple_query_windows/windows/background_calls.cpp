@@ -63,12 +63,22 @@ struct CallQueues {
   std::chrono::milliseconds timeout{0};
 };
 
+// Purpose: Keep cancellation and its clock alive for detached work.
+// @param stopping prevents further work and cancels cooperative operations.
+// @param now is immutable after construction and safe on every thread.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
+struct WorkerControl {
+  std::atomic<bool> stopping{false};
+  MonotonicNow now;
+};
+
 // Purpose: Keep worker state valid after owner destruction or a timed-out I/O.
 // @param mutex guards queues and orders stopping with the worker wait.
 // @param work_signal wakes the worker for work, a timeout or teardown.
 // @param queues contains all unfinished work, under mutex.
 // @param dispatcher posts completions and checks deadlines on its timer.
-// @param stopping cancels cooperative operations and prevents later work.
+// @param control shares cancellation and the monotonic clock with the worker.
 // @returns Nothing; this is a data type.
 // @throws Nothing.
 struct BackgroundCallsState {
@@ -76,7 +86,7 @@ struct BackgroundCallsState {
   std::condition_variable work_signal;
   CallQueues queues;
   std::shared_ptr<PlatformThreadDispatcher> dispatcher;
-  std::atomic<bool> stopping{false};
+  WorkerControl control;
 };
 
 namespace {
@@ -96,11 +106,12 @@ struct WakeState {
 
 // Purpose: Check the oldest deadline while the state mutex is held.
 // @param queues holds calls in enqueue order, which is also deadline order.
+// @param now is the injected monotonic clock.
 // @returns true once an unfinished call reaches its deadline.
 // @throws Nothing.
-bool DeadlineReached(const CallQueues& queues) {
+bool DeadlineReached(const CallQueues& queues, const MonotonicNow& now) {
   return !queues.pending.empty() &&
-         std::chrono::steady_clock::now() >= queues.pending.begin()->second->deadline;
+         now() >= queues.pending.begin()->second->deadline;
 }
 
 // Purpose: Take the next job, waiting for work or a stop, with wake retries.
@@ -111,19 +122,19 @@ bool DeadlineReached(const CallQueues& queues) {
 std::shared_ptr<PendingCall> NextJob(BackgroundCallsState& state, const WakeState& wake) {
   std::unique_lock<std::mutex> lock(state.mutex);
   const auto has_work = [&state]() {
-    return state.stopping.load() || !state.queues.jobs.empty();
+    return state.control.stopping.load() || !state.queues.jobs.empty();
   };
   if (wake.owed) {
     state.work_signal.wait_for(lock, kWakeRetryInterval, has_work);
   } else {
     state.work_signal.wait(lock, has_work);
   }
-  if (DeadlineReached(state.queues)) {
+  if (DeadlineReached(state.queues, state.control.now)) {
     // The platform timer will settle these calls. Do not start another
     // mutation while an earlier call already has an unknown outcome.
-    state.stopping.store(true);
+    state.control.stopping.store(true);
   }
-  if (state.stopping.load() || state.queues.jobs.empty()) {
+  if (state.control.stopping.load() || state.queues.jobs.empty()) {
     return nullptr;
   }
   auto job = std::move(state.queues.jobs.front());
@@ -131,22 +142,32 @@ std::shared_ptr<PendingCall> NextJob(BackgroundCallsState& state, const WakeStat
   return job;
 }
 
+// Purpose: Describe one completion while its worker still owns the call.
+// @param state is borrowed for the duration of PushCompletion.
+// @param call is borrowed from the worker's retained PendingCall.
+// @param finish is dropped when the deadline or teardown already stopped work.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
+struct CompletionRequest {
+  BackgroundCallsState& state;
+  const PendingCall& call;
+  std::function<void()> finish;
+};
+
 // Purpose: Queue a reply only while its call is still within its deadline.
-// @param state is the shared state; its mutex is taken here.
-// @param call identifies the call and its deadline.
-// @param completion is the platform-thread reply step.
+// @param request names the shared state, call and platform-thread reply.
 // @returns false when stopped or expired, dropping any late result.
 // @throws Nothing.
-bool PushCompletion(BackgroundCallsState& state, const PendingCall& call,
-                    std::function<void()> completion) {
+bool PushCompletion(CompletionRequest request) {
+  BackgroundCallsState& state = request.state;
   std::lock_guard<std::mutex> lock(state.mutex);
-  if (DeadlineReached(state.queues)) {
-    state.stopping.store(true);
+  if (DeadlineReached(state.queues, state.control.now)) {
+    state.control.stopping.store(true);
   }
-  if (state.stopping.load()) {
+  if (state.control.stopping.load()) {
     return false;
   }
-  state.queues.completions.push_back({call.id, std::move(completion)});
+  state.queues.completions.push_back({request.call.id, std::move(request.finish)});
   return true;
 }
 
@@ -161,7 +182,7 @@ void RequestWake(BackgroundCallsState& state, WakeState& wake) {
     return;
   }
   const DWORD error = GetLastError();
-  if (!wake.failing && !state.stopping.load()) {
+  if (!wake.failing && !state.control.stopping.load()) {
     wake.failing = true;
     WriteLog({LogLevel::kError,
               "background_wake_failed",
@@ -177,13 +198,14 @@ void RequestWake(BackgroundCallsState& state, WakeState& wake) {
 // @throws Nothing; jobs must not throw.
 void RunWorker(const std::shared_ptr<BackgroundCallsState>& state) {
   WakeState wake;
-  while (!state->stopping.load()) {
+  while (!state->control.stopping.load()) {
     auto call = NextJob(*state, wake);
     if (call) {
       const StopRequested stop_requested = [state, deadline = call->deadline]() {
-        return state->stopping.load() || std::chrono::steady_clock::now() >= deadline;
+        return state->control.stopping.load() || state->control.now() >= deadline;
       };
-      if (!PushCompletion(*state, *call, call->work(stop_requested))) {
+      if (!PushCompletion({.state = *state, .call = *call,
+                           .finish = call->work(stop_requested)})) {
         return;
       }
       wake.owed = true;
@@ -206,22 +228,28 @@ void LogUnavailable(const std::string& reason) {
 
 // Purpose: Start one worker and a platform-thread deadline timer.
 // @param capacity bounds unfinished calls, including replies awaiting dispatch.
-// @param timeout bounds each call from enqueue and must be positive.
+// @param options supplies the deadline, monotonic clock and dispatcher factory.
 // @returns Nothing; failed setup leaves Enqueue returning kNotReady.
 // @throws Nothing; setup failures are logged.
-BackgroundCalls::BackgroundCalls(size_t capacity, std::chrono::milliseconds timeout)
+BackgroundCalls::BackgroundCalls(size_t capacity, BackgroundCallOptions options)
     : state_(std::make_shared<BackgroundCallsState>()) {
   state_->queues.capacity = capacity;
-  state_->queues.timeout = timeout;
-  state_->dispatcher = std::make_shared<PlatformThreadDispatcher>(
-      [this]() { RunCompletions(); }, kDeadlineCheckInterval);
-  if (!state_->dispatcher->IsReady()) {
+  state_->queues.timeout = options.timeout;
+  state_->control.now = std::move(options.now);
+  const auto on_wake = [this]() { RunCompletions(); };
+  state_->dispatcher = options.make_dispatcher
+                           ? options.make_dispatcher(on_wake)
+                           : std::make_shared<PlatformThreadDispatcher>(
+                                 on_wake, PlatformThreadDispatcherOptions{
+                                              .wake_interval = kDeadlineCheckInterval,
+                                              .install_timer = {}});
+  if (!state_->dispatcher || !state_->dispatcher->IsReady()) {
     LogUnavailable("the platform-thread message window or deadline timer could not start");
     return;
   }
-  if (timeout.count() <= 0) {
+  if (options.timeout.count() <= 0 || !state_->control.now) {
     state_->dispatcher->Close();
-    LogUnavailable("the host-call deadline must be positive");
+    LogUnavailable("the host-call deadline must be positive and its clock available");
     return;
   }
   std::optional<std::string> failure;
@@ -248,11 +276,13 @@ BackgroundCalls::~BackgroundCalls() {
   CallQueues dropped;
   {
     std::lock_guard<std::mutex> lock(state_->mutex);
-    state_->stopping.store(true);
+    state_->control.stopping.store(true);
     std::swap(dropped, state_->queues);
   }
   state_->work_signal.notify_all();
-  state_->dispatcher->Close();
+  if (state_->dispatcher) {
+    state_->dispatcher->Close();
+  }
 }
 
 // Purpose: Accept one bounded call with its deadline reply.
@@ -261,12 +291,12 @@ BackgroundCalls::~BackgroundCalls() {
 // @returns kQueued, kFull, or kNotReady after setup failure or timeout.
 // @throws Nothing.
 EnqueueResult BackgroundCalls::Enqueue(BackgroundJob job, std::function<void()> on_timeout) {
-  if (!state_->dispatcher->IsReady()) {
+  if (!state_->dispatcher || !state_->dispatcher->IsReady()) {
     return EnqueueResult::kNotReady;
   }
   {
     std::lock_guard<std::mutex> lock(state_->mutex);
-    if (state_->stopping.load()) {
+    if (state_->control.stopping.load()) {
       return EnqueueResult::kNotReady;
     }
     CallQueues& queues = state_->queues;
@@ -275,7 +305,7 @@ EnqueueResult BackgroundCalls::Enqueue(BackgroundJob job, std::function<void()> 
     }
     const uint64_t id = ++queues.next_id;
     auto call = std::make_shared<PendingCall>(PendingCall{
-        id, std::chrono::steady_clock::now() + queues.timeout,
+        id, state_->control.now() + queues.timeout,
         std::move(job), std::move(on_timeout)});
     queues.pending.emplace(id, call);
     queues.jobs.push_back(std::move(call));
@@ -293,8 +323,8 @@ void BackgroundCalls::RunCompletions() {
   CallQueues expired;
   {
     std::lock_guard<std::mutex> lock(state_->mutex);
-    if (DeadlineReached(state_->queues)) {
-      state_->stopping.store(true);
+    if (DeadlineReached(state_->queues, state_->control.now)) {
+      state_->control.stopping.store(true);
       std::swap(expired, state_->queues);
     } else {
       ready.swap(state_->queues.completions);

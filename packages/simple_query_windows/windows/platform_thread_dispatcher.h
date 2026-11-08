@@ -9,6 +9,29 @@
 
 namespace simple_query_windows {
 
+// Purpose: Name one platform-window timer installation.
+// @param window receives the timer messages.
+// @param id distinguishes deadline checks from other window messages.
+// @param interval_ms is already bounded to Windows timer limits.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
+struct DispatcherTimerRequest {
+  HWND window;
+  UINT_PTR id;
+  UINT interval_ms;
+};
+
+// Purpose: Configure optional periodic wakes and their operating-system boundary.
+// @param wake_interval is zero for posted wakes only.
+// @param install_timer installs the timer; empty selects Windows SetTimer.
+// It must not throw and reports false when installation fails.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
+struct PlatformThreadDispatcherOptions {
+  std::chrono::milliseconds wake_interval{0};
+  std::function<bool(const DispatcherTimerRequest&)> install_timer;
+};
+
 // Purpose: Run one callback on the thread that created the dispatcher, when
 // any thread asks for it. Flutter's Windows embedder accepts channel messages
 // only on the platform thread, so observer workers wake this dispatcher
@@ -38,14 +61,13 @@ class PlatformThreadDispatcher {
  public:
   // Purpose: Create the message-only window that receives wake requests.
   // @param on_wake runs on the creating thread once per delivered wake.
-  // @param wake_interval also runs it periodically when positive, bounded to
-  // Windows timer limits; zero disables the timer. Timer setup failure closes
-  // the dispatcher so a caller never relies on an absent deadline wake.
+  // @param options supplies periodic wakes and their timer installer. Setup
+  // failure closes the dispatcher so no caller relies on a missing deadline.
   // @returns Nothing; check IsReady() before relying on wake delivery.
   // @throws Nothing; a window that cannot be created leaves IsReady() false.
   explicit PlatformThreadDispatcher(
       std::function<void()> on_wake,
-      std::chrono::milliseconds wake_interval = std::chrono::milliseconds(0));
+      PlatformThreadDispatcherOptions options = {});
 
   // Purpose: Close the dispatcher if its owner has not.
   // Destroy an unclosed dispatcher on the creating thread.

@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "test/test_support.h"
+#include "platform_thread_dispatcher.h"
 
 namespace simple_query_windows {
 namespace test {
@@ -179,7 +180,13 @@ TEST(BackgroundCallsTest, TimesOutBlockedAndQueuedCallsWithoutWaitingForIo) {
   std::atomic<int> queued_work{0};
   std::vector<std::thread::id> reply_threads;
   DetachedThreadsDrain drain;
-  BackgroundCalls calls(kCapacity, kDeliveryTimeout);
+  auto elapsed_ms = std::make_shared<std::atomic<int64_t>>(0);
+  BackgroundCalls calls(kCapacity, {
+      .timeout = kDeliveryTimeout,
+      .now = [elapsed_ms]() {
+        return std::chrono::steady_clock::time_point(
+            std::chrono::milliseconds(elapsed_ms->load()));
+      }});
   const auto on_timeout = [&]() {
     ++expired;
     reply_threads.push_back(std::this_thread::get_id());
@@ -197,7 +204,8 @@ TEST(BackgroundCallsTest, TimesOutBlockedAndQueuedCallsWithoutWaitingForIo) {
   }, on_timeout), EnqueueResult::kQueued);
 
   EXPECT_TRUE(WaitWithoutPumping([&]() { return started->load(); }, kDeliveryTimeout));
-  EXPECT_TRUE(PumpUntil([&]() { return expired == 2; }, kDeliveryTimeout * 2));
+  elapsed_ms->store(kDeliveryTimeout.count());
+  EXPECT_TRUE(PumpUntil([&]() { return expired == 2; }, kDeliveryTimeout));
   EXPECT_EQ(queued_work.load(), 0);
   EXPECT_EQ(finished, 0);
   EXPECT_EQ(reply_threads, (std::vector<std::thread::id>(2, std::this_thread::get_id())));
@@ -215,12 +223,20 @@ TEST(BackgroundCallsTest, TimesOutBlockedAndQueuedCallsWithoutWaitingForIo) {
 // Purpose: A deadline reaches a cooperative operation through its stop check,
 // so a pending WinRT operation can cancel itself and never send a late success.
 TEST(BackgroundCallsTest, DeadlineStopsCooperativeWork) {
+  auto started = std::make_shared<std::atomic<bool>>(false);
   auto saw_stop = std::make_shared<std::atomic<bool>>(false);
   int expired = 0;
   int finished = 0;
   DetachedThreadsDrain drain;
-  BackgroundCalls calls(kCapacity, kDeliveryTimeout);
-  EXPECT_EQ(calls.Enqueue([saw_stop, &finished](const StopRequested& stop_requested) {
+  auto elapsed_ms = std::make_shared<std::atomic<int64_t>>(0);
+  BackgroundCalls calls(kCapacity, {
+      .timeout = kDeliveryTimeout,
+      .now = [elapsed_ms]() {
+        return std::chrono::steady_clock::time_point(
+            std::chrono::milliseconds(elapsed_ms->load()));
+      }});
+  EXPECT_EQ(calls.Enqueue([started, saw_stop, &finished](const StopRequested& stop_requested) {
+    started->store(true);
     while (!stop_requested()) {
       std::this_thread::sleep_for(1ms);
     }
@@ -228,7 +244,9 @@ TEST(BackgroundCallsTest, DeadlineStopsCooperativeWork) {
     return std::function<void()>([&finished]() { ++finished; });
   }, [&]() { ++expired; }), EnqueueResult::kQueued);
 
-  EXPECT_TRUE(PumpUntil([&]() { return expired == 1; }, kDeliveryTimeout * 2));
+  EXPECT_TRUE(WaitWithoutPumping([&]() { return started->load(); }, kDeliveryTimeout));
+  elapsed_ms->store(kDeliveryTimeout.count());
+  EXPECT_TRUE(PumpUntil([&]() { return expired == 1; }, kDeliveryTimeout));
   EXPECT_TRUE(WaitWithoutPumping([&]() { return saw_stop->load(); }, kDeliveryTimeout));
   PumpQueuedMessages();
   EXPECT_EQ(expired, 1);
@@ -239,7 +257,48 @@ TEST(BackgroundCallsTest, DeadlineStopsCooperativeWork) {
 TEST(BackgroundCallsTest, RefusesWorkWithANonPositiveDeadline) {
   DetachedThreadsDrain drain;
   for (const auto timeout : {0ms, -1ms}) {
-    BackgroundCalls calls(kCapacity, timeout);
+    BackgroundCalls calls(kCapacity, {.timeout = timeout});
+    EXPECT_EQ(calls.Enqueue([](const StopRequested&) { return std::function<void()>([]() {}); }),
+              EnqueueResult::kNotReady);
+  }
+}
+
+// Purpose: A failed native timer installation leaves no usable dispatcher,
+// so a host never accepts work without a functioning deadline wake.
+TEST(BackgroundCallsTest, RefusesWorkWhenDeadlineTimerInstallationFails) {
+  bool attempted = false;
+  bool worked = false;
+  DetachedThreadsDrain drain;
+  BackgroundCalls calls(kCapacity, {
+      .make_dispatcher = [&](std::function<void()> on_wake) {
+        return std::make_shared<PlatformThreadDispatcher>(std::move(on_wake),
+            PlatformThreadDispatcherOptions{
+                .wake_interval = 10ms,
+                .install_timer = [&](const DispatcherTimerRequest&) {
+                  attempted = true;
+                  return false;
+                }});
+      }});
+
+  EXPECT_TRUE(attempted);
+  EXPECT_EQ(calls.Enqueue([&](const StopRequested&) {
+    worked = true;
+    return std::function<void()>([]() {});
+  }), EnqueueResult::kNotReady);
+  PumpQueuedMessages();
+  EXPECT_FALSE(worked);
+}
+
+// Purpose: Missing injected dependencies fail closed before accepting work.
+TEST(BackgroundCallsTest, RefusesWorkWhenAClockOrDispatcherIsMissing) {
+  DetachedThreadsDrain drain;
+  const std::vector<BackgroundCallOptions> missing{
+      {.now = {}},
+      {.make_dispatcher = [](std::function<void()>) {
+         return std::shared_ptr<PlatformThreadDispatcher>{};
+       }}};
+  for (const auto& options : missing) {
+    BackgroundCalls calls(kCapacity, options);
     EXPECT_EQ(calls.Enqueue([](const StopRequested&) { return std::function<void()>([]() {}); }),
               EnqueueResult::kNotReady);
   }

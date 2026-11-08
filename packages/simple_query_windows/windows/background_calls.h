@@ -24,6 +24,27 @@ inline constexpr std::chrono::milliseconds kHostCallTimeout{30000};
 // the owner is destroyed, so long work can end early.
 using BackgroundJob = std::function<std::function<void()>(const StopRequested&)>;
 
+// Purpose: Name the monotonic clock used by deadlines.
+// @param none.
+// @returns A monotonic time point; providers must be thread-safe and not throw.
+// @throws Nothing.
+using MonotonicNow = std::function<std::chrono::steady_clock::time_point()>;
+
+class PlatformThreadDispatcher;
+
+// Purpose: Supply deadline policy and the worker's external dependencies.
+// @param timeout includes time waiting in the queue and must be positive.
+// @param now is the thread-safe monotonic clock provider.
+// @param make_dispatcher creates a platform-thread dispatcher for the supplied
+// callback; empty selects the Windows window and deadline timer. It must not throw.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
+struct BackgroundCallOptions {
+  std::chrono::milliseconds timeout{kHostCallTimeout};
+  MonotonicNow now = []() { return std::chrono::steady_clock::now(); };
+  std::function<std::shared_ptr<PlatformThreadDispatcher>(std::function<void()>)> make_dispatcher;
+};
+
 // Purpose: Say whether a call was accepted for the background worker.
 enum class EnqueueResult {
   // The job will run, and its finishing step will run on the platform thread
@@ -58,11 +79,11 @@ class BackgroundCalls {
  public:
   // Purpose: Start the worker and the platform-thread wake.
   // @param capacity is the most calls that may be unfinished at once.
-  // @param timeout bounds a call, including its queue wait; it must be positive.
+  // @param options supplies the deadline policy, clock and dispatcher factory.
   // @returns Nothing; a failed setup makes every Enqueue return kNotReady.
   // @throws Nothing; a failed setup is logged.
   explicit BackgroundCalls(size_t capacity,
-                           std::chrono::milliseconds timeout = kHostCallTimeout);
+                           BackgroundCallOptions options = {});
 
   // Purpose: Stop the worker without waiting for it, dropping every call
   // not yet finished.

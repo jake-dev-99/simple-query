@@ -39,16 +39,24 @@ HMODULE CodeModule() {
   return module;
 }
 
+// Purpose: Install the timer that wakes a platform window for deadline checks.
+// @param request names the window, timer and bounded interval.
+// @returns true only when Windows created the timer.
+// @throws Nothing.
+bool InstallWakeTimer(const DispatcherTimerRequest& request) {
+  return SetTimer(request.window, request.id, request.interval_ms, nullptr) != 0;
+}
+
 }  // namespace
 
 // Purpose: Register the window class and create the message-only window that
 // carries wake requests to the creating thread.
 // @param on_wake runs on the creating thread once per delivered wake.
-// @param wake_interval adds periodic wakes when positive, within Windows limits.
+// @param options supplies periodic wakes and the timer installation boundary.
 // @returns Nothing; IsReady() reports whether the window exists.
 // @throws Nothing; a window that cannot be created leaves IsReady() false.
 PlatformThreadDispatcher::PlatformThreadDispatcher(
-    std::function<void()> on_wake, std::chrono::milliseconds wake_interval)
+    std::function<void()> on_wake, PlatformThreadDispatcherOptions options)
     : on_wake_(std::move(on_wake)), module_(CodeModule()) {
   if (module_ == nullptr) {
     return;
@@ -66,10 +74,14 @@ PlatformThreadDispatcher::PlatformThreadDispatcher(
                             HWND_MESSAGE, nullptr, module_, nullptr);
   if (window_ != nullptr) {
     SetWindowLongPtrW(window_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
-    if (wake_interval.count() > 0) {
+    if (options.wake_interval.count() > 0) {
       const auto interval = std::clamp<int64_t>(
-          wake_interval.count(), USER_TIMER_MINIMUM, USER_TIMER_MAXIMUM);
-      if (SetTimer(window_, kWakeTimer, static_cast<UINT>(interval), nullptr) == 0) {
+          options.wake_interval.count(), USER_TIMER_MINIMUM, USER_TIMER_MAXIMUM);
+      const auto install_timer = options.install_timer
+                                     ? std::move(options.install_timer)
+                                     : std::function<bool(const DispatcherTimerRequest&)>(InstallWakeTimer);
+      if (!install_timer({.window = window_, .id = kWakeTimer,
+                          .interval_ms = static_cast<UINT>(interval)})) {
         SetWindowLongPtrW(window_, GWLP_USERDATA, 0);
         DestroyWindow(window_);
         window_ = nullptr;
