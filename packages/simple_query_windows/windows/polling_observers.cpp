@@ -1,7 +1,9 @@
 #include "polling_observers.h"
 
+#include "boundary_formats.h"
 #include "structured_log.h"
 
+#include <chrono>
 #include <cstddef>
 #include <exception>
 #include <set>
@@ -276,7 +278,12 @@ void PollingObservers::RunWorker(Observer* observer) {
 
   while (!WaitForNextPoll(observer)) {
     std::optional<Snapshot> current = TakeSnapshot(observer, &streaks);
-    if (current.has_value() && RecordSnapshot(observer, std::move(*current))) {
+    // A failed poll still retries the wake for a change found earlier, so a
+    // wake the queue rejected is not stranded behind a run of failed reads.
+    const bool change_pending = current.has_value()
+                                    ? RecordSnapshot(observer, std::move(*current))
+                                    : HasPendingChange(observer);
+    if (change_pending) {
       RequestDelivery(&streaks);
     }
   }
@@ -378,6 +385,15 @@ bool PollingObservers::RecordSnapshot(Observer* observer, Snapshot current) {
   return true;
 }
 
+// Purpose: Report whether an observer holds a change not yet delivered.
+// @param observer is the observer to check.
+// @returns true when a change is pending.
+// @throws Nothing.
+bool PollingObservers::HasPendingChange(Observer* observer) {
+  std::lock_guard<std::mutex> lock(observer->mutex);
+  return observer->delivery.pending.has_value();
+}
+
 // Purpose: Deliver every pending change. Runs on the platform thread.
 // @returns Nothing.
 // @throws Nothing beyond what effects.send_event throws.
@@ -413,8 +429,10 @@ EncodableMap PollingObservers::BuildEvent(const std::string& domain,
   EncodableMap event;
   event[EncodableValue("domain")] = EncodableValue(domain);
   event[EncodableValue("changeType")] = EncodableValue("unknown");
-  event[EncodableValue("timestamp")] =
-      EncodableValue(std::to_string(change.detected_at_epoch_ms));
+  // Dart parses the timestamp with DateTime.parse, so it is ISO 8601.
+  event[EncodableValue("timestamp")] = EncodableValue(FormatIsoUtc(
+      std::chrono::system_clock::time_point(
+          std::chrono::milliseconds(change.detected_at_epoch_ms))));
   event[EncodableValue("ids")] = EncodableValue(change.ids);
   event[EncodableValue("source")] = EncodableValue("windows-host");
   return event;

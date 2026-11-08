@@ -31,6 +31,8 @@ using flutter::EncodableValue;
 constexpr std::chrono::milliseconds kFastPoll = 20ms;
 constexpr std::chrono::milliseconds kLongPoll = 10min;
 constexpr int64_t kFixedNowEpochMs = 1700000000000;
+// kFixedNowEpochMs as the ISO 8601 UTC text Dart's DateTime.parse reads.
+constexpr const char* kFixedNowIso = "2023-11-14T22:13:20.000Z";
 
 // Purpose: Say whether a ControlledSource's snapshots fail.
 struct ReadOutcome {
@@ -163,7 +165,7 @@ TEST_F(PollingObserversTest, DeliversAllChangesSinceTheLastEventInOneEvent) {
   EXPECT_EQ(events_[0].thread, std::this_thread::get_id());
   EXPECT_EQ(IdsOf(events_[0].event), (std::vector<std::string>{"b", "c"}));
   EXPECT_EQ(std::get<std::string>(events_[0].event.at(EncodableValue("timestamp"))),
-            std::to_string(kFixedNowEpochMs));
+            kFixedNowIso);
 }
 
 // Purpose: A failed poll reports nothing, so a passing read error never
@@ -283,6 +285,28 @@ TEST_F(PollingObserversTest, RetriesAWakeThatCouldNotBeQueued) {
   ASSERT_TRUE(source.WaitForPollToFinish());
   ASSERT_TRUE(PumpUntil([&]() { return !events_.empty(); }, kDeliveryTimeout));
 
+  ASSERT_EQ(events_.size(), 1u);
+  EXPECT_EQ(IdsOf(events_[0].event), (std::vector<std::string>{"b"}));
+}
+
+// Purpose: A change whose wake could not be queued is still delivered when
+// every later poll fails, because a failed poll retries the pending wake.
+TEST_F(PollingObserversTest, RetriesAWakeAfterFailedPolls) {
+  ControlledSource source;
+  source.Set({{"a", 1}});
+  PollingObservers observers(RecordingEffects());
+  observers.Start(SpecFor(source, kFastPoll));
+  ASSERT_TRUE(WaitForBaseline(source));
+  ASSERT_TRUE(FillMessageQueue());
+
+  source.Set({{"a", 1}, {"b", 1}});
+  ASSERT_TRUE(source.WaitForPollToFinish());
+  source.SetReadOutcome({.failing = true});
+  ASSERT_TRUE(source.WaitForPollToFinish());
+  // Empties the queue; no wake is in it, because every post was refused.
+  PumpQueuedMessages();
+
+  ASSERT_TRUE(PumpUntil([&]() { return !events_.empty(); }, kDeliveryTimeout));
   ASSERT_EQ(events_.size(), 1u);
   EXPECT_EQ(IdsOf(events_[0].event), (std::vector<std::string>{"b"}));
 }

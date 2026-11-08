@@ -1,18 +1,14 @@
 // Native tests for the Windows Runtime store helpers: waiting on a store call
-// that can be stopped, failing a read that had an error, and joining an
-// apartment on each thread that reads a store.
+// that can be stopped, and joining an apartment on each thread that reads a
+// store.
 
 #include <windows.h>
 #include <objbase.h>
 
-#include <flutter/encodable_value.h>
 #include <gtest/gtest.h>
 
 #include <optional>
-#include <stdexcept>
-#include <string>
 #include <thread>
-#include <utility>
 
 #include <winrt/Windows.Foundation.h>
 
@@ -22,8 +18,6 @@ namespace simple_query_windows {
 namespace test {
 namespace {
 
-using flutter::EncodableMap;
-using flutter::EncodableValue;
 using winrt::Windows::Foundation::AsyncStatus;
 
 constexpr int kFakeResult = 42;
@@ -120,32 +114,6 @@ TEST(AwaitUnlessStoppedTest, CancelsTheCallWhenAskedToStop) {
   EXPECT_FALSE(result.has_value());
   EXPECT_TRUE(operation.cancelled());
   EXPECT_EQ(stop_checks, 3);
-}
-
-// Purpose: A read without an error gives its rows.
-TEST(RowsOrThrowTest, GivesTheRowsOfASuccessfulRead) {
-  WinRtRowsResult result;
-  result.rows.push_back(EncodableMap{{EncodableValue("id"), EncodableValue("a")}});
-
-  const auto rows = RowsOrThrow(std::move(result));
-
-  ASSERT_EQ(rows.size(), 1u);
-  EXPECT_EQ(std::get<std::string>(rows[0].at(EncodableValue("id"))), "a");
-}
-
-// Purpose: A read that had an error fails, carrying that error, so it is
-// never mistaken for an empty store.
-TEST(RowsOrThrowTest, FailsAReadThatHadAnError) {
-  WinRtRowsResult result;
-  result.rows.push_back(EncodableMap{{EncodableValue("id"), EncodableValue("a")}});
-  result.error = "store unavailable";
-
-  try {
-    RowsOrThrow(std::move(result));
-    ADD_FAILURE() << "RowsOrThrow returned rows from a failed read";
-  } catch (const std::runtime_error& error) {
-    EXPECT_STREQ(error.what(), "store unavailable");
-  }
 }
 
 // Purpose: A worker thread joins the multithreaded apartment for the scope,

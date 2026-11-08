@@ -5,8 +5,8 @@
 
 #include <filesystem>
 #include <string>
-#include <vector>
 
+#include "rows_result.h"
 #include "stop_requested.h"
 
 namespace simple_query_windows {
@@ -29,17 +29,18 @@ std::string Lower(std::string value);
 // Purpose: Guess a file's MIME type from its extension.
 // @param path is the file's path.
 // @returns The MIME type, or application/octet-stream when unknown.
-// @throws Nothing.
+// @throws std::system_error when the extension is not valid Unicode.
 std::string MimeFromPath(const std::filesystem::path& path);
 
-// Purpose: List the files under a root directory as query rows.
+// Purpose: List the files under a root directory as query rows. Paths are
+// UTF-8 and times are ISO 8601 UTC, as Dart reads them.
 // @param options selects the root, the row shape and an early stop.
-// @returns One row per entry found, or the rows found before a stop. An entry
-// whose details cannot be read, such as one removed during the walk, is left
-// out.
-// @throws std::system_error when an entry's path cannot be converted to the
-// system code page, which happens for some non-ASCII names.
-std::vector<flutter::EncodableMap> ListRecords(const ListRecordsOptions& options);
+// @returns One row per entry, or an error when the walk could not finish:
+// a directory or entry that cannot be read, a name that is not valid
+// Unicode, or a stop. An entry removed during the walk is left out, and a
+// root that does not exist has no rows.
+// @throws Nothing; failures are returned in error.
+RowsResult ListRecords(const ListRecordsOptions& options);
 
 }  // namespace simple_query_windows
 

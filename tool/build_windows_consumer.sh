@@ -73,5 +73,9 @@ shared_package_path="$(windows_yaml_path "${repository_root}/packages/simple_que
     echo "The build did not produce the Simple Query Windows native test runner." >&2
     exit 1
   fi
-  "${test_runner}"
+  # An inherited filter or shard setting could select no tests, and
+  # GoogleTest exits 0 for an empty run, so clear them and fail a run that
+  # links no tests.
+  env -u GTEST_FILTER -u GTEST_TOTAL_SHARDS -u GTEST_SHARD_INDEX \
+    "${test_runner}" --gtest_filter='*' --gtest_fail_if_no_test_linked
 )

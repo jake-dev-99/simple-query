@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <map>
 #include <memory>
@@ -21,6 +22,7 @@
 #include <utility>
 #include <vector>
 
+#include "boundary_formats.h"
 #include "native_query.g.h"
 #include "test/test_support.h"
 
@@ -229,7 +231,7 @@ struct FileObserverRequest {
 // @throws std::bad_variant_access when the reply is malformed.
 std::string StartFileObserver(const FileObserverRequest& request) {
   const EncodableMap platform_data{
-      {EncodableValue("rootPath"), EncodableValue(request.root.string())}};
+      {EncodableValue("rootPath"), EncodableValue(PathToUtf8(request.root))}};
   const EncodableMap observe_request{
       {EncodableValue("domain"), EncodableValue("files")},
       {EncodableValue("pollingIntervalMs"), EncodableValue(request.polling_interval_ms)},
@@ -294,8 +296,10 @@ TEST(SimpleQueryWindowsPluginTest, SendsObserveEventsOnThePlatformThread) {
     EXPECT_EQ(sent.thread, std::this_thread::get_id());
     ASSERT_FALSE(IdsOf(sent.event).empty());
     for (const auto& id : IdsOf(sent.event)) {
-      EXPECT_EQ(std::filesystem::path(id).parent_path(), directory.path());
+      EXPECT_EQ(PathFromUtf8(id).parent_path(), directory.path());
     }
+    const auto& timestamp = std::get<std::string>(sent.event.at(EncodableValue("timestamp")));
+    EXPECT_TRUE(IsIsoUtc(timestamp)) << timestamp;
   }
   messenger.CallHost("observeStop", EncodableList{EncodableValue(observer_id)});
 }
@@ -401,6 +405,129 @@ TEST(SimpleQueryWindowsPluginTest, ReportsAnUnreadableRootWithoutStartingAnObser
                          .polling_interval_ms = kPluginLongPollMs});
   EXPECT_EQ(observer_id, "windows_observer_1");
   messenger.CallHost("observeStop", EncodableList{EncodableValue(observer_id)});
+}
+
+// Purpose: Read the error code of a failed host call.
+// @param reply is the decoded reply list.
+// @returns The code, or empty text when the call succeeded.
+// @throws std::bad_variant_access when the code is not text.
+std::string ErrorCodeOf(const EncodableList& reply) {
+  return reply.size() == 3 ? std::get<std::string>(reply.at(0)) : std::string();
+}
+
+// Purpose: Build a files query rooted at a folder.
+// @param root is the folder.
+// @returns The request, without filters or paging.
+// @throws std::system_error when the root is not valid Unicode.
+EncodableMap FilesQuery(const std::filesystem::path& root) {
+  return {{EncodableValue("domain"), EncodableValue("files")},
+          {EncodableValue("platformData"),
+           EncodableValue(EncodableMap{
+               {EncodableValue("rootPath"), EncodableValue(PathToUtf8(root))}})}};
+}
+
+// Purpose: A query without a domain is rejected as invalid-query.
+TEST(SimpleQueryWindowsPluginTest, RejectsAQueryWithoutADomain) {
+  FakeMessenger messenger;
+  SimpleQueryWindowsPlugin plugin(&messenger);
+
+  const EncodableList reply =
+      messenger.CallHost("query", EncodableList{EncodableValue(EncodableMap{})});
+
+  EXPECT_EQ(ErrorCodeOf(reply), "invalid-query");
+}
+
+// Purpose: A query filter with an operator Dart does not define is rejected
+// as invalid-query instead of matching everything.
+TEST(SimpleQueryWindowsPluginTest, RejectsAQueryWithAnUnknownOperator) {
+  FakeMessenger messenger;
+  TempDirectory directory;
+  SimpleQueryWindowsPlugin plugin(&messenger);
+  EncodableMap request = FilesQuery(directory.path());
+  request[EncodableValue("filters")] = EncodableValue(EncodableList{EncodableValue(
+      EncodableMap{{EncodableValue("field"), EncodableValue("name")},
+                   {EncodableValue("operator"), EncodableValue("startsWith")},
+                   {EncodableValue("value"), EncodableValue("a")}})});
+
+  const EncodableList reply = messenger.CallHost("query", EncodableList{EncodableValue(request)});
+
+  EXPECT_EQ(ErrorCodeOf(reply), "invalid-query");
+}
+
+// Purpose: A files query reads a UTF-8 root, returns UTF-8 paths, and pages
+// with the total count and the next offset.
+TEST(SimpleQueryWindowsPluginTest, QueriesAUtf8RootAPageAtATime) {
+  FakeMessenger messenger;
+  TempDirectory directory;
+  const std::filesystem::path root = directory.path() / PathFromUtf8("caf\xC3\xA9");
+  std::filesystem::create_directories(root);
+  for (int file = 0; file < 3; ++file) {
+    std::ofstream(root / ("file_" + std::to_string(file) + ".txt")) << "changed";
+  }
+  SimpleQueryWindowsPlugin plugin(&messenger);
+  EncodableMap request = FilesQuery(root);
+  request[EncodableValue("page")] = EncodableValue(
+      EncodableMap{{EncodableValue("limit"), EncodableValue(int32_t{2})}});
+
+  const EncodableList reply = messenger.CallHost("query", EncodableList{EncodableValue(request)});
+
+  ASSERT_EQ(reply.size(), 1u) << ErrorCodeOf(reply);
+  const auto& result = std::get<EncodableMap>(reply.at(0));
+  const auto& records = std::get<EncodableList>(result.at(EncodableValue("records")));
+  ASSERT_EQ(records.size(), 2u);
+  EXPECT_EQ(std::get<int64_t>(result.at(EncodableValue("totalCount"))), 3);
+  EXPECT_EQ(std::get<int64_t>(result.at(EncodableValue("nextOffset"))), 2);
+  for (const auto& record : records) {
+    const auto& path =
+        std::get<std::string>(std::get<EncodableMap>(record).at(EncodableValue("path")));
+    EXPECT_EQ(PathFromUtf8(path).parent_path(), root);
+  }
+}
+
+// Purpose: openBinary reads a UTF-8 path and returns it unchanged as the
+// local path.
+TEST(SimpleQueryWindowsPluginTest, OpensABinaryByItsUtf8Path) {
+  FakeMessenger messenger;
+  TempDirectory directory;
+  const std::string utf8_name = "\xE6\x97\xA5\xE8\xA8\x98.txt";
+  const std::filesystem::path file = directory.path() / PathFromUtf8(utf8_name);
+  std::ofstream(file) << "changed";
+  const std::string file_text = PathToUtf8(file);
+  SimpleQueryWindowsPlugin plugin(&messenger);
+  const EncodableMap request{
+      {EncodableValue("domain"), EncodableValue("files")},
+      {EncodableValue("platformData"),
+       EncodableValue(EncodableMap{{EncodableValue("path"), EncodableValue(file_text)}})}};
+
+  const EncodableList reply =
+      messenger.CallHost("openBinary", EncodableList{EncodableValue(request)});
+
+  ASSERT_EQ(reply.size(), 1u) << ErrorCodeOf(reply);
+  const auto& result = std::get<EncodableMap>(reply.at(0));
+  EXPECT_EQ(std::get<std::string>(result.at(EncodableValue("localPath"))), file_text);
+  EXPECT_EQ(std::get<int64_t>(result.at(EncodableValue("size"))), 7);
+  messenger.CallHost("closeBinary",
+                     EncodableList{result.at(EncodableValue("handleId"))});
+}
+
+// Purpose: openBinary for a missing file fails as unavailable and says what
+// to do next.
+TEST(SimpleQueryWindowsPluginTest, ReportsAMissingBinaryAsUnavailable) {
+  FakeMessenger messenger;
+  TempDirectory directory;
+  SimpleQueryWindowsPlugin plugin(&messenger);
+  const EncodableMap request{
+      {EncodableValue("domain"), EncodableValue("files")},
+      {EncodableValue("platformData"),
+       EncodableValue(EncodableMap{
+           {EncodableValue("path"),
+            EncodableValue(PathToUtf8(directory.path() / "missing.txt"))}})}};
+
+  const EncodableList reply =
+      messenger.CallHost("openBinary", EncodableList{EncodableValue(request)});
+
+  ASSERT_EQ(ErrorCodeOf(reply), "unavailable");
+  EXPECT_NE(std::get<std::string>(reply.at(1)).find("Query again"), std::string::npos);
 }
 
 }  // namespace

@@ -292,11 +292,11 @@ class NativeQueryHostApi {
 
   /// Purpose: Calls a namespaced Windows-only extension.
   ///
-  /// @param namespace_ selects the registered Windows extension namespace.
+  /// @param extensionNamespace selects the registered Windows extension namespace.
   /// The trailing underscore keeps the generated C++ parameter from using the
   /// reserved word `namespace`.
-  Future<Map<String?, Object?>?> callExtension(
-      String namespace_, String method, Map<String?, Object?>? args) async {
+  Future<Map<String?, Object?>?> callExtension(String extensionNamespace,
+      String method, Map<String?, Object?>? args) async {
     final String pigeonVar_channelName =
         'dev.flutter.pigeon.simple_query_windows.NativeQueryHostApi.callExtension$pigeonVar_messageChannelSuffix';
     final BasicMessageChannel<Object?> pigeonVar_channel =
@@ -306,7 +306,7 @@ class NativeQueryHostApi {
       binaryMessenger: pigeonVar_binaryMessenger,
     );
     final List<Object?>? pigeonVar_replyList = await pigeonVar_channel
-        .send(<Object?>[namespace_, method, args]) as List<Object?>?;
+        .send(<Object?>[extensionNamespace, method, args]) as List<Object?>?;
     if (pigeonVar_replyList == null) {
       throw _createConnectionError(pigeonVar_channelName);
     } else if (pigeonVar_replyList.length > 1) {

@@ -5,8 +5,10 @@
 #include <gtest/gtest.h>
 #include <windows.h>
 
+#include <atomic>
 #include <memory>
 #include <thread>
+#include <vector>
 
 #include "test/dispatcher_probe.h"
 #include "test/test_support.h"
@@ -119,6 +121,37 @@ TEST(PlatformThreadDispatcherTest, ReportsAFullQueueAndRecovers) {
   EXPECT_TRUE(dispatcher.RequestWake());
   PumpQueuedMessages();
   EXPECT_EQ(wakes, 1);
+}
+
+// Purpose: While the queue is full, no concurrent request reports a wake as
+// queued, so no caller skips a retry for a wake that was never posted.
+TEST(PlatformThreadDispatcherTest, ReportsNoQueuedWakeToConcurrentRequestsOnAFullQueue) {
+  constexpr int kRequesters = 8;
+  constexpr int kRequestsEach = 200;
+  int wakes = 0;
+  PlatformThreadDispatcher dispatcher([&]() { ++wakes; });
+  ASSERT_TRUE(FillMessageQueue());
+
+  std::atomic<int> reported_queued{0};
+  std::vector<std::thread> requesters;
+  for (int requester = 0; requester < kRequesters; ++requester) {
+    requesters.emplace_back([&]() {
+      for (int request = 0; request < kRequestsEach; ++request) {
+        if (dispatcher.RequestWake()) {
+          ++reported_queued;
+        }
+      }
+    });
+  }
+  for (auto& requester : requesters) {
+    requester.join();
+  }
+  PumpQueuedMessages();
+
+  EXPECT_EQ(reported_queued.load(), 0);
+  EXPECT_EQ(wakes, 0);
+  EXPECT_TRUE(dispatcher.RequestWake());
+  EXPECT_TRUE(PumpUntil([&]() { return wakes == 1; }, kDeliveryTimeout));
 }
 
 // Purpose: A wake still queued when the dispatcher goes never runs.

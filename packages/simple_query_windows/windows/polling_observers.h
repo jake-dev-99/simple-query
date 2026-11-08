@@ -161,6 +161,12 @@ class PollingObservers {
   // @throws Nothing.
   bool RecordSnapshot(Observer* observer, Snapshot current);
 
+  // Purpose: Report whether an observer holds a change not yet delivered.
+  // @param observer is the observer to check.
+  // @returns true when a change is pending.
+  // @throws Nothing.
+  bool HasPendingChange(Observer* observer);
+
   // Purpose: Deliver every pending change. Runs on the platform thread.
   // @returns Nothing.
   // @throws Nothing beyond what effects.send_event throws.

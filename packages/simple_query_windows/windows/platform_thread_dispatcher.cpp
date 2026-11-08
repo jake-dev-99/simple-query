@@ -100,16 +100,19 @@ bool PlatformThreadDispatcher::RequestWake() {
     SetLastError(ERROR_INVALID_WINDOW_HANDLE);
     return false;
   }
-  if (wake_queued_.exchange(true)) {
+  // The lock covers the post: a second request made while the first post is
+  // still in flight waits for its result instead of trusting a flag that a
+  // failed post is about to clear. lock_guard leaves the thread's last-error
+  // value that PostMessageW set untouched.
+  std::lock_guard<std::mutex> lock(wake_mutex_);
+  if (wake_queued_) {
     return true;
   }
-  if (PostMessageW(window_, kWakeMessage, 0, 0) != 0) {
-    return true;
+  if (PostMessageW(window_, kWakeMessage, 0, 0) == 0) {
+    return false;
   }
-  // Nothing was queued, so the next request must post again. The store does
-  // not touch the thread's last-error value that PostMessageW set.
-  wake_queued_.store(false);
-  return false;
+  wake_queued_ = true;
+  return true;
 }
 
 // Purpose: Run the dispatcher's wake for a wake message and pass every other
@@ -141,7 +144,10 @@ LRESULT CALLBACK PlatformThreadDispatcher::WindowProc(HWND window,
 void PlatformThreadDispatcher::RunWake() {
   // Clear before running, so a request made while on_wake runs queues a new
   // wake instead of being absorbed by this one.
-  wake_queued_.store(false);
+  {
+    std::lock_guard<std::mutex> lock(wake_mutex_);
+    wake_queued_ = false;
+  }
   on_wake_();
 }
 

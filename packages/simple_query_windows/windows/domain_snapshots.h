@@ -20,9 +20,9 @@ struct SnapshotRequest {
 // Purpose: Take one observer snapshot of a domain's records.
 // @param source names the domain, its root directory and the stop check.
 // @returns Each record's id mapped to a fingerprint of its row.
-// @throws std::runtime_error when a contacts or calendar store cannot be
-// read, std::system_error when a file path cannot be converted to the system
-// code page, and std::invalid_argument for a domain observe does not support.
+// @throws ReadDeniedError when the user has not granted access,
+// std::runtime_error when the read fails or stops before it finishes, and
+// std::invalid_argument for a domain observe does not support.
 Snapshot BuildSnapshotForDomain(const SnapshotRequest& source);
 
 }  // namespace simple_query_windows

@@ -3,8 +3,8 @@
 
 #include <windows.h>
 
-#include <atomic>
 #include <functional>
+#include <mutex>
 
 namespace simple_query_windows {
 
@@ -71,8 +71,12 @@ class PlatformThreadDispatcher {
   void RunWake();
 
   std::function<void()> on_wake_;
-  // True from a queued wake until the creating thread starts running it.
-  std::atomic<bool> wake_queued_{false};
+  // Serializes the queued-wake flag with the post that sets it, so a request
+  // reports a queued wake only after a post has actually succeeded.
+  std::mutex wake_mutex_;
+  // True from a successful post until the creating thread starts running it.
+  // Guarded by wake_mutex_.
+  bool wake_queued_ = false;
   // The module that holds this code and owns the window class; null when it
   // could not be found, which leaves IsReady() false.
   HMODULE module_ = nullptr;

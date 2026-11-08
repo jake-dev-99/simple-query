@@ -13,6 +13,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# A package named on the command line must have a pigeon.dart: a mistyped
+# path would otherwise skip regeneration and still exit 0.
+explicit_packages=false
 PACKAGES=(
   packages/simple_query_android
   packages/simple_query_ios
@@ -22,10 +25,15 @@ PACKAGES=(
 )
 if [[ $# -gt 0 ]]; then
   PACKAGES=("$@")
+  explicit_packages=true
 fi
 
 for pkg in "${PACKAGES[@]}"; do
   if [[ ! -f "$pkg/pigeon.dart" ]]; then
+    if [[ "$explicit_packages" == true ]]; then
+      echo "error: $pkg has no pigeon.dart. Pass a package directory that contains one." >&2
+      exit 1
+    fi
     echo "skip: $pkg (no pigeon.dart)"
     continue
   fi

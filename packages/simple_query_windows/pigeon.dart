@@ -23,11 +23,11 @@ abstract class NativeQueryHostApi {
   void closeBinary(String handleId);
   /// Purpose: Calls a namespaced Windows-only extension.
   ///
-  /// @param namespace_ selects the registered Windows extension namespace.
-  /// The trailing underscore keeps the generated C++ parameter from using the
-  /// reserved word `namespace`.
+  /// @param extensionNamespace selects the registered Windows extension namespace.
+  /// It is not named `namespace`, a C++ keyword, and carries no trailing
+  /// underscore, which Pigeon would turn into a reserved C++ identifier.
   Map<String?, Object?>? callExtension(
-    String namespace_,
+    String extensionNamespace,
     String method,
     Map<String?, Object?>? args,
   );

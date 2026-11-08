@@ -14,6 +14,7 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <regex>
 #include <sstream>
 #include <string>
 #include <system_error>
@@ -88,6 +89,16 @@ inline bool FillMessageQueue() {
     }
   }
   return false;
+}
+
+// Purpose: Report whether text is an ISO 8601 UTC time with milliseconds,
+// the form Dart's DateTime.parse reads.
+// @param text is the text to check.
+// @returns true for YYYY-MM-DDTHH:MM:SS.mmmZ.
+// @throws Nothing.
+inline bool IsIsoUtc(const std::string& text) {
+  static const std::regex kIsoUtc(R"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)");
+  return std::regex_match(text, kIsoUtc);
 }
 
 // Purpose: Measure how long an action takes.

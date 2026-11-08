@@ -5,12 +5,11 @@
 
 #include <chrono>
 #include <optional>
-#include <string>
 #include <thread>
-#include <vector>
 
 #include <winrt/Windows.Foundation.h>
 
+#include "rows_result.h"
 #include "stop_requested.h"
 
 namespace simple_query_windows {
@@ -64,44 +63,36 @@ auto AwaitUnlessStopped(const Operation& operation, const StopRequested& stop_re
   return operation.GetResults();
 }
 
-// Purpose: Hold the rows a Windows Runtime store returned, or why it could
-// not be read.
-struct WinRtRowsResult {
-  std::vector<flutter::EncodableMap> rows;
-  // Set when the store could not be read; rows is then empty or partial.
-  std::optional<std::string> error;
-};
-
-// Purpose: Give a store read's rows, or fail when the store could not be
-// read, so a failed read is never mistaken for an empty store.
-// @param result is the store read's outcome.
-// @returns The rows read.
-// @throws std::runtime_error carrying the read's error when it failed.
-std::vector<flutter::EncodableMap> RowsOrThrow(WinRtRowsResult result);
-
 // Purpose: List the user's contacts as query rows.
 // @param stop_requested ends the read early, cancelling any store call in
 // flight; empty means never.
-// @returns The contact rows, the rows read before a stop, or an error.
+// @returns The contact rows, or an error when the read failed, stopped or
+// was denied. A denial also names the "contacts" capability.
 // @throws Nothing; store failures are returned in error.
-WinRtRowsResult ListContactRecords(const StopRequested& stop_requested);
+RowsResult ListContactRecords(const StopRequested& stop_requested);
 
 // Purpose: List the appointments from a year back to a year ahead as rows.
+// Times are ISO 8601 UTC, as on the other platforms.
 // @param stop_requested ends the read early, cancelling any store call in
 // flight; empty means never.
-// @returns The appointment rows, the rows read before a stop, or an error.
+// @returns The appointment rows, or an error when the read failed, stopped
+// or was denied. A denial also names the "appointments" capability.
 // @throws Nothing; store failures are returned in error.
-WinRtRowsResult ListCalendarRecords(const StopRequested& stop_requested);
+RowsResult ListCalendarRecords(const StopRequested& stop_requested);
 
 // Purpose: List the user's contact lists.
-// @returns One row per contact list, with its id and name.
-// @throws winrt::hresult_error when the contact store cannot be read.
-flutter::EncodableList ListContactStores();
+// @param stop_requested ends the read early; empty means never.
+// @returns One row per contact list, with its id and name, or an error as
+// ListContactRecords gives one.
+// @throws Nothing; store failures are returned in error.
+RowsResult ListContactStores(const StopRequested& stop_requested);
 
 // Purpose: List the user's appointment calendars.
-// @returns One row per calendar, with its id and title.
-// @throws winrt::hresult_error when the appointment store cannot be read.
-flutter::EncodableList ListCalendarStores();
+// @param stop_requested ends the read early; empty means never.
+// @returns One row per calendar, with its id and title, or an error as
+// ListCalendarRecords gives one.
+// @throws Nothing; store failures are returned in error.
+RowsResult ListCalendarStores(const StopRequested& stop_requested);
 
 }  // namespace simple_query_windows
 
