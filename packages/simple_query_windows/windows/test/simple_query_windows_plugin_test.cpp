@@ -55,17 +55,23 @@ enum class EventReply {
   kReject,
 };
 
+// Purpose: Describe one sent message the fake Dart side may answer.
+struct ReplyCandidate {
+  // The channel the message was sent on.
+  const std::string& channel;
+  // The sender's reply callback; empty when none is wanted.
+  const flutter::BinaryReply& reply;
+  // How observe events are being answered.
+  EventReply event_reply;
+};
+
 // Purpose: Decide whether the fake Dart side answers a sent message.
-// @param channel is the channel the message was sent on.
-// @param reply is the sender's reply callback; empty when none is wanted.
-// @param event_reply is how observe events are being answered.
+// @param message is the message and how observe events are answered.
 // @returns true for an observe event that wants a reply while answers are on.
 // @throws Nothing.
-bool AnswersObserveEvent(const std::string& channel,
-                         const flutter::BinaryReply& reply,
-                         EventReply event_reply) {
-  return channel == kObserveEventChannel && reply &&
-         event_reply != EventReply::kNone;
+bool AnswersObserveEvent(const ReplyCandidate& message) {
+  return message.channel == kObserveEventChannel && message.reply &&
+         message.event_reply != EventReply::kNone;
 }
 
 // Purpose: Hold one observe event sent through a fake messenger.
@@ -96,7 +102,9 @@ class FakeMessenger : public flutter::BinaryMessenger {
                        std::this_thread::get_id()});
     }
     const EventReply event_reply = GetEventReply();
-    if (!AnswersObserveEvent(channel, reply, event_reply)) {
+    if (!AnswersObserveEvent({.channel = channel,
+                              .reply = reply,
+                              .event_reply = event_reply})) {
       return;
     }
     const EncodableList answer =
