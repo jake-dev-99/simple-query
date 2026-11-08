@@ -62,6 +62,11 @@ void AppendMember(const LogField& field, std::string* line) {
 
 }  // namespace
 
+// Purpose: Format a record as one line of JSON, with the plugin as its
+// source, then the level, the event and each field in order.
+// @param record is the record to format.
+// @returns The JSON object, without a line ending.
+// @throws std::logic_error for a level this formatter does not know.
 std::string FormatLogRecord(const LogRecord& record) {
   std::string line = "{\"source\":\"simple_query_windows\"";
   AppendMember({"level", LevelName(record.level)}, &line);
@@ -73,6 +78,10 @@ std::string FormatLogRecord(const LogRecord& record) {
   return line;
 }
 
+// Purpose: Write a record to standard error as one line of JSON.
+// @param record is the record to write.
+// @returns Nothing.
+// @throws std::logic_error for a level this formatter does not know.
 void WriteLog(const LogRecord& record) {
   // One write per line, so lines from two threads never interleave mid-line.
   std::cerr << (FormatLogRecord(record) + "\n");

@@ -14,6 +14,9 @@ namespace {
 
 // Purpose: A record becomes one JSON object: source, level, event, then each
 // field in the order given.
+// @param None; a test takes no parameters.
+// @returns Nothing; a failed expectation fails the test.
+// @throws Nothing.
 TEST(StructuredLogTest, FormatsTheRecordAsOneJsonObject) {
   const LogRecord record{LogLevel::kError,
                          "observe_snapshot_failed",
@@ -26,6 +29,9 @@ TEST(StructuredLogTest, FormatsTheRecordAsOneJsonObject) {
 }
 
 // Purpose: Each level is spelled as the log line expects.
+// @param None; a test takes no parameters.
+// @returns Nothing; a failed expectation fails the test.
+// @throws Nothing.
 TEST(StructuredLogTest, NamesEachLevel) {
   const LogRecord warning{LogLevel::kWarning, "event", {}};
 
@@ -34,6 +40,9 @@ TEST(StructuredLogTest, NamesEachLevel) {
 
 // Purpose: Quotes, backslashes and control characters in a value are escaped,
 // so a value can never break the line or the JSON around it.
+// @param None; a test takes no parameters.
+// @returns Nothing; a failed expectation fails the test.
+// @throws Nothing.
 TEST(StructuredLogTest, EscapesValuesThatWouldBreakTheLine) {
   const LogRecord record{LogLevel::kError, "event", {{"error", "a \"b\" \\c\nd\te"}}};
 
@@ -45,6 +54,9 @@ TEST(StructuredLogTest, EscapesValuesThatWouldBreakTheLine) {
 }
 
 // Purpose: A written record is one line on standard error.
+// @param None; a test takes no parameters.
+// @returns Nothing; a failed expectation fails the test.
+// @throws Nothing.
 TEST(StructuredLogTest, WritesOneLineToStandardError) {
   StandardErrorCapture log;
 
