@@ -22,15 +22,18 @@ This package is automatically included when you depend on `simple_query`.
 
 ## Closing binary streams
 
-`closeBinary()` waits up to 5 seconds for a running background copy to stop.
-A copy failure that races the close is still raised as its mapped
-`SimpleQueryError`. A copy that does not stop in time raises the failure it
-recorded so far, with the timeout attached. With none recorded, it raises an
-`IOException` (`transientFailure`), because the content may be incomplete. A
-failure that copy records later is logged. A JVM `Error` in the copy is not
+`closeBinary()` waits up to 5 seconds for the stream's pipe and provider
+stream to close and for a running background copy to stop. A copy failure
+that races the close is still raised as its mapped `SimpleQueryError`. A close
+that does not finish in time raises the failure the copy recorded so far, with
+the timeout attached. With none recorded, it raises an `IOException`
+(`transientFailure`), because the content may be incomplete. Any failure that
+arrives after the wait ends is logged once. A JVM `Error` in the copy is not
 raised here; it propagates on the copy's own thread.
 
-`dispose()` closes its open binary streams concurrently, so those waits
-overlap. It raises the first failure in step order. The plugin detach
-(`StreamManager.dispose()`) does not wait; a running copy logs its own failure
-when it finishes.
+`dispose()` first waits for any `openBinary()` still in flight, then closes
+every open binary stream concurrently, so those waits overlap. It raises the
+first failure in step order. A stream opened while it runs stays open for the
+next `dispose()`. The plugin detach (`StreamManager.dispose()`) does not wait;
+it logs a copy failure already recorded, and a running copy logs its own
+failure when it finishes.

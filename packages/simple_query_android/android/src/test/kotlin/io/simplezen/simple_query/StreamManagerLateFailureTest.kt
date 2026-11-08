@@ -227,11 +227,11 @@ class StreamManagerLateFailureTest {
     @Test
     fun closeStreamRaisesACopyThatDoesNotStopAndLogsItsLaterFailure() {
         val failClose = CountDownLatch(1)
-        val (streamId, copies) = fixture.openStreamWaitingInWriteEndClose(failClose, copyStopTimeoutMs = 100)
+        val (streamId, copies) = fixture.openStreamWaitingInWriteEndClose(failClose, closeTimeoutMs = 100)
 
         val error = assertFailsWith<IOException> { fixture.manager.closeStreamBlocking(streamId) }
 
-        assertTrue(error.message.orEmpty().contains("did not stop within 100ms"), error.message)
+        assertTrue(error.message.orEmpty().contains("did not finish within 100ms"), error.message)
         assertTrue(fixture.warnings().isEmpty())
         failClose.countDown()
         copies.shutdown()
@@ -267,6 +267,57 @@ class StreamManagerLateFailureTest {
     }
 
     /**
+     * Purpose: Pin that dispose() logs a copy failure the copy already
+     *   recorded at once, while the copy is still blocked closing its input,
+     *   and logs it only once.
+     *
+     * @return Nothing.
+     * @throws AssertionError when the failure waits for the copy to finish,
+     *   or is logged twice.
+     */
+    @Test(timeout = 10_000)
+    fun disposeLogsARecordedCopyFailureWhileTheCopyIsStillClosingItsInput() {
+        val closingInput = CountDownLatch(1)
+        val finishClose = CountDownLatch(1)
+        fixture.register(CONTENT) {
+            object : InputStream() {
+                /**
+                 * Purpose: Fail the copy's read.
+                 *
+                 * @return Nothing; it always throws.
+                 * @throws IOException "disk read failed".
+                 */
+                override fun read(): Int = throw IOException("disk read failed")
+
+                /**
+                 * Purpose: Block the copy's input close until [finishClose].
+                 *
+                 * @return Nothing.
+                 * @throws Nothing.
+                 */
+                override fun close() {
+                    closingInput.countDown()
+                    finishClose.await(5, TimeUnit.SECONDS)
+                }
+            }
+        }
+        val copies = copyThread()
+        fixture.manager = fixture.managerOn(copies)
+        fixture.manager.openStream(CONTENT)
+        assertTrue(closingInput.await(5, TimeUnit.SECONDS))
+
+        try {
+            fixture.manager.dispose()
+            fixture.assertCopyFailureLoggedOnce("disk read failed")
+        } finally {
+            finishClose.countDown()
+        }
+
+        assertTrue(copies.awaitTermination(5, TimeUnit.SECONDS))
+        fixture.assertCopyFailureLoggedOnce("disk read failed")
+    }
+
+    /**
      * Purpose: Pin that a copy finishing just as closeStream's wait times
      *   out has its failures raised, not logged (UNFY-365).
      *
@@ -284,7 +335,7 @@ class StreamManagerLateFailureTest {
         val failClose = CountDownLatch(1)
         val (streamId, copies) = fixture.openStreamWaitingInWriteEndClose(
             failClose,
-            copyStopTimeoutMs = 100,
+            closeTimeoutMs = 100,
             content = { FailsAfterFirstChunk(IOException("disk read failed")) },
         )
         val copyFinished = AtomicBoolean(false)
@@ -308,7 +359,7 @@ class StreamManagerLateFailureTest {
         assertEquals("disk read failed", error.message)
         val suppressed = error.suppressed.map { it.message.orEmpty() }
         assertTrue(suppressed.contains("close failed"), "$suppressed")
-        assertTrue(suppressed.any { it.contains("did not stop within 100ms") }, "$suppressed")
+        assertTrue(suppressed.any { it.contains("did not finish within 100ms") }, "$suppressed")
         assertTrue(fixture.warnings().isEmpty())
     }
 }

@@ -17,7 +17,43 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+
+/**
+ * Purpose: Hold the workers a [StreamManager] runs on.
+ *
+ * Copies and releases run apart. A release closes the ends a stalled copy
+ * is blocked on, so it must never queue behind the copies it stops. A
+ * release that blocks in a provider close must not hold closeStream past
+ * its deadline either.
+ *
+ * @param copies runs the background copies, and alone bounds how many run
+ *   at once: the default pool runs 8 and queues the rest.
+ * @param releaseDispatcher runs each closeStream's release.
+ * @throws Nothing.
+ */
+class StreamWorkers(
+    val copies: ExecutorService = Executors.newFixedThreadPool(MAX_CONCURRENT_STREAMS),
+    releaseDispatcher: CoroutineDispatcher = Dispatchers.IO,
+) {
+    /**
+     * Runs the releases. It is never cancelled, so a release closeStream
+     * stopped waiting for still finishes and logs its failures.
+     */
+    val releases = CoroutineScope(SupervisorJob() + releaseDispatcher)
+
+    private companion object {
+        const val MAX_CONCURRENT_STREAMS = 8
+    }
+}
 
 /**
  * Purpose: Stream binary content to Dart through pipes, which avoids the
@@ -34,36 +70,35 @@ import kotlinx.coroutines.withTimeoutOrNull
  * A copy that fails is not reported on its own: the failure is recorded
  * and raised by closeStream (UNFY-365), so a reader that saw end-of-stream
  * learns from closeStream whether the content is complete. closeStream
- * waits for a running copy to finish first, without blocking a thread, so a
- * failure the copy records while the reader is already closing is still
- * raised. A failure no caller can raise any more (after dispose(), or after
- * closeStream stopped waiting) is logged once instead.
+ * waits for the stream's release and running copy to finish first, without
+ * blocking a thread, so a failure the copy records while the reader is
+ * already closing is still raised. A failure no caller can raise any more
+ * (after dispose(), or after closeStream stopped waiting) is logged once
+ * instead.
  *
  * @param context the context whose content resolver opens the content.
- * @param executor runs the background copies, and alone bounds how many run
- *   at once: the default pool runs 8 and queues the rest. Injectable so
- *   tests can control the copies.
+ * @param workers runs the copies and the releases; injectable so tests can
+ *   control them.
  * @param createPipe makes each stream's pipe pair; injectable so tests can
  *   observe the ends.
- * @param copyStopTimeoutMs how long closeStream waits for a running copy;
- *   injectable so tests can time it out.
+ * @param closeTimeoutMs how long closeStream waits for the release and a
+ *   running copy; injectable so tests can time it out.
  * @throws Nothing.
  */
 class StreamManager(
     private val context: Context,
-    private val executor: ExecutorService = Executors.newFixedThreadPool(MAX_CONCURRENT_STREAMS),
+    private val workers: StreamWorkers = StreamWorkers(),
     private val createPipe: () -> Array<ParcelFileDescriptor> = { ParcelFileDescriptor.createPipe() },
-    private val copyStopTimeoutMs: Long = COPY_STOP_TIMEOUT_MS,
+    private val closeTimeoutMs: Long = CLOSE_TIMEOUT_MS,
 ) {
     companion object {
-        private const val MAX_CONCURRENT_STREAMS = 8
         private const val TAG = "StreamManager"
 
         /**
-         * How long closeStream waits for a running copy to stop once both
-         * pipe ends and the provider input are closed.
+         * How long closeStream waits for a stream's release and running copy
+         * to finish.
          */
-        private const val COPY_STOP_TIMEOUT_MS = 5_000L
+        private const val CLOSE_TIMEOUT_MS = 5_000L
     }
 
     private val contentResolver get() = context.contentResolver
@@ -80,6 +115,9 @@ class StreamManager(
      */
     private class Pipe(val readEnd: ParcelFileDescriptor, val writeEnd: ParcelFileDescriptor) {
         private val writeClosed = AtomicBoolean(false)
+
+        /** True once a thread has taken the write end to close it. */
+        val writeEndTaken: Boolean get() = writeClosed.get()
 
         /**
          * Purpose: Close [writeEnd] unless another thread already did.
@@ -105,25 +143,49 @@ class StreamManager(
          */
         val claimed = AtomicBoolean(false)
 
-        /** Completed when a started copy has finished, including its write-end close. */
+        /**
+         * Completed once the copy has finished, including its write-end
+         * close, or once closeStream claimed it before it started.
+         */
         val finished = CompletableDeferred<Unit>()
-
-        /** Set once no caller will raise the failure, so the copy logs it when it finishes. */
-        val logFailureOnFinish = AtomicBoolean(false)
 
         private val failures = mutableListOf<Exception>()
 
+        /** Set once no caller will raise a failure; each later one goes straight to it. */
+        private var orphanSink: ((Exception) -> Unit)? = null
+
         /**
-         * Purpose: Record one copy failure, in the order it happened.
+         * Purpose: Record one copy failure, in the order it happened, or
+         * hand it to the orphan sink once no caller will raise it.
          *
          * @param error the failure, kept as thrown so [HostErrors] classifies
          *   it by type.
          * @return Nothing.
          * @throws Nothing.
          */
-        @Synchronized
         fun record(error: Exception) {
-            failures.add(error)
+            val sink = synchronized(this) { orphanSink.also { if (it == null) failures.add(error) } }
+            sink?.invoke(error)
+        }
+
+        /**
+         * Purpose: Hand every failure recorded so far, and every later one,
+         * to [sink], because no caller will raise them any more.
+         *
+         * The sink is set and the recorded failures taken under one lock, so
+         * each failure goes to [sink] exactly once, whether or not the copy
+         * has finished.
+         *
+         * @param sink receives each failure.
+         * @return Nothing.
+         * @throws Nothing.
+         */
+        fun orphanFailuresTo(sink: (Exception) -> Unit) {
+            val recorded = synchronized(this) {
+                orphanSink = sink
+                takeFailure()
+            }
+            recorded?.let(sink)
         }
 
         /**
@@ -159,6 +221,52 @@ class StreamManager(
 
         /** The stream's background copy. */
         val copy = CopyState()
+
+        /**
+         * Purpose: Tell whether a release has started closing a resource the
+         * copy uses.
+         *
+         * Each release step takes its resource before closing it, so this
+         * turns true before the copy can see a failure the release caused.
+         *
+         * @return true once the provider input or the write end was taken.
+         * @throws Nothing.
+         */
+        fun releaseTookAResource() = activeInput.get() == null || pipe.writeEndTaken
+    }
+
+    /**
+     * Purpose: Hold one closeStream call's released stream and its release,
+     * which runs on [StreamWorkers.releases].
+     *
+     * @param streamId the released stream.
+     * @param streamInfo the released stream's state.
+     * @param release the release, resolving to its close failures.
+     * @throws Nothing.
+     */
+    private class Closing(
+        val streamId: String,
+        val streamInfo: StreamInfo,
+        val release: Deferred<List<Exception>>,
+    ) {
+        /**
+         * Purpose: Tell whether the release and the copy have both finished.
+         *
+         * @return true when nothing is left to wait for.
+         * @throws Nothing.
+         */
+        fun finished() = release.isCompleted && streamInfo.copy.finished.isCompleted
+
+        /**
+         * Purpose: Wait for the release and the copy to finish.
+         *
+         * @return Nothing.
+         * @throws Error a JVM error from the release.
+         */
+        suspend fun awaitFinish() {
+            release.await()
+            streamInfo.copy.finished.await()
+        }
     }
 
     /**
@@ -221,7 +329,7 @@ class StreamManager(
         }
 
         try {
-            executor.execute { runCopy(streamId, streamInfo) }
+            workers.copies.execute { runCopy(streamInfo) }
         } catch (e: RejectedExecutionException) {
             throw abandon(streamId, streamInfo, e)
         }
@@ -265,43 +373,38 @@ class StreamManager(
 
     /**
      * Purpose: Release a stream: stop its copy, close both pipe ends, wait
-     * for a running copy to finish, and raise a failure the copy recorded
-     * (UNFY-365).
+     * for the release and a running copy to finish, and raise a failure the
+     * copy recorded (UNFY-365).
      *
      * Closing the write end unblocks a copy stuck writing to a reader that
      * stopped reading; closing the provider stream unblocks one stuck in a
      * stalled provider read. A copy this release stops raises nothing.
      * Waiting for the copy means a failure it records after the reader saw
      * end-of-stream, such as a failed write-end close, is still raised. The
-     * wait suspends; it does not block the calling thread.
+     * release runs on [StreamWorkers.releases], so one deadline covers a
+     * provider close that blocks too. The wait suspends; it does not block
+     * the calling thread.
      *
      * @param streamId the stream to release; an unknown id is a no-op.
      * @return Nothing.
      * @throws Exception the copy's recorded failure, after both ends were
      *   attempted, with any later failure attached as suppressed.
-     * @throws IOException when the copy did not stop within
-     *   [copyStopTimeoutMs] and recorded no failure; a failure it records
-     *   later is logged.
+     * @throws IOException when the release and the copy did not finish
+     *   within [closeTimeoutMs] and the copy recorded no failure; a failure
+     *   either reports later is logged.
      * @throws IOException when the platform reports a failed close and no
      *   earlier failure applies, after both ends were attempted (UNFY-300).
      * @throws RuntimeException when the provider stream's close fails with
      *   one and no earlier failure applies, after both ends were attempted.
      * @throws CancellationException when the calling coroutine is cancelled
-     *   while waiting for the copy; the close failures, and a failure the
-     *   copy records later, are logged.
+     *   while waiting; the close failures and the copy's failures are logged.
      */
     suspend fun closeStream(streamId: String) {
         val streamInfo = claim(streamId) ?: return
-        val closeFailures = releaseEnds(streamInfo)
-        val failuresFromCopy = try {
-            copyFailures(streamId, streamInfo)
-        } catch (e: CancellationException) {
-            logCloseFailures(streamId, closeFailures)
-            throw e
-        }
-        // The copy's own failure explains the content best, then a copy that
-        // would not stop, then a failed close.
-        raiseFirst(failuresFromCopy + closeFailures)
+        // A copy claimed here never starts, so it has nothing left to finish.
+        if (streamInfo.copy.claimed.compareAndSet(false, true)) streamInfo.copy.finished.complete(Unit)
+        val closing = Closing(streamId, streamInfo, workers.releases.async { releaseEnds(streamInfo) })
+        raiseFirst(awaitFailures(closing))
     }
 
     /**
@@ -320,9 +423,9 @@ class StreamManager(
         for (id in activeStreams.keys.toList()) {
             val streamInfo = claim(id) ?: continue
             logCloseFailures(id, releaseEnds(streamInfo))
-            logFailureWhenFinished(id, streamInfo)
+            logCopyFailuresFromNowOn(id, streamInfo.copy)
         }
-        executor.shutdown()
+        workers.copies.shutdown()
     }
 
     /**
@@ -330,8 +433,8 @@ class StreamManager(
      * exactly one caller releases its ends.
      *
      * The stream is marked before it is claimed, so a copy starting in
-     * between skips its work, and a failure the copy raises from then on is
-     * the release itself and is not recorded.
+     * between skips its work. Marking it closes nothing, so a copy failure
+     * caught before the release takes a resource is still recorded.
      *
      * @param streamId the stream to claim.
      * @return the stream, or null when the id is unknown or another caller
@@ -345,59 +448,66 @@ class StreamManager(
     }
 
     /**
-     * Purpose: Collect the failures a released stream's copy leaves for
-     * closeStream to raise, after waiting for the copy to stop.
+     * Purpose: Wait for a closing stream's release and copy to finish, then
+     * collect the failures closeStream raises.
      *
-     * When the copy does not stop in time, the failures recorded so far are
-     * taken first, and only then is the rest handed to the log. Handing off
-     * first would let a copy that finishes in between log a failure this
-     * caller can still raise.
-     *
-     * @param streamId the released stream.
-     * @param streamInfo the released stream's state.
-     * @return the copy's failure, if any, then an [IOException] saying the
-     *   copy did not stop within [copyStopTimeoutMs], when it did not.
+     * @param closing the closing stream.
+     * @return the copy's failure, then an [IOException] when the wait timed
+     *   out, then the close failures; failures that arrive later are logged.
      * @throws CancellationException when the calling coroutine is cancelled
-     *   while waiting.
+     *   while waiting; every failure is then left to the log.
      */
-    private suspend fun copyFailures(streamId: String, streamInfo: StreamInfo): List<Exception> {
-        val stopped = awaitCopy(streamId, streamInfo)
-        val copyFailure = streamInfo.copy.takeFailure()
-        if (stopped) return listOfNotNull(copyFailure)
-        logFailureWhenFinished(streamId, streamInfo)
-        return listOfNotNull(
-            copyFailure,
-            IOException(
-                "simple_query: the copy of ${streamInfo.contentUri} did not stop within " +
-                    "${copyStopTimeoutMs}ms of its release; treat the content as incomplete",
-            ),
-        )
+    private suspend fun awaitFailures(closing: Closing): List<Exception> {
+        val finished = try {
+            awaitFinish(closing)
+        } catch (e: CancellationException) {
+            logCopyFailuresFromNowOn(closing.streamId, closing.streamInfo.copy)
+            logCloseFailuresWhenReleased(closing)
+            throw e
+        }
+        // The copy's own failure explains the content best, then a stream
+        // that would not finish, then a failed close.
+        if (finished) return listOfNotNull(closing.streamInfo.copy.takeFailure()) + closing.release.await()
+        return unfinishedFailures(closing)
     }
 
     /**
-     * Purpose: Wait for a released stream's copy to finish, so every failure
-     * it records is visible to closeStream.
+     * Purpose: Wait for a closing stream's release and copy to finish,
+     * within [closeTimeoutMs].
      *
-     * A cancelled wait leaves no caller to raise a failure the copy records
-     * afterwards, so that failure is handed to the log.
+     * A non-positive timeout skips the wait, so whatever already finished is
+     * checked first.
      *
-     * @param streamId the released stream.
-     * @param streamInfo the released stream's state.
-     * @return true when the copy never started or has finished; false when
-     *   it did not stop within [copyStopTimeoutMs].
+     * @param closing the closing stream.
+     * @return true when both finished; false when the wait timed out.
      * @throws CancellationException when the calling coroutine is cancelled
      *   while waiting.
      */
-    private suspend fun awaitCopy(streamId: String, streamInfo: StreamInfo): Boolean {
-        val copy = streamInfo.copy
-        // Claiming the copy first means it never starts.
-        if (copy.claimed.compareAndSet(false, true)) return true
-        try {
-            return withTimeoutOrNull(copyStopTimeoutMs) { copy.finished.await() } != null
-        } catch (e: CancellationException) {
-            logFailureWhenFinished(streamId, streamInfo)
-            throw e
-        }
+    private suspend fun awaitFinish(closing: Closing): Boolean =
+        closing.finished() || withTimeoutOrNull(closeTimeoutMs) { closing.awaitFinish() } != null
+
+    /**
+     * Purpose: Collect what closeStream can still raise for a stream whose
+     * release or copy did not finish in time, and hand the rest to the log.
+     *
+     * Each failure is taken before the rest is handed off, so a release or
+     * copy that finishes in between cannot log a failure this call raises.
+     *
+     * @param closing the closing stream.
+     * @return the copy's failure so far, the timeout, then the close
+     *   failures when the release finished.
+     * @throws Nothing.
+     */
+    private suspend fun unfinishedFailures(closing: Closing): List<Exception> {
+        val copyFailure = closing.streamInfo.copy.takeFailure()
+        logCopyFailuresFromNowOn(closing.streamId, closing.streamInfo.copy)
+        val closeFailures = if (closing.release.isCompleted) closing.release.await() else null
+        if (closeFailures == null) logCloseFailuresWhenReleased(closing)
+        val timeout = IOException(
+            "simple_query: closing the stream of ${closing.streamInfo.contentUri} did not finish " +
+                "within ${closeTimeoutMs}ms; treat the content as incomplete",
+        )
+        return listOfNotNull(copyFailure, timeout) + closeFailures.orEmpty()
     }
 
     /**
@@ -491,13 +601,12 @@ class StreamManager(
      * does not mean the copy succeeded: closeStream waits for this copy to
      * finish and raises any failure it recorded (UNFY-365).
      *
-     * @param streamId the stream, named when its failure is logged.
      * @param streamInfo the stream's pipes and input.
      * @return Nothing.
      * @throws Error a JVM error from the copy, on the copy's own thread;
      *   other failures are recorded for closeStream.
      */
-    private fun runCopy(streamId: String, streamInfo: StreamInfo) {
+    private fun runCopy(streamInfo: StreamInfo) {
         // A release that claimed the copy first already closed everything.
         val copy = streamInfo.copy
         if (!copy.claimed.compareAndSet(false, true)) return
@@ -512,9 +621,6 @@ class StreamManager(
                 copy.record(e)
             } finally {
                 copy.finished.complete(Unit)
-                // logFailureWhenFinished sets the flag before it checks for a
-                // finished copy, so one of the two logs the failure.
-                if (copy.logFailureOnFinish.get()) logCopyFailure(streamId, copy)
             }
         }
     }
@@ -527,6 +633,11 @@ class StreamManager(
      * own thread, after the input is closed. Whether a release caused a copy
      * failure is read the moment the failure is caught.
      *
+     * A failure thrown just before the release takes a resource, and caught
+     * just after, cannot be told apart from one the release caused, so it is
+     * not recorded. Only a reader that closes before end-of-stream meets
+     * that window, and it has already given up on the content.
+     *
      * @param streamInfo the stream's pipes and input.
      * @return Nothing.
      * @throws Error a JVM error from the copy or the input's close; any
@@ -538,13 +649,13 @@ class StreamManager(
         try {
             copyChunks(input, streamInfo)
         } catch (e: Exception) {
-            // claim() sets released before a release closes anything, so a
-            // failure caught while it is false is the copy's own. A failure
-            // after a release is the release itself (its closed input or
-            // write end). Only a release closes this manager's read end, so
-            // a broken pipe on the write end needs no special case, and a
-            // provider's own "Broken pipe" is a real copy failure.
-            if (!streamInfo.released.get()) streamInfo.copy.record(e)
+            // A release takes the input or the write end before closing it,
+            // so a failure caught while neither is taken is the copy's own,
+            // even after claim() marked the stream released. The release
+            // closes the read end last, so a broken pipe on the write end
+            // needs no special case, and a provider's own "Broken pipe" is a
+            // real copy failure.
+            if (!streamInfo.releaseTookAResource()) streamInfo.copy.record(e)
         } finally {
             // The input stays in activeInput during the copy, so a release
             // can close it to unblock a stalled read; whichever takes it out
@@ -581,39 +692,40 @@ class StreamManager(
     }
 
     /**
-     * Purpose: Hand a released stream's copy failure to the log, because no
-     * caller will raise it: after dispose(), or after closeStream stopped
+     * Purpose: Hand a released stream's copy failures to the log, because no
+     * caller will raise them: after dispose(), or after closeStream stopped
      * waiting.
      *
-     * The flag is set before the copy is checked, and the copy checks it
-     * after it finishes, so one of the two logs the failure.
+     * A failure already recorded is logged now, even when the copy is still
+     * running; each later one is logged as it is recorded.
      *
-     * @param streamId the released stream.
-     * @param streamInfo the released stream's state.
+     * @param streamId the released stream, named in the log.
+     * @param copy the released stream's copy.
      * @return Nothing.
      * @throws Nothing.
      */
-    private fun logFailureWhenFinished(streamId: String, streamInfo: StreamInfo) {
-        val copy = streamInfo.copy
-        copy.logFailureOnFinish.set(true)
-        if (copy.finished.isCompleted) logCopyFailure(streamId, copy)
+    private fun logCopyFailuresFromNowOn(streamId: String, copy: CopyState) {
+        copy.orphanFailuresTo { Log.w(TAG, "stream $streamId: copy failed with no caller to raise it", it) }
     }
 
     /**
-     * Purpose: Log a copy failure that no caller will raise, exactly once.
+     * Purpose: Log a closing stream's close failures once its release
+     * finishes, because closeStream stopped waiting for it.
      *
-     * @param streamId the stream, named in the log.
-     * @param copy the stream's copy.
+     * @param closing the closing stream.
      * @return Nothing.
      * @throws Nothing.
      */
-    private fun logCopyFailure(streamId: String, copy: CopyState) {
-        copy.takeFailure()?.let { Log.w(TAG, "stream $streamId: copy failed with no caller to raise it", it) }
+    private fun logCloseFailuresWhenReleased(closing: Closing) {
+        // Undispatched, so a release that already finished logs at once.
+        workers.releases.launch(start = CoroutineStart.UNDISPATCHED) {
+            logCloseFailures(closing.streamId, closing.release.await())
+        }
     }
 
     /**
      * Purpose: Log a released stream's close failures that no caller will
-     * raise: after dispose(), or after a cancelled closeStream.
+     * raise: after dispose(), or after closeStream stopped waiting.
      *
      * @param streamId the stream, named in the log.
      * @param failures the close failures, each logged on its own.

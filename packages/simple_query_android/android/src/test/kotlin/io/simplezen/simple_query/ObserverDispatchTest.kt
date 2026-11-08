@@ -214,4 +214,38 @@ class ObserverDispatchTest {
             events,
         )
     }
+
+    /**
+     * Purpose: Pin that Kotlin's generated codec writes the observer type ids
+     *   that Dart's generated decoder reads (`lib/src/generated/query.g.dart`),
+     *   so the two sides of the channel cannot drift apart unnoticed.
+     *
+     * @return Nothing.
+     * @throws AssertionError when Kotlin writes another id for either type.
+     */
+    @Test
+    fun kotlinWritesTheObserverTypeIdsDartReads() {
+        assertEquals(DART_CHANGE_TYPE_ID, kotlinTypeId(ContentChangeType.UNKNOWN))
+        assertEquals(
+            DART_CHANGE_EVENT_ID,
+            kotlinTypeId(ContentChangeEvent("", "", ContentChangeType.UNKNOWN, null, false)),
+        )
+    }
+
+    /**
+     * Purpose: Read the type id Kotlin's generated codec writes for [value].
+     *
+     * @param value a sample of the Pigeon class or enum.
+     * @return the unsigned type id, the first byte of the encoded message.
+     * @throws NullPointerException when the codec encodes nothing.
+     */
+    private fun kotlinTypeId(value: Any): Int = QueryFlutterApi.codec.encodeMessage(value)!!.get(0).toInt() and 0xFF
+
+    private companion object {
+        /** The id Dart's generated decoder reads as a ContentChangeType. */
+        const val DART_CHANGE_TYPE_ID = 129
+
+        /** The id Dart's generated decoder reads as a ContentChangeEvent. */
+        const val DART_CHANGE_EVENT_ID = 145
+    }
 }

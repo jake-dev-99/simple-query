@@ -6,6 +6,7 @@ import android.database.Cursor
 import android.database.MatrixCursor
 import android.net.Uri
 import android.os.Looper
+import android.util.Log
 import android.os.ParcelFileDescriptor
 import io.flutter.plugin.common.BinaryMessenger
 import java.nio.ByteBuffer
@@ -22,6 +23,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowLog
 
 /**
  * Drives [QueryHostApiImpl] through the generated Pigeon channels and
@@ -357,6 +359,28 @@ class QueryHostApiImplTest {
         assertTrue(provider.queried.isEmpty())
     }
 
+    /**
+     * Purpose: Pin that a failure whose reply the detach drops is logged,
+     *   because no caller receives it.
+     *
+     * @return Nothing.
+     * @throws AssertionError when a reply is sent, or the failure is not
+     *   logged once with its original exception.
+     */
+    @Test
+    fun aFailureWhoseReplyTheDetachDropsIsLogged() {
+        var reply: ByteBuffer? = null
+        deliver("query", QueryRequest(contentUri = uri("broken"))) { reply = it }
+
+        api.dispose()
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertNull(reply)
+        val logged = ShadowLog.getLogsForTag("QueryHostApiImpl").single()
+        assertEquals(Log.WARN, logged.type)
+        assertEquals("provider state", (logged.throwable as IllegalStateException).message)
+    }
+
     /** A join request whose primary query carries the given [sortOrder], [limit] and [offset]. */
     private fun joinRequest(
         primary: String,
@@ -391,15 +415,20 @@ class QueryHostApiImplTest {
 
     /** Sends one Pigeon message and returns the raw reply, or null when none came. */
     private fun send(method: String, request: Any): ByteBuffer? {
-        val handler = handlers.getValue("dev.flutter.pigeon.simple_query.QueryHostApi.$method")
-        val message = QueryHostApi.codec.encodeMessage(listOf(request))!!
-        message.flip()
         var reply: ByteBuffer? = null
-        handler.onMessage(message) { reply = it }
+        deliver(method, request) { reply = it }
 
         // The read runs inline (Unconfined); the reply is posted to the main looper.
         shadowOf(Looper.getMainLooper()).idle()
         return reply
+    }
+
+    /** Delivers one Pigeon message; its reply waits on the main looper until it is idled. */
+    private fun deliver(method: String, request: Any, onReply: (ByteBuffer?) -> Unit) {
+        val handler = handlers.getValue("dev.flutter.pigeon.simple_query.QueryHostApi.$method")
+        val message = QueryHostApi.codec.encodeMessage(listOf(request))!!
+        message.flip()
+        handler.onMessage(message) { onReply(it) }
     }
 
     /** A Pigeon error reply is `[code, message, details]`. */

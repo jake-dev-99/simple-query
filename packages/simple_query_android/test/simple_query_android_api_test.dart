@@ -1134,7 +1134,9 @@ void main() {
       await subscription.cancel();
     });
 
-    test('dispose closes every binary handle at once', () async {
+    test(
+        'dispose closes every binary handle at once and reports the first '
+        "handle's failure", () async {
       final host = _FakeHostApi()..nextStreamIds.addAll(<String>['a', 'b']);
       final api = apiFor(host);
       for (final id in <int>[7, 8]) {
@@ -1147,8 +1149,14 @@ void main() {
           ),
         );
       }
-      final gate = Completer<void>();
-      host.closeStreamGate = gate;
+      final gateA = Completer<void>();
+      final gateB = Completer<void>();
+      host
+        ..closeStreamGates.addAll({'a': gateA, 'b': gateB})
+        ..closeStreamFailures.addAll({
+          'a': PlatformException(code: 'transient', message: 'a failed'),
+          'b': PlatformException(code: 'channel-error', message: 'b failed'),
+        });
 
       final disposing = api.dispose();
       await Future<void>.delayed(Duration.zero);
@@ -1156,9 +1164,89 @@ void main() {
       // Both closes started while neither has finished.
       expect(host.closeStreamAttempts, <String>['a', 'b']);
       expect(host.closedStreams, isEmpty);
-      gate.complete();
+      // The second handle's close fails first; dispose still reports the
+      // first handle's failure.
+      gateB.complete();
+      await Future<void>.delayed(Duration.zero);
+      gateA.complete();
+      await expectLater(
+        disposing,
+        throwsA(hostError(
+          code: iface.SimpleQueryErrorCode.transientFailure,
+          hostCode: 'transient',
+          domain: iface.QueryDomain.media,
+          operation: iface.QueryOperation.read,
+          contentUri: 'content://media/external/images/media/7',
+        )),
+      );
+    });
+
+    test('dispose closes a handle whose open finishes while it waits',
+        () async {
+      final host = _FakeHostApi()..nextStreamIds.addAll(<String>['a', 'b']);
+      final api = apiFor(host);
+      await api.openBinary(
+        const iface.BinaryRequest(
+          domain: iface.QueryDomain.media,
+          platformData: <String, Object?>{
+            'contentUri': 'content://media/external/images/media/7',
+          },
+        ),
+      );
+      final openGate = Completer<void>();
+      host.openStreamGate = openGate;
+      final opening = api.openBinary(
+        const iface.BinaryRequest(
+          domain: iface.QueryDomain.media,
+          platformData: <String, Object?>{
+            'contentUri': 'content://media/external/images/media/8',
+          },
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      final disposing = api.dispose();
+      await Future<void>.delayed(Duration.zero);
+      openGate.complete();
+      await opening;
       await disposing;
+
       expect(host.closedStreams, unorderedEquals(<String>['a', 'b']));
+    });
+
+    test('a handle opened after dispose takes its snapshot stays closable',
+        () async {
+      final host = _FakeHostApi()..nextStreamIds.addAll(<String>['a', 'b']);
+      final api = apiFor(host);
+      await api.openBinary(
+        const iface.BinaryRequest(
+          domain: iface.QueryDomain.media,
+          platformData: <String, Object?>{
+            'contentUri': 'content://media/external/images/media/7',
+          },
+        ),
+      );
+      final closeGate = Completer<void>();
+      host.closeStreamGates['a'] = closeGate;
+
+      final disposing = api.dispose();
+      await Future<void>.delayed(Duration.zero);
+      expect(host.closeStreamAttempts, <String>['a']);
+      await api.openBinary(
+        const iface.BinaryRequest(
+          domain: iface.QueryDomain.media,
+          platformData: <String, Object?>{
+            'contentUri': 'content://media/external/images/media/8',
+          },
+        ),
+      );
+      closeGate.complete();
+      await disposing;
+      expect(host.closedStreams, <String>['a']);
+
+      // The first dispose did not erase it, so the next one closes it.
+      await api.dispose();
+      expect(host.closedStreams, <String>['a', 'b']);
     });
 
     test('dispose reports a failed stream close instead of swallowing it',
@@ -2187,12 +2275,23 @@ class _FakeHostApi extends p.QueryHostApi {
   /// Stream ids handed out by [openStream], in order; `s` once they run out.
   final List<String> nextStreamIds = <String>[];
 
-  /// When set, every [closeStream] waits for it after recording its attempt,
-  /// so a test can see which closes are in flight at once.
-  Completer<void>? closeStreamGate;
+  /// When set, every [openStream] waits for it before answering, so a test
+  /// can hold an open in flight.
+  Completer<void>? openStreamGate;
+
+  /// Stream id → a gate its [closeStream] waits for after recording its
+  /// attempt, so a test can hold closes in flight and finish them in any
+  /// order.
+  final Map<String, Completer<void>> closeStreamGates =
+      <String, Completer<void>>{};
+
+  /// Stream id → the error closing that one stream throws.
+  final Map<String, PlatformException> closeStreamFailures =
+      <String, PlatformException>{};
 
   @override
   Future<p.StreamDescriptor> openStream(String contentUri) async {
+    await openStreamGate?.future;
     _failIfConfigured('openStream');
     final streamId = nextStreamIds.isEmpty ? 's' : nextStreamIds.removeAt(0);
     return p.StreamDescriptor(streamId: streamId, pipePath: '/tmp/p');
@@ -2207,8 +2306,10 @@ class _FakeHostApi extends p.QueryHostApi {
   @override
   Future<void> closeStream(String streamId) async {
     closeStreamAttempts.add(streamId);
-    await closeStreamGate?.future;
+    await closeStreamGates[streamId]?.future;
     _failIfConfigured('closeStream');
+    final failure = closeStreamFailures[streamId];
+    if (failure != null) throw failure;
     closedStreams.add(streamId);
   }
 

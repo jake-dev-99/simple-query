@@ -518,4 +518,33 @@ class StreamManagerCloseTest {
         assertEquals("provider stack", (uncaught.get() as StackOverflowError).message)
         copies.shutdown()
     }
+
+    /**
+     * Purpose: Pin that a JVM Error from the copy's write-end close
+     *   propagates on the copy thread, and that closeStream still returns,
+     *   because the copy has finished.
+     *
+     * @return Nothing.
+     * @throws AssertionError when the Error does not reach the copy thread's
+     *   uncaught-exception handler, or closeStream raises.
+     */
+    @Test(timeout = 10_000)
+    fun aJvmErrorFromTheWriteEndClosePropagatesOnTheCopyThread() {
+        fixture.register(CONTENT) { ByteArrayInputStream(byteArrayOf(1)) }
+        fixture.pipes.wrapWriteEnd = { FailingCloseEnd(it, StackOverflowError("write end close")) }
+        val uncaught = AtomicReference<Throwable?>(null)
+        val reachedThread = CountDownLatch(1)
+        val copies = copyThread { error ->
+            uncaught.set(error)
+            reachedThread.countDown()
+        }
+        fixture.manager = fixture.managerOn(copies)
+        val descriptor = fixture.manager.openStream(CONTENT)
+
+        assertTrue(reachedThread.await(5, TimeUnit.SECONDS))
+        fixture.manager.closeStreamBlocking(descriptor.streamId)
+
+        assertEquals("write end close", (uncaught.get() as StackOverflowError).message)
+        copies.shutdown()
+    }
 }

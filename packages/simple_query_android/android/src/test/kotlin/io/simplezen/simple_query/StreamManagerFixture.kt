@@ -21,6 +21,8 @@ import java.util.function.Supplier
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import org.robolectric.Robolectric
 import org.robolectric.RuntimeEnvironment
@@ -63,15 +65,22 @@ internal class StreamManagerFixture {
      * wraps.
      *
      * @param copies the executor that runs the background copies.
-     * @param copyStopTimeoutMs how long closeStream waits for a running copy.
+     * @param closeTimeoutMs how long closeStream waits for the release and
+     *   a running copy.
+     * @param releases runs each closeStream's release; the default runs it
+     *   inline, so it has finished before closeStream first suspends.
      * @return the manager.
      * @throws Nothing.
      */
-    fun managerOn(copies: ExecutorService, copyStopTimeoutMs: Long = 5_000L) = StreamManager(
+    fun managerOn(
+        copies: ExecutorService,
+        closeTimeoutMs: Long = 5_000L,
+        releases: CoroutineDispatcher = Dispatchers.Unconfined,
+    ) = StreamManager(
         context,
-        executor = copies,
+        workers = StreamWorkers(copies, releases),
         createPipe = pipes::create,
-        copyStopTimeoutMs = copyStopTimeoutMs,
+        closeTimeoutMs = closeTimeoutMs,
     )
 
     /**
@@ -85,14 +94,14 @@ internal class StreamManagerFixture {
      *
      * @param failClose counted down to let the write-end close fail with
      *   "close failed".
-     * @param copyStopTimeoutMs how long closeStream waits for the copy.
+     * @param closeTimeoutMs how long closeStream waits for the copy.
      * @param content builds the provider content the copy reads.
      * @return the stream's id and its copy thread.
      * @throws AssertionError when the copy never reaches the write-end close.
      */
     fun openStreamWaitingInWriteEndClose(
         failClose: CountDownLatch,
-        copyStopTimeoutMs: Long = 5_000L,
+        closeTimeoutMs: Long = 5_000L,
         content: () -> InputStream = { ByteArrayInputStream(byteArrayOf(1, 2, 3)) },
     ): Pair<String, ExecutorService> {
         register(CONTENT, content)
@@ -104,7 +113,7 @@ internal class StreamManagerFixture {
             }
         }
         val copies = copyThread()
-        manager = managerOn(copies, copyStopTimeoutMs)
+        manager = managerOn(copies, closeTimeoutMs)
         val descriptor = manager.openStream(CONTENT)
         assertTrue(closing.await(5, TimeUnit.SECONDS))
         return descriptor.streamId to copies
@@ -172,6 +181,30 @@ internal class StreamManagerFixture {
      * @throws Nothing.
      */
     fun warnings() = ShadowLog.getLogsForTag("StreamManager").filter { it.type == Log.WARN }
+
+    /**
+     * Purpose: Return the errors StreamManager has logged in this test.
+     *
+     * @return the ERROR log items for the StreamManager tag.
+     * @throws Nothing.
+     */
+    fun errors() = ShadowLog.getLogsForTag("StreamManager").filter { it.type == Log.ERROR }
+
+    /**
+     * Purpose: Assert that StreamManager logged exactly one close failure no
+     *   caller could raise, naming its stream, with [cause] attached.
+     *
+     * @param cause the logged failure's message.
+     * @return Nothing.
+     * @throws AssertionError when no error, another error, or more than one
+     *   error was logged.
+     */
+    fun assertCloseFailureLoggedOnce(cause: String) {
+        val logged = errors().single()
+        assertTrue(logged.msg.startsWith("stream "), logged.msg)
+        assertTrue(logged.msg.endsWith(": closing it failed with no caller to raise it"), logged.msg)
+        assertEquals(cause, logged.throwable?.message)
+    }
 
     /**
      * Purpose: Assert that StreamManager logged exactly one copy failure no
@@ -262,6 +295,23 @@ internal class PipeRecorder {
  * @throws Exception whatever [StreamManager.closeStream] raises.
  */
 internal fun StreamManager.closeStreamBlocking(streamId: String) = runBlocking { closeStream(streamId) }
+
+/**
+ * Purpose: Wait up to 5 seconds for [condition], which work on another
+ * thread makes true.
+ *
+ * @param what names the condition in the failure message.
+ * @param condition the condition to wait for.
+ * @return Nothing.
+ * @throws AssertionError when [condition] is still false after 5 seconds.
+ */
+internal fun awaitCondition(what: String, condition: () -> Boolean) {
+    val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+    while (!condition()) {
+        assertTrue(System.nanoTime() < deadline, "timed out waiting until $what")
+        Thread.sleep(10)
+    }
+}
 
 /**
  * Purpose: Build a single real copy thread, as production runs copies,
@@ -361,18 +411,19 @@ internal class ManualExecutor : AbstractExecutorService() {
  * failure.
  *
  * @param inner the end to wrap.
- * @param failure thrown by the close.
- * @throws Exception [failure], from the close.
+ * @param failure thrown by the close; a JVM [Error] tests what escapes the
+ *   copy.
+ * @throws Throwable [failure], from the close.
  */
 internal class FailingCloseEnd(
     private val inner: ParcelFileDescriptor,
-    private val failure: Exception = IOException("close failed"),
+    private val failure: Throwable = IOException("close failed"),
 ) : ParcelFileDescriptor(inner) {
     /**
      * Purpose: Release the descriptor, then report a failed close.
      *
      * @return Nothing; it always throws.
-     * @throws Exception [failure], on every call.
+     * @throws Throwable [failure], on every call.
      */
     override fun close() {
         inner.close()
