@@ -8,9 +8,11 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
 #include <variant>
+#include <utility>
 #include <vector>
 
 namespace simple_query_windows {
@@ -22,6 +24,11 @@ using flutter::EncodableMap;
 using flutter::EncodableValue;
 
 // Purpose: Describe one filter of a query request.
+// @param field is sent as the filter's "field".
+// @param op is the operator's wire name, such as "equals".
+// @param value is sent as the filter's "value".
+// @returns Nothing; this is a data type.
+// @throws Nothing.
 struct FilterSpec {
   std::string field;
   std::string op;
@@ -41,12 +48,12 @@ EncodableMap RequestWithFilter(const FilterSpec& filter) {
 
 // Purpose: Build a row with an id and one more field.
 // @param id is the row's id.
-// @param field is the extra field's name.
-// @param value is the extra field's value.
+// @param field is the extra field's name and value.
 // @returns The row.
 // @throws Nothing.
-EncodableMap Row(const std::string& id, const std::string& field, EncodableValue value) {
-  return {{EncodableValue("id"), EncodableValue(id)}, {EncodableValue(field), std::move(value)}};
+EncodableMap Row(const std::string& id, std::pair<std::string, EncodableValue> field) {
+  return {{EncodableValue("id"), EncodableValue(id)},
+          {EncodableValue(std::move(field.first)), std::move(field.second)}};
 }
 
 // Purpose: Shape rows with a request that must parse.
@@ -77,9 +84,9 @@ std::vector<std::string> IdsOf(const EncodableMap& result) {
 // @returns The ids of the rows that pass.
 // @throws std::bad_variant_access when the filter does not parse.
 std::vector<std::string> FilterSizes(const std::string& op, EncodableValue value) {
-  std::vector<EncodableMap> rows{Row("one", "size", EncodableValue(int64_t{1})),
-                                 Row("two", "size", EncodableValue(int64_t{2})),
-                                 Row("three", "size", EncodableValue(int64_t{3}))};
+  std::vector<EncodableMap> rows{Row("one", {"size", EncodableValue(int64_t{1})}),
+                                 Row("two", {"size", EncodableValue(int64_t{2})}),
+                                 Row("three", {"size", EncodableValue(int64_t{3})})};
   return IdsOf(Shape(std::move(rows),
                      RequestWithFilter({.field = "size", .op = op, .value = std::move(value)})));
 }
@@ -107,10 +114,9 @@ TEST(QueryShapingTest, KeepsRowsInTheList) {
 // element.
 TEST(QueryShapingTest, MatchesContainsInTextAndLists) {
   std::vector<EncodableMap> rows{
-      Row("report", "name", EncodableValue("Quarterly Report.txt")),
-      Row("photo", "name", EncodableValue("beach.jpg")),
-      Row("tagged", "name",
-          EncodableValue(EncodableList{EncodableValue("work"), EncodableValue("report")}))};
+      Row("report", {"name", EncodableValue("Quarterly Report.txt")}),
+      Row("photo", {"name", EncodableValue("beach.jpg")}),
+      Row("tagged", {"name", EncodableValue(EncodableList{EncodableValue("work"), EncodableValue("report")})})};
 
   EXPECT_EQ(IdsOf(Shape(rows, RequestWithFilter({.field = "name",
                                                  .op = "contains",
@@ -126,9 +132,9 @@ TEST(QueryShapingTest, MatchesContainsInTextAndLists) {
 // does; a files query uses this to find directories, which have no size.
 TEST(QueryShapingTest, MatchesNullAgainstMissingAndNullFields) {
   const std::vector<EncodableMap> rows{
-      Row("folder", "size", EncodableValue()),
+      Row("folder", {"size", EncodableValue()}),
       EncodableMap{{EncodableValue("id"), EncodableValue("missing")}},
-      Row("file", "size", EncodableValue(int64_t{3}))};
+      Row("file", {"size", EncodableValue(int64_t{3})})};
   const auto filter_size = [&rows](const std::string& op, EncodableValue value) {
     return IdsOf(
         Shape(rows, RequestWithFilter({.field = "size", .op = op, .value = std::move(value)})));
@@ -156,8 +162,8 @@ TEST(QueryShapingTest, FiltersAfterItsRequestIsDestroyed) {
   // would compare against different or freed values.
   (*request)[EncodableValue("filters")] = EncodableValue(EncodableList{});
   request.reset();
-  std::vector<EncodableMap> rows{Row("kept", "name", EncodableValue("kept")),
-                                 Row("dropped", "name", EncodableValue("dropped"))};
+  std::vector<EncodableMap> rows{Row("kept", {"name", EncodableValue("kept")}),
+                                 Row("dropped", {"name", EncodableValue("dropped")})};
 
   EXPECT_EQ(IdsOf(ShapeQueryResult(std::move(rows), shape)),
             (std::vector<std::string>{"kept"}));
@@ -166,8 +172,8 @@ TEST(QueryShapingTest, FiltersAfterItsRequestIsDestroyed) {
 // Purpose: Large integers compare exactly, not through a rounded double.
 TEST(QueryShapingTest, ComparesLargeIntegersExactly) {
   constexpr int64_t kBig = 9007199254740993;  // 2^53 + 1; a double rounds it.
-  std::vector<EncodableMap> rows{Row("big", "size", EncodableValue(kBig)),
-                                 Row("next", "size", EncodableValue(kBig - 1))};
+  std::vector<EncodableMap> rows{Row("big", {"size", EncodableValue(kBig)}),
+                                 Row("next", {"size", EncodableValue(kBig - 1)})};
 
   EXPECT_EQ(IdsOf(Shape(rows, RequestWithFilter({.field = "size",
                                                  .op = "equals",
@@ -205,13 +211,49 @@ TEST(QueryShapingTest, RejectsAMalformedFilter) {
   EXPECT_TRUE(std::holds_alternative<std::string>(ParseQueryShape(no_field)));
 }
 
-// Purpose: Sorting puts absent values first, then numbers, then text, and
-// descending reverses it.
+// Purpose: A NaN filter value is rejected for every operator, because NaN
+// has no order and would otherwise match every row.
+TEST(QueryShapingTest, RejectsANanFilterValue) {
+  const EncodableValue nan(std::numeric_limits<double>::quiet_NaN());
+  const EncodableValue nan_in_list(EncodableList{EncodableValue(int64_t{1}), nan});
+
+  for (const std::string op :
+       {"equals", "notEquals", "greaterThan", "lessThanOrEqual", "contains"}) {
+    EXPECT_TRUE(std::holds_alternative<std::string>(
+        ParseQueryShape(RequestWithFilter({.field = "size", .op = op, .value = nan}))))
+        << op;
+  }
+  EXPECT_TRUE(std::holds_alternative<std::string>(ParseQueryShape(
+      RequestWithFilter({.field = "size", .op = "inList", .value = nan_in_list}))));
+}
+
+// Purpose: A NaN field equals nothing and is neither greater nor less than
+// any number, as in Dart.
+TEST(QueryShapingTest, NeverOrdersANanField) {
+  const auto filter_nan_row = [](const std::string& op) {
+    std::vector<EncodableMap> rows{
+        Row("nan", {"size", EncodableValue(std::numeric_limits<double>::quiet_NaN())}),
+        Row("two", {"size", EncodableValue(int64_t{2})})};
+    return IdsOf(Shape(std::move(rows),
+                       RequestWithFilter(
+                           {.field = "size", .op = op, .value = EncodableValue(int64_t{2})})));
+  };
+
+  EXPECT_EQ(filter_nan_row("equals"), (std::vector<std::string>{"two"}));
+  EXPECT_EQ(filter_nan_row("notEquals"), (std::vector<std::string>{"nan"}));
+  EXPECT_EQ(filter_nan_row("greaterThanOrEqual"), (std::vector<std::string>{"two"}));
+  EXPECT_EQ(filter_nan_row("lessThanOrEqual"), (std::vector<std::string>{"two"}));
+}
+
+// Purpose: Sorting puts absent values first, then numbers, then NaN, then
+// text, and descending reverses it.
 TEST(QueryShapingTest, SortsMixedKindsInOneOrder) {
-  std::vector<EncodableMap> rows{Row("text", "value", EncodableValue("b")),
-                                 Row("number", "value", EncodableValue(int64_t{5})),
-                                 {{EncodableValue("id"), EncodableValue("absent")}},
-                                 Row("small", "value", EncodableValue(1.5))};
+  std::vector<EncodableMap> rows{
+      Row("text", {"value", EncodableValue("b")}),
+      Row("nan", {"value", EncodableValue(std::numeric_limits<double>::quiet_NaN())}),
+      Row("number", {"value", EncodableValue(int64_t{5})}),
+      {{EncodableValue("id"), EncodableValue("absent")}},
+      Row("small", {"value", EncodableValue(1.5)})};
   const auto sorted = [&rows](const std::string& direction) {
     const EncodableMap sort_key{{EncodableValue("field"), EncodableValue("value")},
                                 {EncodableValue("direction"), EncodableValue(direction)}};
@@ -220,9 +262,9 @@ TEST(QueryShapingTest, SortsMixedKindsInOneOrder) {
   };
 
   EXPECT_EQ(sorted("ascending"),
-            (std::vector<std::string>{"absent", "small", "number", "text"}));
+            (std::vector<std::string>{"absent", "small", "number", "nan", "text"}));
   EXPECT_EQ(sorted("descending"),
-            (std::vector<std::string>{"text", "number", "small", "absent"}));
+            (std::vector<std::string>{"text", "nan", "number", "small", "absent"}));
 }
 
 // Purpose: A sort direction other than ascending or descending is rejected.
@@ -273,7 +315,7 @@ TEST(QueryShapingTest, RejectsAPageNumberThatIsNotANumber) {
 // Purpose: A projection keeps only its fields, with a missing one as null,
 // and rejects a field name that is not text.
 TEST(QueryShapingTest, ProjectsFieldsAndRejectsNonTextNames) {
-  std::vector<EncodableMap> rows{Row("a", "name", EncodableValue("notes.txt"))};
+  std::vector<EncodableMap> rows{Row("a", {"name", EncodableValue("notes.txt")})};
   const EncodableMap request{
       {EncodableValue("projection"),
        EncodableValue(EncodableList{EncodableValue("name"), EncodableValue("size")})}};

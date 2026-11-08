@@ -12,11 +12,16 @@
 namespace simple_query_windows {
 
 // Purpose: Select what ListRecords walks and when it gives up.
+// @param root is walked recursively. A root that does not exist gives no
+// rows and no error.
+// @param media_only lists only image, video and audio files, as media rows.
+// @param stop_requested ends the walk early when it returns true. Empty
+// means never.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
 struct ListRecordsOptions {
   std::filesystem::path root;
-  // Lists only image, video and audio files, as media rows.
   bool media_only = false;
-  // Ends the walk early when it returns true. Empty means never.
   StopRequested stop_requested;
 };
 

@@ -11,6 +11,7 @@
 #include <utility>
 
 #include "boundary_formats.h"
+#include "owned_message_error.h"
 
 namespace simple_query_windows {
 
@@ -20,15 +21,28 @@ using flutter::EncodableMap;
 using flutter::EncodableValue;
 
 // Purpose: Hold the creation and last write times of one entry.
+// @param created is the creation time from GetFileAttributesExW. The
+// standard library cannot read it.
+// @param modified is the last write time from the same Windows call, so
+// both times share one epoch.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
 struct EntryTimes {
   std::chrono::system_clock::time_point created;
   std::chrono::system_clock::time_point modified;
 };
 
 // Purpose: Hold what a row reports about one entry.
+// @param is_directory sets a file row's type; a media row is never a
+// directory.
+// @param size is the size in bytes, set for regular files only.
+// @param times are both read in one Windows call; see EntryTimes.
+// @param mime is guessed from the extension, and is
+// application/octet-stream when the extension is unknown.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
 struct EntryInfo {
   bool is_directory = false;
-  // Set for regular files only.
   std::optional<int64_t> size;
   EntryTimes times;
   std::string mime;
@@ -36,16 +50,15 @@ struct EntryInfo {
 
 // Purpose: Hold the outcome of reading one entry: a row, nothing for an
 // entry to leave out, or why the walk cannot finish.
+// @param row is empty when the walk leaves the entry out: a non-media file
+// in a media walk, or an entry removed during the walk.
+// @param error is set when the walk must stop; the read then returns it
+// instead of rows.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
 struct EntryRead {
   std::optional<EncodableMap> row;
   std::optional<std::string> error;
-};
-
-// Purpose: Name one filesystem step that failed, for the walk's error.
-struct ScanFailureDetail {
-  const char* operation;
-  const std::filesystem::path& path;
-  const std::error_code& error;
 };
 
 // Purpose: Report whether a MIME type is an image, video or audio type.
@@ -68,26 +81,17 @@ std::string MediaType(const std::string& mime) {
   return "other";
 }
 
-// Purpose: Describe a failed filesystem step as the walk's error.
-// @param detail names the step, the path and the system error.
-// @returns The error text.
-// @throws std::system_error when the path is not valid Unicode.
-std::string ScanFailure(const ScanFailureDetail& detail) {
-  return "simple_query: windows filesystem " + std::string(detail.operation) +
-         " failed for " + PathToUtf8(detail.path) + " - " + detail.error.message();
-}
-
 // Purpose: Turn an entry's failed read into its outcome. An entry removed
 // during the walk is left out; any other failure ends the walk, so a partial
 // listing is never reported as complete.
 // @param detail names the step, the path and the system error.
 // @returns An empty outcome for a removed entry, otherwise an error.
 // @throws std::system_error when the path is not valid Unicode.
-EntryRead FailedOrRemoved(const ScanFailureDetail& detail) {
+EntryRead FailedOrRemoved(const FilesystemFailure& detail) {
   if (detail.error == std::errc::no_such_file_or_directory) {
     return {};
   }
-  return {.row = std::nullopt, .error = ScanFailure(detail)};
+  return {.row = std::nullopt, .error = DescribeFilesystemFailure(detail)};
 }
 
 // Purpose: Convert a FILETIME to the system clock.
@@ -167,10 +171,12 @@ EncodableMap FileRow(const std::filesystem::path& path, const EntryInfo& info) {
 
 // Purpose: Read one entry of the walk.
 // @param entry is the directory entry.
-// @param media_only lists only media files, as media rows.
+// @param options picks media or file rows, and drops non-media files from
+// a media walk.
 // @returns The entry's row, nothing for an entry to leave out, or an error.
 // @throws std::system_error when the path is not valid Unicode.
-EntryRead ReadEntry(const std::filesystem::directory_entry& entry, bool media_only) {
+EntryRead ReadEntry(const std::filesystem::directory_entry& entry,
+                    const ListRecordsOptions& options) {
   std::error_code error;
   const std::filesystem::path& path = entry.path();
   EntryInfo info;
@@ -180,7 +186,7 @@ EntryRead ReadEntry(const std::filesystem::directory_entry& entry, bool media_on
   }
   info.mime = MimeFromPath(path);
   const bool media_file = !info.is_directory && IsMediaMime(info.mime);
-  if (media_only && !media_file) {
+  if (options.media_only && !media_file) {
     return {};
   }
   const bool is_regular = entry.is_regular_file(error);
@@ -199,7 +205,7 @@ EntryRead ReadEntry(const std::filesystem::directory_entry& entry, bool media_on
     return FailedOrRemoved({"time read", path, error});
   }
   info.times = *times;
-  return {.row = media_only ? MediaRow(path, info) : FileRow(path, info),
+  return {.row = options.media_only ? MediaRow(path, info) : FileRow(path, info),
           .error = std::nullopt};
 }
 
@@ -212,7 +218,7 @@ void ScanInto(const ListRecordsOptions& options, RowsResult* result) {
   std::error_code error;
   const bool root_exists = std::filesystem::exists(options.root, error);
   if (error) {
-    result->error = ScanFailure({"query", options.root, error});
+    result->error = DescribeFilesystemFailure({"query", options.root, error});
     return;
   }
   if (!root_exists) {
@@ -229,7 +235,7 @@ void ScanInto(const ListRecordsOptions& options, RowsResult* result) {
       result->error = kReadStoppedError;
       return;
     }
-    EntryRead read = ReadEntry(*it, options.media_only);
+    EntryRead read = ReadEntry(*it, options);
     if (read.error.has_value()) {
       result->error = std::move(read.error);
       return;
@@ -240,7 +246,7 @@ void ScanInto(const ListRecordsOptions& options, RowsResult* result) {
     it.increment(error);
   }
   if (error) {
-    result->error = ScanFailure({"query", options.root, error});
+    result->error = DescribeFilesystemFailure({"query", options.root, error});
   }
 }
 
@@ -293,7 +299,7 @@ RowsResult ListRecords(const ListRecordsOptions& options) {
     // Dart reads UTF-8, so a name that is not valid Unicode cannot be sent.
     result.error = std::string("simple_query: windows filesystem query found a "
                                "name that is not valid Unicode - ") +
-                   error.what();
+                   ExceptionText(error);
   }
   return result;
 }

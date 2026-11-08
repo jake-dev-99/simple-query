@@ -3,6 +3,7 @@
 #include "boundary_formats.h"
 #include "detached_threads.h"
 #include "structured_log.h"
+#include "owned_message_error.h"
 
 #include <chrono>
 #include <cstddef>
@@ -22,6 +23,9 @@ namespace {
 
 // Purpose: Hash encodable values field by field with 64-bit FNV-1a, so a
 // fingerprint needs no encoded copy of the row.
+// @param none; its constructor documents its own parameters.
+// @returns Nothing; this is a class.
+// @throws Nothing; its members document what they throw.
 class RowHasher {
  public:
   // Purpose: Add a map's size, then each key and value in key order.
@@ -46,7 +50,7 @@ class RowHasher {
   void Add(const EncodableValue& value) {
     AddSize(value.index());
     if (const auto* flag = std::get_if<bool>(&value)) {
-      AddScalar(*flag);
+      AddScalar(static_cast<uint8_t>(*flag));
     } else if (const auto* int_value = std::get_if<int32_t>(&value)) {
       AddScalar(*int_value);
     } else if (const auto* long_value = std::get_if<int64_t>(&value)) {
@@ -138,29 +142,48 @@ class RowHasher {
 
 // Purpose: Hold what one observer's worker needs once it may outlive the
 // PollingObservers that started it, and how it is told to stop.
+// @param stopping is set under the observer's mutex. Snapshot scans read it
+// without the mutex, so it is atomic.
+// @param stop_signal is notified after stopping is set under the
+// observer's mutex, so the worker cannot miss it between check and wait.
+// @param dispatcher is shared with the owner, which closes it on teardown.
+// @param now_epoch_ms is a copy of the owner's clock, safe to call from the
+// worker.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
 struct PollingObservers::WorkerLifecycle {
-  // Read without the observer's mutex by snapshot scans; written under it.
   std::atomic<bool> stopping{false};
-  // Wakes the worker early when the observer is stopping.
   std::condition_variable stop_signal;
-  // Shared with the owner, which closes it on teardown.
   std::shared_ptr<PlatformThreadDispatcher> dispatcher;
-  // A copy of the owner's clock, safe to call from the worker.
   std::function<int64_t()> now_epoch_ms;
 };
 
 // Purpose: Hold what one observer last delivered and what waits to go.
+// @param delivered is the baseline each pending change is measured
+// against. It moves only when an event is sent.
+// @param pending holds at most one change; a later differing poll
+// replaces it.
+// @param awaiting_reply is true from sending an event until Dart answers it.
+// No further event is sent meanwhile, so replies cannot pile up behind a
+// slow isolate.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
 struct PollingObservers::DeliveryState {
-  // The snapshot the last delivered event described.
   Snapshot delivered;
-  // The change waiting for delivery, if any.
   std::optional<PendingChange> pending;
-  // True from sending an event until Dart answers it. No further event is
-  // sent meanwhile, so replies cannot pile up behind a slow isolate.
   bool awaiting_reply = false;
 };
 
 // Purpose: Hold one observer's settings, worker state and change state.
+// @param spec is fixed when the observer starts.
+// @param stop_requested is given to each snapshot, so a long scan ends once
+// the observer stops.
+// @param mutex guards delivery, and orders a stop request with the worker's
+// wait.
+// @param lifecycle is what the worker needs once it may outlive its owner.
+// @param delivery is guarded by mutex.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
 struct PollingObservers::Observer {
   // Purpose: Hold the settings for one observer before its worker starts.
   // @param observer_spec describes what to poll and how often.
@@ -171,12 +194,9 @@ struct PollingObservers::Observer {
         stop_requested([this]() { return lifecycle.stopping.load(); }) {}
 
   const ObserverSpec spec;
-  // Given to each snapshot so a long scan ends once the observer stops.
   const StopRequested stop_requested;
-  // Guards delivery, and orders a stop request with the worker's wait.
   std::mutex mutex;
   WorkerLifecycle lifecycle;
-  // Guarded by mutex.
   DeliveryState delivery;
 };
 
@@ -209,11 +229,12 @@ PollingObservers::~PollingObservers() {
 bool PollingObservers::IsReady() const { return dispatcher_->IsReady(); }
 
 // Purpose: Start polling one domain on a new worker thread.
-// @param spec describes what to poll and how often.
+// @param spec is fixed when the observer starts.
 // @param baseline is the snapshot taken before the start was acknowledged.
-// @returns The new observer's id, used in its events and to stop it.
+// @returns The new observer's id, or nothing when too many worker threads
+// are still running.
 // @throws std::system_error when the worker thread cannot be started.
-std::string PollingObservers::Start(ObserverSpec spec, Snapshot baseline) {
+std::optional<std::string> PollingObservers::Start(ObserverSpec spec, Snapshot baseline) {
   auto observer = std::make_shared<Observer>(std::move(spec));
   observer->lifecycle.dispatcher = dispatcher_;
   observer->lifecycle.now_epoch_ms = effects_.now_epoch_ms;
@@ -221,7 +242,9 @@ std::string PollingObservers::Start(ObserverSpec spec, Snapshot baseline) {
   // Started before the observer is stored, so a failed start leaves nothing
   // behind; no event can reach DeliverPendingChanges until it is stored,
   // because wakes run on this same thread.
-  StartDetachedThread([observer]() { RunWorker(observer); });
+  if (StartDetachedThread([observer]() { RunWorker(observer); }) == DetachedStart::kAtLimit) {
+    return std::nullopt;
+  }
   const std::string observer_id = "windows_observer_" + std::to_string(++observer_counter_);
   observers_[observer_id] = std::move(observer);
   return observer_id;
@@ -277,7 +300,7 @@ std::optional<Snapshot> PollingObservers::TakeSnapshot(Observer& observer,
     // An exception leaving a worker thread ends the app, so the worker is
     // the nearest place that can handle a failed read: the poll is skipped
     // and the next one tries again.
-    failure = error.what();
+    failure = ExceptionText(error);
   }
   if (observer.lifecycle.stopping.load()) {
     return std::nullopt;
@@ -374,25 +397,26 @@ bool PollingObservers::HasPendingChange(Observer& observer) {
 // @returns Nothing.
 // @throws Nothing beyond what effects.send_event throws.
 void PollingObservers::DeliverPendingChanges() {
-  std::vector<std::pair<std::string, EncodableMap>> events;
-  std::vector<std::weak_ptr<Observer>> senders;
+  std::vector<ObserveEvent> events;
   for (auto& [observer_id, observer] : observers_) {
     std::lock_guard<std::mutex> observer_lock(observer->mutex);
     DeliveryState& delivery = observer->delivery;
     if (!delivery.pending.has_value() || delivery.awaiting_reply) {
       continue;
     }
-    events.emplace_back(observer_id, BuildEvent(observer->spec.domain, *delivery.pending));
-    senders.push_back(observer);
+    events.push_back({.observer_id = observer_id,
+                      .event = BuildEvent(observer->spec.domain, *delivery.pending),
+                      .on_settled = [sender = std::weak_ptr<Observer>(observer)]() {
+                        SettleEvent(sender);
+                      }});
     delivery.delivered = std::move(delivery.pending->snapshot);
     delivery.pending.reset();
     delivery.awaiting_reply = true;
   }
   // Sent outside the locks. Stop runs on this same thread, so no observer
   // can stop between collecting its event and sending it.
-  for (size_t index = 0; index < events.size(); ++index) {
-    effects_.send_event(events[index].first, events[index].second,
-                        [sender = senders[index]]() { SettleEvent(sender); });
+  for (ObserveEvent& event : events) {
+    effects_.send_event(std::move(event));
   }
 }
 

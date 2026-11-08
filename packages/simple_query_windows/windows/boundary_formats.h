@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <system_error>
 
 namespace simple_query_windows {
 
@@ -40,6 +41,26 @@ std::chrono::system_clock::time_point TimeFromWindowsTicks(int64_t ticks);
 // @returns The instant in UTC with millisecond precision and a Z suffix.
 // @throws Nothing.
 std::string FormatIsoUtc(std::chrono::system_clock::time_point instant);
+
+// Purpose: Name one filesystem step that failed. Every field is borrowed,
+// so a failure must not outlive the call that builds it.
+// @param operation is a string literal naming the step, such as "delete".
+// @param path is the path the step acted on; the message prints it as UTF-8.
+// @param error is the step's system error; the message ends with its text.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
+struct FilesystemFailure {
+  const char* operation;
+  const std::filesystem::path& path;
+  const std::error_code& error;
+};
+
+// Purpose: Describe a failed filesystem step in the text Dart receives.
+// @param failure names the step, the path and the system error.
+// @returns The error text.
+// @throws std::system_error when the path holds UTF-16 that is not valid
+// Unicode.
+std::string DescribeFilesystemFailure(const FilesystemFailure& failure);
 
 }  // namespace simple_query_windows
 

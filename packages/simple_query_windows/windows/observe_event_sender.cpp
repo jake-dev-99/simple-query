@@ -12,26 +12,22 @@ ObserveEventSender::ObserveEventSender(flutter::BinaryMessenger* messenger)
     : flutter_api_(messenger) {}
 
 // Purpose: Send one observe event.
-// @param observer_id is the observer the event belongs to.
-// @param event is the change event map.
-// @param on_settled runs on the platform thread once Dart accepts or rejects
-// the event.
+// @param event is the event; its on_settled runs on the platform thread once
+// Dart accepts or rejects it.
 // @returns Nothing.
 // @throws Nothing.
-void ObserveEventSender::Send(const std::string& observer_id,
-                              const flutter::EncodableMap& event,
-                              std::function<void()> on_settled) {
+void ObserveEventSender::Send(ObserveEvent event) {
   // Pigeon keeps the success and error handlers apart, and runs exactly one
   // of them, so each holds its own copy of on_settled. Both copy rather than
   // move: the order the two handlers are built in is unspecified.
   flutter_api_.OnObserveEvent(
-      observer_id, event,
-      [reported = rejected_event_reported_, on_settled]() {
+      event.observer_id, event.event,
+      [reported = rejected_event_reported_, on_settled = event.on_settled]() {
         *reported = false;
         on_settled();
       },
-      [observer_id, reported = rejected_event_reported_,
-       on_settled](const FlutterError& error) {
+      [observer_id = event.observer_id, reported = rejected_event_reported_,
+       on_settled = event.on_settled](const FlutterError& error) {
         if (!*reported) {
           *reported = true;
           WriteLog({LogLevel::kWarning,

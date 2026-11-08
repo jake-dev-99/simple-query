@@ -32,6 +32,9 @@ bool HasDispatcherClass(HMODULE module) {
 }
 
 // Purpose: Own the loaded probe library and free it afterwards.
+// @param none; its constructor documents its own parameters.
+// @returns Nothing; this is a class.
+// @throws Nothing; its members document what they throw.
 class ProbeLibrary {
  public:
   // Purpose: Load the probe library from the test runner's directory.

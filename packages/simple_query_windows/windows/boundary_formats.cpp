@@ -68,4 +68,14 @@ std::string FormatIsoUtc(std::chrono::system_clock::time_point instant) {
   return buffer;
 }
 
+// Purpose: Describe a failed filesystem step in the text Dart receives.
+// @param failure names the step, the path and the system error.
+// @returns The error text.
+// @throws std::system_error when the path holds UTF-16 that is not valid
+// Unicode.
+std::string DescribeFilesystemFailure(const FilesystemFailure& failure) {
+  return "simple_query: windows filesystem " + std::string(failure.operation) +
+         " failed for " + PathToUtf8(failure.path) + " - " + failure.error.message();
+}
+
 }  // namespace simple_query_windows

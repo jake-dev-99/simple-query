@@ -57,6 +57,12 @@ enum class EventReply {
 };
 
 // Purpose: Hold one observe event sent through a fake messenger.
+// @param observer_id is the id the event was sent for.
+// @param event is decoded from the sent message.
+// @param thread lets a test check that events leave on the platform
+// thread.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
 struct SentObserveEvent {
   std::string observer_id;
   EncodableMap event;
@@ -66,6 +72,9 @@ struct SentObserveEvent {
 // Purpose: Stand in for one engine's messenger, recording every message
 // sent and every handler registered, and answering observe events the way
 // the test chooses.
+// @param none; its constructor documents its own parameters.
+// @returns Nothing; this is a class.
+// @throws Nothing; its members document what they throw.
 class FakeMessenger : public flutter::BinaryMessenger {
  public:
   // Purpose: Record one message and the thread that sent it, then answer an
@@ -77,6 +86,7 @@ class FakeMessenger : public flutter::BinaryMessenger {
   // @param reply receives the answer.
   // @returns Nothing.
   // @throws Nothing beyond what reply throws.
+  // flutter::BinaryMessenger fixes this signature.
   void Send(const std::string& channel, const uint8_t* message,
             size_t message_size, flutter::BinaryReply reply) const override {
     {
@@ -190,6 +200,12 @@ class FakeMessenger : public flutter::BinaryMessenger {
 
  private:
   // Purpose: Hold one sent message.
+  // @param channel is the channel it was sent on.
+  // @param bytes are the encoded message.
+  // @param thread lets a test check that events leave on the platform
+  // thread.
+  // @returns Nothing; this is a data type.
+  // @throws Nothing.
   struct SentMessage {
     std::string channel;
     std::vector<uint8_t> bytes;
@@ -205,12 +221,16 @@ class FakeMessenger : public flutter::BinaryMessenger {
 };
 
 // Purpose: Describe a files observer to start through the host API.
+// @param messenger receives the observeStart call; it must outlive the
+// request.
+// @param root is sent as the request's rootPath.
+// @param polling_interval_ms is sent as pollingIntervalMs; the plugin
+// raises it to its floor.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
 struct FileObserverRequest {
-  // The engine's messenger.
   FakeMessenger& messenger;
-  // The directory to watch.
   std::filesystem::path root;
-  // The requested polling interval.
   int64_t polling_interval_ms = 0;
 };
 
@@ -238,7 +258,8 @@ std::string StartFileObserver(const FileObserverRequest& request) {
 // event. A write that lands while the previous event waits for its answer
 // is folded into the next event, so the test writes again rather than
 // counting writes.
-// @param messenger is the engine's messenger.
+// @param messenger receives the observeStart call; it must outlive the
+// request.
 // @param directory is the watched directory.
 // @returns true when an event arrived before the delivery timeout.
 // @throws Nothing.
@@ -263,7 +284,7 @@ bool WriteFilesUntilObserveEvent(const FakeMessenger& messenger,
 // @throws Nothing.
 size_t RejectedEventLines(const StandardErrorCapture& log) {
   const auto lines = log.Lines();
-  return static_cast<size_t>(std::count_if(lines.begin(), lines.end(), [](const auto& line) {
+  return static_cast<size_t>(std::count_if(lines.begin(), lines.end(), [](const std::string& line) {
     return line.find(kRejectedEventLog) != std::string::npos;
   }));
 }

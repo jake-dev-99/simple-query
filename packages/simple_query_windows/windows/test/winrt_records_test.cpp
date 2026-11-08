@@ -24,6 +24,9 @@ constexpr int kFakeResult = 42;
 
 // Purpose: Stand in for a Windows Runtime call that finishes after a set
 // number of status checks, recording whether it was cancelled.
+// @param none; its constructor documents its own parameters.
+// @returns Nothing; this is a class.
+// @throws Nothing; its members document what they throw.
 class FakeOperation {
  public:
   // Purpose: Describe a call that finishes on a given status check.
@@ -69,6 +72,13 @@ class FakeOperation {
 };
 
 // Purpose: Hold the apartment a thread is in, as COM reports it.
+// @param result is E_FAIL until CoGetApartmentType runs, and S_OK when
+// type and qualifier are valid.
+// @param type is APTTYPE_CURRENT until CoGetApartmentType sets it.
+// @param qualifier tells an implicit multithreaded apartment from an
+// explicit one.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
 struct ApartmentState {
   HRESULT result = E_FAIL;
   APTTYPE type = APTTYPE_CURRENT;
@@ -85,7 +95,7 @@ ApartmentState CurrentApartment() {
 }
 
 // Purpose: Report whether an apartment type is single-threaded.
-// @param type is the apartment type.
+// @param type is APTTYPE_CURRENT until CoGetApartmentType sets it.
 // @returns true for an ordinary or main single-threaded apartment.
 // @throws Nothing.
 bool IsSingleThreaded(APTTYPE type) {

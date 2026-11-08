@@ -10,6 +10,7 @@
 #include "file_records.h"
 #include "request_values.h"
 #include "winrt_records.h"
+#include "owned_message_error.h"
 
 namespace simple_query_windows {
 
@@ -23,13 +24,22 @@ namespace {
 using RowsOrError = std::variant<std::vector<EncodableMap>, FlutterError>;
 
 // Purpose: State what one domain supports on this machine.
+// @param domain is the wire name Dart matches, such as "files".
+// @param can_read is false only for a store whose probe failed.
+// @param can_write is true only for files and media.
+// @param can_observe equals can_read, because every readable domain is
+// polled.
+// @param can_stream is true only for files and media.
+// @param reason is the store probe's error. It is empty when nothing is
+// missing.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
 struct DomainCapability {
   std::string domain;
   bool can_read = false;
   bool can_write = false;
   bool can_observe = false;
   bool can_stream = false;
-  // Why a capability is missing, when Dart should show the user.
   std::optional<std::string> reason;
 };
 
@@ -94,13 +104,18 @@ EncodableList RowsAsList(std::vector<EncodableMap> rows) {
   return list;
 }
 
-// Purpose: Name one domain read and when it gives up.
+// Purpose: Name one domain read and when it gives up. Every field is
+// borrowed, so a read must not outlive the call that builds it.
+// @param domain reads a store for contacts or calendar. Any other domain
+// walks the filesystem, as media rows only for "media".
+// @param root_for_files is called only for a filesystem read. It throws
+// std::system_error when the root cannot be resolved.
+// @param stop_requested ends the read early; the read then reports an error.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
 struct DomainRead {
-  // files, media, contacts or calendar.
   const std::string& domain;
-  // Resolves the root of a files or media read.
   const std::function<std::filesystem::path()>& root_for_files;
-  // Ends the read early; the read then reports an error.
   const StopRequested& stop_requested;
 };
 
@@ -123,7 +138,7 @@ RowsOrError ReadDomainRows(const DomainRead& read) {
     return FlutterError("unavailable",
                         std::string("simple_query: windows could not resolve the "
                                     "query root. Check platformData.rootPath - ") +
-                            error.what());
+                            ExceptionText(error));
   }
 }
 
@@ -336,7 +351,7 @@ ErrorOr<EncodableMap> DescribeBinaryFile(const std::filesystem::path& path) {
     return FlutterError("unavailable",
                         std::string("simple_query: openBinary could not read the path. "
                                     "Check that it is valid Unicode - ") +
-                            error.what());
+                            ExceptionText(error));
   }
 }
 
@@ -359,7 +374,7 @@ BaselineOrError TakeBaseline(const ObserverSpec& spec, const StopRequested& stop
                         std::string("simple_query: windows observe could not read "
                                     "the records to watch. Check the root or access, "
                                     "then start again - ") +
-                            error.what());
+                            ExceptionText(error));
   }
 }
 

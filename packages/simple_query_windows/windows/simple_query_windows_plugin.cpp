@@ -22,6 +22,7 @@
 #include "background_calls.h"
 #include "host_call_work.h"
 #include "boundary_formats.h"
+#include "detached_threads.h"
 #include "domain_snapshots.h"
 #include "file_mutations.h"
 #include "file_records.h"
@@ -33,6 +34,7 @@
 #include "rows_result.h"
 #include "structured_log.h"
 #include "winrt_records.h"
+#include "owned_message_error.h"
 
 namespace simple_query_windows {
 
@@ -133,7 +135,7 @@ ErrorOr<std::optional<EncodableMap>> ResolveKnownFolders(
     return FlutterError("unavailable",
                         std::string("simple_query: windows could not read a known "
                                     "folder - ") +
-                            error.what());
+                            ExceptionText(error));
   }
 }
 
@@ -213,14 +215,18 @@ FlutterError NotQueuedError(EnqueueResult result) {
 
 // Purpose: Describe one host call split between the background worker and
 // the platform thread.
+// @param work runs on the background worker. It must not throw, and must
+// hold by copy everything it reads, because the plugin can be destroyed
+// while it runs.
+// @param finish runs on the platform thread with work's value and builds the
+// reply.
+// @param result is Pigeon's reply callback. It runs on the platform thread.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
 template <typename Value, typename Reply>
 struct BackgroundCall {
-  // Runs on the background worker. It must not throw, and must hold by copy
-  // everything it reads, because the plugin can be destroyed while it runs.
   std::function<Value(const StopRequested&)> work;
-  // Runs on the platform thread with work's value and builds the reply.
   std::function<ErrorOr<Reply>(Value)> finish;
-  // Pigeon's reply callback. Runs on the platform thread.
   std::function<void(ErrorOr<Reply>)> result;
 };
 
@@ -230,6 +236,9 @@ struct BackgroundCall {
 // Calls that read or write stores or the filesystem run on a background
 // worker and reply on the platform thread, so the platform thread never
 // waits for I/O. Create and destroy it on that engine's platform thread.
+// @param none; its constructor documents its own parameters.
+// @returns Nothing; this is a class.
+// @throws Nothing; its members document what they throw.
 class NativeQueryHostApiImpl : public NativeQueryHostApi {
  public:
   // Purpose: Serve host calls and send observe events through one engine.
@@ -242,10 +251,7 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
       : current_directory_(std::move(effects.current_directory)),
         event_sender_(messenger),
         observers_({.send_event =
-                        [this](const std::string& observer_id, const EncodableMap& event,
-                               std::function<void()> on_settled) {
-                          event_sender_.Send(observer_id, event, std::move(on_settled));
-                        },
+                        [this](ObserveEvent event) { event_sender_.Send(std::move(event)); },
                     .now_epoch_ms = &EpochMsNow}),
         background_calls_(kMaxUnfinishedCalls) {}
 
@@ -403,7 +409,7 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
       return result(FlutterError("unavailable",
                                  std::string("simple_query: openBinary could not read the "
                                              "path. Check that it is valid Unicode - ") +
-                                     error.what()));
+                                     ExceptionText(error)));
     }
     RunInBackground<ErrorOr<EncodableMap>, EncodableMap>(
         {.work = [path](const StopRequested&) { return DescribeBinaryFile(path); },
@@ -432,6 +438,7 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
   // method, invalid arguments, a denied store or an unreadable store.
   // @returns Nothing.
   // @throws Nothing.
+  // The generated NativeQueryHostApi fixes this signature.
   void CallExtension(
       const std::string& extension_namespace, const std::string& method,
       const EncodableMap* args,
@@ -547,7 +554,7 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
                             std::string("simple_query: windows observe could not "
                                         "resolve its root directory. Check "
                                         "platformData.rootPath - ") +
-                                resolved.error->what());
+                                ExceptionText(*resolved.error));
       }
       root = std::move(*resolved.path);
     }
@@ -572,14 +579,22 @@ class NativeQueryHostApiImpl : public NativeQueryHostApi {
     if (auto* error = std::get_if<FlutterError>(&baseline)) {
       return *error;
     }
+    std::optional<std::string> observer_id;
     try {
-      return observers_.Start(spec, std::get<Snapshot>(std::move(baseline)));
+      observer_id = observers_.Start(spec, std::get<Snapshot>(std::move(baseline)));
     } catch (const std::system_error& error) {
       return FlutterError("unavailable",
-                          std::string("simple_query: windows observe could not "
-                                      "start its polling thread. Try again - ") +
-                              error.what());
+                          "simple_query: windows observe could not start its polling "
+                          "thread. Try again - " + ExceptionText(error));
     }
+    if (!observer_id.has_value()) {
+      return FlutterError("unavailable",
+                          "simple_query: windows observe already runs " +
+                              std::to_string(kMaxDetachedThreads) +
+                              " worker threads. Stop an observer, or try again "
+                              "shortly once stopped observers finish.");
+    }
+    return *observer_id;
   }
 
   // Purpose: Give a described file a handle Dart can close. Runs on the

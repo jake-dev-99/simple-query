@@ -12,6 +12,7 @@
 #include <fstream>
 #include <functional>
 #include <iterator>
+#include <limits>
 #include <string>
 #include <system_error>
 
@@ -28,10 +29,15 @@ using flutter::EncodableValue;
 namespace fs = std::filesystem;
 
 // Purpose: Describe one filter of a mutation request.
+// @param field is sent as the filter's "field".
+// @param op is the operator's wire name, such as "equals".
+// @param value is sent as the filter's "value".
+// @returns Nothing; this is a data type.
+// @throws Nothing.
 struct FilterSpec {
   std::string field;
   std::string op;
-  std::string value;
+  EncodableValue value;
 };
 
 // Purpose: Build a filters list holding one filter.
@@ -42,7 +48,7 @@ EncodableValue OneFilter(const FilterSpec& filter) {
   return EncodableValue(EncodableList{EncodableValue(
       EncodableMap{{EncodableValue("field"), EncodableValue(filter.field)},
                    {EncodableValue("operator"), EncodableValue(filter.op)},
-                   {EncodableValue("value"), EncodableValue(filter.value)}})});
+                   {EncodableValue("value"), filter.value}})});
 }
 
 // Purpose: Read a whole file as text.
@@ -54,16 +60,27 @@ std::string ReadText(const fs::path& path) {
   return std::string(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
 }
 
-// Purpose: Run one mutation against a folder.
-// @param request is the mutation request.
+// Purpose: Name one mutation to run against a folder. Every field is
+// borrowed, so it must not outlive the call that builds it.
+// @param request is the request as Dart would send it.
 // @param domain is "files" or "media".
 // @param root is the folder a filtered mutation searches.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
+struct FolderMutation {
+  const EncodableMap& request;
+  const std::string& domain;
+  const fs::path& root;
+};
+
+// Purpose: Run one mutation against a folder.
+// @param mutation names the request, the domain and the folder.
 // @returns The mutation's result.
 // @throws Nothing.
-ErrorOr<EncodableMap> Mutate(const EncodableMap& request, const std::string& domain,
-                             const fs::path& root) {
-  const std::function<fs::path()> resolve_root = [root]() { return root; };
-  return MutateFiles({.request = request, .domain = domain, .resolve_root = resolve_root});
+ErrorOr<EncodableMap> Mutate(const FolderMutation& mutation) {
+  const std::function<fs::path()> resolve_root = [root = mutation.root]() { return root; };
+  return MutateFiles(
+      {.request = mutation.request, .domain = mutation.domain, .resolve_root = resolve_root});
 }
 
 // Purpose: Read a successful mutation's affected count.
@@ -84,9 +101,9 @@ TEST(FileMutationsTest, DeletesTheMediaAFilterMatches) {
   const EncodableMap request{
       {EncodableValue("type"), EncodableValue("delete")},
       {EncodableValue("filters"),
-       OneFilter({.field = "uriOrPath", .op = "contains", .value = "photo"})}};
+       OneFilter({.field = "uriOrPath", .op = "contains", .value = EncodableValue("photo")})}};
 
-  const auto result = Mutate(request, "media", directory.path());
+  const auto result = Mutate({.request = request, .domain = "media", .root = directory.path()});
 
   ASSERT_FALSE(result.has_error()) << result.error().message();
   EXPECT_EQ(AffectedCount(result), 1);
@@ -106,9 +123,9 @@ TEST(FileMutationsTest, UpdatesTheMediaAFilterMatches) {
       {EncodableValue("values"),
        EncodableValue(EncodableMap{{EncodableValue("content"), EncodableValue("replaced")}})},
       {EncodableValue("filters"),
-       OneFilter({.field = "uriOrPath", .op = "contains", .value = "photo"})}};
+       OneFilter({.field = "uriOrPath", .op = "contains", .value = EncodableValue("photo")})}};
 
-  const auto result = Mutate(request, "media", directory.path());
+  const auto result = Mutate({.request = request, .domain = "media", .root = directory.path()});
 
   ASSERT_FALSE(result.has_error()) << result.error().message();
   EXPECT_EQ(AffectedCount(result), 1);
@@ -124,9 +141,9 @@ TEST(FileMutationsTest, DeletesTheFilesAFilterMatches) {
   const EncodableMap request{
       {EncodableValue("type"), EncodableValue("delete")},
       {EncodableValue("filters"),
-       OneFilter({.field = "name", .op = "equals", .value = "notes.txt"})}};
+       OneFilter({.field = "name", .op = "equals", .value = EncodableValue("notes.txt")})}};
 
-  const auto result = Mutate(request, "files", directory.path());
+  const auto result = Mutate({.request = request, .domain = "files", .root = directory.path()});
 
   ASSERT_FALSE(result.has_error()) << result.error().message();
   EXPECT_EQ(AffectedCount(result), 1);
@@ -146,7 +163,7 @@ TEST(FileMutationsTest, InsertsAFileWithItsContentAndParents) {
        EncodableValue(EncodableMap{{EncodableValue("path"), EncodableValue(target_text)},
                                    {EncodableValue("content"), EncodableValue("hello")}})}};
 
-  const auto result = Mutate(request, "files", directory.path());
+  const auto result = Mutate({.request = request, .domain = "files", .root = directory.path()});
 
   ASSERT_FALSE(result.has_error()) << result.error().message();
   EXPECT_EQ(AffectedCount(result), 1);
@@ -167,7 +184,7 @@ TEST(FileMutationsTest, MovesAFileToItsNewPath) {
            EncodableMap{{EncodableValue("path"), EncodableValue(PathToUtf8(original))},
                         {EncodableValue("newPath"), EncodableValue(PathToUtf8(moved))}})}};
 
-  const auto result = Mutate(request, "files", directory.path());
+  const auto result = Mutate({.request = request, .domain = "files", .root = directory.path()});
 
   ASSERT_FALSE(result.has_error()) << result.error().message();
   EXPECT_EQ(AffectedCount(result), 1);
@@ -183,7 +200,7 @@ TEST(FileMutationsTest, RejectsAnInsertWithoutAPath) {
       {EncodableValue("values"),
        EncodableValue(EncodableMap{{EncodableValue("content"), EncodableValue("hello")}})}};
 
-  const auto result = Mutate(request, "files", directory.path());
+  const auto result = Mutate({.request = request, .domain = "files", .root = directory.path()});
 
   ASSERT_TRUE(result.has_error());
   EXPECT_EQ(result.error().code(), "invalid-query");
@@ -200,7 +217,7 @@ TEST(FileMutationsTest, RejectsBytesThatAreNotAByteList) {
            EncodableMap{{EncodableValue("path"), EncodableValue(PathToUtf8(notes))},
                         {EncodableValue("bytes"), EncodableValue("not bytes")}})}};
 
-  const auto result = Mutate(request, "files", directory.path());
+  const auto result = Mutate({.request = request, .domain = "files", .root = directory.path()});
 
   ASSERT_TRUE(result.has_error());
   EXPECT_EQ(result.error().code(), "invalid-query");
@@ -212,7 +229,7 @@ TEST(FileMutationsTest, RejectsAnUnknownMutationType) {
   TempDirectory directory;
   const EncodableMap request{{EncodableValue("type"), EncodableValue("upsert")}};
 
-  const auto result = Mutate(request, "files", directory.path());
+  const auto result = Mutate({.request = request, .domain = "files", .root = directory.path()});
 
   ASSERT_TRUE(result.has_error());
   EXPECT_EQ(result.error().code(), "invalid-query");
@@ -226,13 +243,49 @@ TEST(FileMutationsTest, RejectsAnUnknownFilterOperator) {
   const EncodableMap request{
       {EncodableValue("type"), EncodableValue("delete")},
       {EncodableValue("filters"),
-       OneFilter({.field = "name", .op = "startsWith", .value = "notes"})}};
+       OneFilter({.field = "name", .op = "startsWith", .value = EncodableValue("notes")})}};
 
-  const auto result = Mutate(request, "files", directory.path());
+  const auto result = Mutate({.request = request, .domain = "files", .root = directory.path()});
 
   ASSERT_TRUE(result.has_error());
   EXPECT_EQ(result.error().code(), "invalid-query");
   EXPECT_TRUE(fs::exists(notes));
+}
+
+// Purpose: A NaN filter value is rejected before anything is deleted. NaN
+// has no order, so it must never widen a delete to every file.
+TEST(FileMutationsTest, RejectsANanFilterBeforeDeleting) {
+  TempDirectory directory;
+  const fs::path notes = directory.WriteFile("notes.txt");
+  const EncodableValue nan(std::numeric_limits<double>::quiet_NaN());
+  const EncodableMap request{
+      {EncodableValue("type"), EncodableValue("delete")},
+      {EncodableValue("filters"), OneFilter({.field = "size", .op = "equals", .value = nan})}};
+
+  const auto result = Mutate({.request = request, .domain = "files", .root = directory.path()});
+
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(result.error().code(), "invalid-query");
+  EXPECT_TRUE(fs::exists(notes));
+}
+
+// Purpose: A NaN filter value is rejected before anything is updated.
+TEST(FileMutationsTest, RejectsANanFilterBeforeUpdating) {
+  TempDirectory directory;
+  const fs::path photo = directory.WriteFile("photo.jpg");
+  const EncodableValue nan(std::numeric_limits<double>::quiet_NaN());
+  const EncodableMap request{
+      {EncodableValue("type"), EncodableValue("update")},
+      {EncodableValue("values"),
+       EncodableValue(EncodableMap{{EncodableValue("content"), EncodableValue("replaced")}})},
+      {EncodableValue("filters"),
+       OneFilter({.field = "size", .op = "notEquals", .value = nan})}};
+
+  const auto result = Mutate({.request = request, .domain = "media", .root = directory.path()});
+
+  ASSERT_TRUE(result.has_error());
+  EXPECT_EQ(result.error().code(), "invalid-query");
+  EXPECT_EQ(ReadText(photo), "changed");
 }
 
 // Purpose: A filtered mutation whose folder cannot be walked fails as
@@ -243,9 +296,9 @@ TEST(FileMutationsTest, FailsWhenTheFolderCannotBeWalked) {
   const EncodableMap request{
       {EncodableValue("type"), EncodableValue("delete")},
       {EncodableValue("filters"),
-       OneFilter({.field = "name", .op = "equals", .value = "anything"})}};
+       OneFilter({.field = "name", .op = "equals", .value = EncodableValue("anything")})}};
 
-  const auto result = Mutate(request, "files", not_a_folder);
+  const auto result = Mutate({.request = request, .domain = "files", .root = not_a_folder});
 
   ASSERT_TRUE(result.has_error());
   EXPECT_EQ(result.error().code(), "unavailable");
@@ -256,7 +309,7 @@ TEST(FileMutationsTest, FailsWhenTheFolderCannotBeResolved) {
   const EncodableMap request{
       {EncodableValue("type"), EncodableValue("delete")},
       {EncodableValue("filters"),
-       OneFilter({.field = "name", .op = "equals", .value = "anything"})}};
+       OneFilter({.field = "name", .op = "equals", .value = EncodableValue("anything")})}};
   const std::string domain = "files";
   const std::function<fs::path()> resolve_root = []() -> fs::path {
     throw std::system_error(std::make_error_code(std::errc::permission_denied),

@@ -63,7 +63,7 @@ jobs:
             exit 0
           fi
           windows=false
-          while IFS= read -r path; do
+          while IFS= read -r -d '' path; do
             case "${path}" in
               packages/simple_query_windows/*|packages/simple_query_platform_interface/*|\
               packages/simple_query_shared/*|tool/build_windows_consumer.sh|\
@@ -73,8 +73,9 @@ jobs:
             esac
           # --no-renames lists a moved file under both its old and new
           # path, so moving a file out of a watched folder still runs the
-          # Windows jobs.
-          done < <(git diff --no-renames --name-only "${BASE_SHA}...${HEAD_SHA}")
+          # Windows jobs. -z prints raw names ending in NUL; without it, Git
+          # quotes and escapes a name like café.cpp, and no pattern matches.
+          done < <(git diff --no-renames --name-only -z "${BASE_SHA}...${HEAD_SHA}")
           echo "windows=${windows}" >> "${GITHUB_OUTPUT}"
 
   windows-consumer:

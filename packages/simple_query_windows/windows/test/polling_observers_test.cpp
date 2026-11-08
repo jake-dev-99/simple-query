@@ -12,12 +12,14 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
 #include <vector>
 
+#include "detached_threads.h"
 #include "test/test_support.h"
 
 namespace simple_query_windows {
@@ -35,12 +37,17 @@ constexpr int64_t kFixedNowEpochMs = 1700000000000;
 constexpr const char* kFixedNowIso = "2023-11-14T22:13:20.000Z";
 
 // Purpose: Say whether a ControlledSource's snapshots fail.
+// @param failing makes every snapshot throw.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
 struct ReadOutcome {
-  // true makes every snapshot throw.
   bool failing = false;
 };
 
 // Purpose: Serve snapshots that the test sets, and count how many were taken.
+// @param none; its constructor documents its own parameters.
+// @returns Nothing; this is a class.
+// @throws Nothing; its members document what they throw.
 class ControlledSource {
  public:
   // Purpose: Replace the snapshot returned from now on.
@@ -98,6 +105,12 @@ class ControlledSource {
 };
 
 // Purpose: Hold one event sent through PollingObservers.
+// @param observer_id is the id the event was sent for.
+// @param event is copied when sent, before Dart's reply.
+// @param thread lets a test check that events leave on the platform
+// thread.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
 struct SentEvent {
   std::string observer_id;
   EncodableMap event;
@@ -105,6 +118,9 @@ struct SentEvent {
 };
 
 // Purpose: Give the test runner's main thread as the platform thread.
+// @param none; its constructor documents its own parameters.
+// @returns Nothing; this is a class.
+// @throws Nothing; its members document what they throw.
 class PollingObserversTest : public ::testing::Test {
  protected:
   // Purpose: Build effects that record each event and its sending thread,
@@ -113,14 +129,13 @@ class PollingObserversTest : public ::testing::Test {
   // @throws Nothing.
   PollingObserverEffects RecordingEffects() {
     return {.send_event =
-                [this](const std::string& observer_id, const EncodableMap& event,
-                       std::function<void()> on_settled) {
+                [this](ObserveEvent sent) {
                   events_.push_back(
-                      {observer_id, event, std::this_thread::get_id()});
+                      {sent.observer_id, sent.event, std::this_thread::get_id()});
                   if (hold_replies_) {
-                    held_replies_.push_back(std::move(on_settled));
+                    held_replies_.push_back(std::move(sent.on_settled));
                   } else {
-                    on_settled();
+                    sent.on_settled();
                   }
                 },
             .now_epoch_ms = []() { return kFixedNowEpochMs; }};
@@ -155,7 +170,7 @@ TEST_F(PollingObserversTest, DeliversAllChangesSinceTheLastEventInOneEvent) {
   PollingObservers observers(RecordingEffects());
   ASSERT_TRUE(observers.IsReady());
   const std::string observer_id =
-      observers.Start(SpecFor(source, kFastPoll), {{"a", 1}});
+      observers.Start(SpecFor(source, kFastPoll), {{"a", 1}}).value();
 
   source.Set({{"a", 1}, {"b", 1}});
   ASSERT_TRUE(source.WaitForPollToFinish());
@@ -179,7 +194,7 @@ TEST_F(PollingObserversTest, SkipsAFailedPollAndKeepsReporting) {
   source.Set({{"a", 1}, {"b", 1}});
   DetachedThreadsDrain drain;
   PollingObservers observers(RecordingEffects());
-  observers.Start(SpecFor(source, kFastPoll), {{"a", 1}, {"b", 1}});
+  ASSERT_TRUE(observers.Start(SpecFor(source, kFastPoll), {{"a", 1}, {"b", 1}}).has_value());
 
   source.SetReadOutcome({.failing = true});
   ASSERT_TRUE(source.WaitForPollToFinish());
@@ -203,7 +218,7 @@ TEST_F(PollingObserversTest, LogsEachRunOfFailedPollsOnce) {
     source.Set({{"a", 1}});
     DetachedThreadsDrain drain;
     PollingObservers observers(RecordingEffects());
-    observers.Start(SpecFor(source, kFastPoll), {{"a", 1}});
+    ASSERT_TRUE(observers.Start(SpecFor(source, kFastPoll), {{"a", 1}}).has_value());
 
     source.SetReadOutcome({.failing = true});
     ASSERT_TRUE(source.WaitForPollToFinish());
@@ -232,7 +247,7 @@ TEST_F(PollingObserversTest, ReportsTheFirstChangeAgainstTheBaseline) {
   source.SetReadOutcome({.failing = true});
   DetachedThreadsDrain drain;
   PollingObservers observers(RecordingEffects());
-  observers.Start(SpecFor(source, kFastPoll), {{"a", 1}});
+  ASSERT_TRUE(observers.Start(SpecFor(source, kFastPoll), {{"a", 1}}).has_value());
   ASSERT_TRUE(source.WaitForPollToFinish());
   PumpQueuedMessages();
   EXPECT_TRUE(events_.empty());
@@ -249,7 +264,7 @@ TEST_F(PollingObserversTest, ReportsNothingForAChangeUndoneBeforeDelivery) {
   source.Set({{"a", 1}});
   DetachedThreadsDrain drain;
   PollingObservers observers(RecordingEffects());
-  observers.Start(SpecFor(source, kFastPoll), {{"a", 1}});
+  ASSERT_TRUE(observers.Start(SpecFor(source, kFastPoll), {{"a", 1}}).has_value());
 
   source.Set({{"a", 1}, {"b", 1}});
   ASSERT_TRUE(source.WaitForPollToFinish());
@@ -267,7 +282,7 @@ TEST_F(PollingObserversTest, DropsTheChangeOfAStoppedObserver) {
   DetachedThreadsDrain drain;
   PollingObservers observers(RecordingEffects());
   const std::string observer_id =
-      observers.Start(SpecFor(source, kFastPoll), {{"a", 1}});
+      observers.Start(SpecFor(source, kFastPoll), {{"a", 1}}).value();
   source.Set({{"a", 1}, {"b", 1}});
   ASSERT_TRUE(source.WaitForPollToFinish());
 
@@ -284,7 +299,7 @@ TEST_F(PollingObserversTest, RetriesAWakeThatCouldNotBeQueued) {
   source.Set({{"a", 1}});
   DetachedThreadsDrain drain;
   PollingObservers observers(RecordingEffects());
-  observers.Start(SpecFor(source, kFastPoll), {{"a", 1}});
+  ASSERT_TRUE(observers.Start(SpecFor(source, kFastPoll), {{"a", 1}}).has_value());
   ASSERT_TRUE(FillMessageQueue());
 
   source.Set({{"a", 1}, {"b", 1}});
@@ -302,7 +317,7 @@ TEST_F(PollingObserversTest, RetriesAWakeAfterFailedPolls) {
   source.Set({{"a", 1}});
   DetachedThreadsDrain drain;
   PollingObservers observers(RecordingEffects());
-  observers.Start(SpecFor(source, kFastPoll), {{"a", 1}});
+  ASSERT_TRUE(observers.Start(SpecFor(source, kFastPoll), {{"a", 1}}).has_value());
   ASSERT_TRUE(FillMessageQueue());
 
   source.Set({{"a", 1}, {"b", 1}});
@@ -322,7 +337,7 @@ TEST_F(PollingObserversTest, StopsPromptlyDuringALongPollingInterval) {
   ControlledSource source;
   DetachedThreadsDrain drain;
   PollingObservers observers(RecordingEffects());
-  const std::string observer_id = observers.Start(SpecFor(source, kLongPoll), {});
+  const std::string observer_id = observers.Start(SpecFor(source, kLongPoll), {}).value();
 
   EXPECT_LT(TimeOf([&]() { observers.Stop(observer_id); }), kPromptTeardown);
 }
@@ -333,7 +348,7 @@ TEST_F(PollingObserversTest, TeardownStopsASnapshotInProgress) {
   std::atomic<bool> saw_stop{false};
   DetachedThreadsDrain drain;
   auto observers = std::make_unique<PollingObservers>(RecordingEffects());
-  observers->Start({.domain = "files",
+  const std::optional<std::string> started = observers->Start({.domain = "files",
                     .polling_interval = kFastPoll,
                     .take_snapshot =
                         [&scanning, &saw_stop](const StopRequested& stop_requested) {
@@ -348,6 +363,7 @@ TEST_F(PollingObserversTest, TeardownStopsASnapshotInProgress) {
                           return Snapshot{};
                         }},
                    {});
+  ASSERT_TRUE(started.has_value());
   ASSERT_TRUE(WaitWithoutPumping([&]() { return scanning.load(); },
                                  kDeliveryTimeout));
 
@@ -364,7 +380,7 @@ TEST_F(PollingObserversTest, TeardownDoesNotWaitForASnapshotThatIgnoresStop) {
   std::atomic<bool> released{false};
   DetachedThreadsDrain drain;
   auto observers = std::make_unique<PollingObservers>(RecordingEffects());
-  observers->Start({.domain = "files",
+  const std::optional<std::string> started = observers->Start({.domain = "files",
                     .polling_interval = kFastPoll,
                     .take_snapshot =
                         [&scanning, &released](const StopRequested&) {
@@ -376,6 +392,7 @@ TEST_F(PollingObserversTest, TeardownDoesNotWaitForASnapshotThatIgnoresStop) {
                           return Snapshot{{"b", 1}};
                         }},
                    {});
+  ASSERT_TRUE(started.has_value());
   ASSERT_TRUE(WaitWithoutPumping([&]() { return scanning.load(); },
                                  kDeliveryTimeout));
 
@@ -396,7 +413,7 @@ TEST_F(PollingObserversTest, WaitsForDartsReplyAndThenSendsOneFoldedEvent) {
   source.Set({{"a", 1}});
   DetachedThreadsDrain drain;
   PollingObservers observers(RecordingEffects());
-  observers.Start(SpecFor(source, kFastPoll), {{"a", 1}});
+  ASSERT_TRUE(observers.Start(SpecFor(source, kFastPoll), {{"a", 1}}).has_value());
   source.Set({{"a", 1}, {"b", 1}});
   ASSERT_TRUE(PumpUntil([&]() { return events_.size() == 1; }, kDeliveryTimeout));
 
@@ -422,7 +439,7 @@ TEST_F(PollingObserversTest, TeardownDropsAQueuedChange) {
   source.Set({{"a", 1}});
   DetachedThreadsDrain drain;
   auto observers = std::make_unique<PollingObservers>(RecordingEffects());
-  observers->Start(SpecFor(source, kFastPoll), {{"a", 1}});
+  ASSERT_TRUE(observers->Start(SpecFor(source, kFastPoll), {{"a", 1}}).has_value());
   source.Set({{"a", 1}, {"b", 1}});
   ASSERT_TRUE(source.WaitForPollToFinish());
 
@@ -430,6 +447,43 @@ TEST_F(PollingObserversTest, TeardownDropsAQueuedChange) {
   PumpQueuedMessages();
 
   EXPECT_TRUE(events_.empty());
+}
+
+// Purpose: At most kMaxDetachedThreads observer workers run at once,
+// counting stopped ones still blocked in I/O, so a start past that is
+// refused until they finish.
+TEST_F(PollingObserversTest, RefusesAStartWhileTooManyWorkersStillRun) {
+  std::atomic<bool> released{false};
+  ASSERT_TRUE(WaitWithoutPumping([]() { return RunningDetachedThreads() == 0; },
+                                 kDeliveryTimeout));
+  DetachedThreadsDrain drain;
+  PollingObservers observers(RecordingEffects());
+  const ObserverSpec blocked{.domain = "files",
+                             .polling_interval = kFastPoll,
+                             .take_snapshot = [&released](const StopRequested&) {
+                               // Stands in for blocking I/O that ignores a stop.
+                               while (!released.load()) {
+                                 std::this_thread::sleep_for(1ms);
+                               }
+                               return Snapshot{};
+                             }};
+  std::vector<std::string> observer_ids;
+  for (int64_t started = 0; started < kMaxDetachedThreads; ++started) {
+    std::optional<std::string> observer_id = observers.Start(blocked, {});
+    ASSERT_TRUE(observer_id.has_value());
+    observer_ids.push_back(std::move(*observer_id));
+  }
+
+  EXPECT_FALSE(observers.Start(blocked, {}).has_value());
+  for (const std::string& observer_id : observer_ids) {
+    observers.Stop(observer_id);
+  }
+  EXPECT_FALSE(observers.Start(blocked, {}).has_value());
+
+  released.store(true);
+  ASSERT_TRUE(WaitWithoutPumping([]() { return RunningDetachedThreads() == 0; },
+                                 kDeliveryTimeout));
+  EXPECT_TRUE(observers.Start(blocked, {}).has_value());
 }
 
 }  // namespace

@@ -9,9 +9,17 @@
 
 namespace simple_query_windows {
 
-// Purpose: Name what one observer snapshot covers.
+// Purpose: Name what one observer snapshot covers. Every field is borrowed,
+// so a request must not outlive the call that builds it.
+// @param root is the directory a files or media observer watches. A
+// contacts or calendar snapshot ignores it.
+// @param domain picks the source: files, media, contacts or calendar. Any
+// other name throws std::invalid_argument.
+// @param stop_requested is checked between records, so a long scan ends
+// soon after the observer stops.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
 struct SnapshotRequest {
-  // The directory a files or media observer watches.
   const std::filesystem::path& root;
   const std::string& domain;
   const StopRequested& stop_requested;

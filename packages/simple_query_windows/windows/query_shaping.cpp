@@ -1,6 +1,7 @@
 #include "query_shaping.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <optional>
 #include <utility>
@@ -32,6 +33,27 @@ std::optional<FilterOperator> ParseOperator(const std::string& name) {
   return std::nullopt;
 }
 
+// Purpose: Check whether a value is a double that is not a number.
+// @param value may hold any type; only a double can be NaN.
+// @returns Whether the value is NaN.
+// @throws Nothing.
+bool IsNan(const EncodableValue& value) {
+  const auto* number = std::get_if<double>(&value);
+  return number != nullptr && std::isnan(*number);
+}
+
+// Purpose: Check a filter value, or any item of a list value, for NaN. NaN
+// has no order, so a NaN filter could match every row of a filtered delete.
+// @param value is the filter value, or null when the filter has none.
+// @returns Whether the value holds NaN.
+// @throws Nothing.
+bool HoldsNan(const EncodableValue* value) {
+  if (const auto* items = AsList(value)) {
+    return std::any_of(items->begin(), items->end(), IsNan);
+  }
+  return value != nullptr && IsNan(*value);
+}
+
 // Purpose: Parse one filter map of a request.
 // @param value is the filter value.
 // @returns The filter, or the reason it is invalid.
@@ -53,6 +75,9 @@ std::variant<QueryFilter, std::string> ParseFilter(const EncodableValue& value) 
   const auto* expected = FindValue(*filter, "value");
   if (*op == FilterOperator::kInList && AsList(expected) == nullptr) {
     return std::string("simple_query: the inList filter needs a list value");
+  }
+  if (HoldsNan(expected)) {
+    return std::string("simple_query: a filter value cannot be NaN. Send a number.");
   }
   return QueryFilter{.field = *field,
                      .op = *op,
@@ -79,7 +104,7 @@ std::optional<int> CompareIntegers(const EncodableValue& lhs, const EncodableVal
 }
 
 // Purpose: Read a number as a double.
-// @param value is the value.
+// @param value may hold any type; an integer is widened to a double.
 // @returns The number, or nothing when the value is not a number.
 // @throws Nothing.
 std::optional<double> AsDouble(const EncodableValue& value) {
@@ -97,11 +122,12 @@ std::optional<double> AsDouble(const EncodableValue& value) {
 // doubles, and any other scalars as text.
 // @param lhs is the first value, or null when the field is absent.
 // @param rhs is the second value, or null when the field is absent.
-// @returns -1, 0 or 1, or nothing when either value is absent or not a
-// scalar.
+// @returns -1, 0 or 1, or nothing when either value is absent, NaN or not
+// a scalar.
 // @throws Nothing.
 std::optional<int> CompareValues(const EncodableValue* lhs, const EncodableValue* rhs) {
-  if (lhs == nullptr || rhs == nullptr) {
+  // NaN is unordered: its < and > are both false, which would read as equal.
+  if (lhs == nullptr || rhs == nullptr || IsNan(*lhs) || IsNan(*rhs)) {
     return std::nullopt;
   }
   if (const auto integers = CompareIntegers(*lhs, *rhs); integers.has_value()) {
@@ -266,21 +292,26 @@ std::variant<std::optional<int64_t>, std::string> ParsePageNumber(const Encodabl
 // Purpose: Rank a sort value's kind, so values of different kinds still
 // sort in one consistent order.
 // @param value is the field value, or null when the field is absent.
-// @returns 0 for absent or null, 1 for a number, 2 for text or a bool, and
-// 3 for a list or map.
+// @returns 0 for absent or null, 1 for a number, 2 for NaN, 3 for text or
+// a bool, and 4 for a list or map.
 // @throws Nothing.
 int SortRank(const EncodableValue* value) {
   if (IsAbsentOrNull(value)) {
     return 0;
   }
+  // NaN ranks after every number, as Dart's num.compareTo orders it. Ranking
+  // it as a number would tie it with every number and break the sort order.
+  if (IsNan(*value)) {
+    return 2;
+  }
   if (AsDouble(*value).has_value()) {
     return 1;
   }
-  return AsString(value).has_value() ? 2 : 3;
+  return AsString(value).has_value() ? 3 : 4;
 }
 
 // Purpose: Order two rows' values of the sort field. Absent values come
-// first, then numbers, then text; lists and maps compare equal.
+// first, then numbers, then NaN, then text; lists and maps compare equal.
 // @param lhs is the first value, or null when the field is absent.
 // @param rhs is the second value, or null when the field is absent.
 // @returns A negative, zero or positive order.
@@ -291,11 +322,16 @@ int SortOrder(const EncodableValue* lhs, const EncodableValue* rhs) {
   if (left_rank != right_rank) {
     return left_rank - right_rank;
   }
-  // Only two absent values, or two lists or maps, have no order; they tie.
+  // Only two absent values, two NaNs, or two lists or maps have no order;
+  // they tie.
   return CompareValues(lhs, rhs).value_or(0);
 }
 
 // Purpose: Hold the rows of one page, as a half-open index range.
+// @param start is the first kept row's index, at most the row count.
+// @param end is one past the last kept row, so the page is [start, end).
+// @returns Nothing; this is a data type.
+// @throws Nothing.
 struct PageBounds {
   size_t start = 0;
   size_t end = 0;

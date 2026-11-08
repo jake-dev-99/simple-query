@@ -9,6 +9,7 @@
 #include <string>
 
 #include "native_query.g.h"
+#include "observe_event.h"
 
 namespace simple_query_windows {
 
@@ -18,6 +19,9 @@ namespace simple_query_windows {
 // so the next rejection is logged again.
 //
 // Create, call and destroy this object on the platform thread.
+// @param none; its constructor documents its own parameters.
+// @returns Nothing; this is a class.
+// @throws Nothing; its members document what they throw.
 class ObserveEventSender {
  public:
   // Purpose: Prepare to send through one engine's messenger.
@@ -27,14 +31,11 @@ class ObserveEventSender {
   explicit ObserveEventSender(flutter::BinaryMessenger* messenger);
 
   // Purpose: Send one observe event.
-  // @param observer_id is the observer the event belongs to.
-  // @param event is the change event map.
-  // @param on_settled runs on the platform thread once Dart accepts or
-  // rejects the event.
+  // @param event is the event; its on_settled runs on the platform thread
+  // once Dart accepts or rejects it.
   // @returns Nothing.
   // @throws Nothing.
-  void Send(const std::string& observer_id, const flutter::EncodableMap& event,
-            std::function<void()> on_settled);
+  void Send(ObserveEvent event);
 
  private:
   NativeQueryFlutterApi flutter_api_;

@@ -17,14 +17,31 @@ std::atomic<int64_t>& RunningCount() {
   return count;
 }
 
+// Purpose: Reserve one place for a new detached thread, unless the process
+// already runs kMaxDetachedThreads.
+// @returns true when a place was reserved.
+// @throws Nothing.
+bool ReservePlace() {
+  int64_t running = RunningCount().load();
+  // Compare-and-swap, so two starters can never both take the last place.
+  do {
+    if (running >= kMaxDetachedThreads) {
+      return false;
+    }
+  } while (!RunningCount().compare_exchange_weak(running, running + 1));
+  return true;
+}
+
 }  // namespace
 
 // Purpose: Run work on a thread nobody joins.
 // @param work is the thread's body; it must not throw.
-// @returns Nothing.
+// @returns kStarted, or kAtLimit when too many threads are still running.
 // @throws std::system_error when the thread cannot be started.
-void StartDetachedThread(std::function<void()> work) {
-  RunningCount().fetch_add(1);
+DetachedStart StartDetachedThread(std::function<void()> work) {
+  if (!ReservePlace()) {
+    return DetachedStart::kAtLimit;
+  }
   try {
     std::thread([body = std::move(work)]() mutable {
       {
@@ -40,6 +57,7 @@ void StartDetachedThread(std::function<void()> work) {
     RunningCount().fetch_sub(1);
     throw;
   }
+  return DetachedStart::kStarted;
 }
 
 // Purpose: Count the detached threads that have not finished.

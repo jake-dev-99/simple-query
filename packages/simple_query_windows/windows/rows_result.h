@@ -19,18 +19,24 @@ inline constexpr char kReadStoppedError[] =
     "simple_query: the read stopped before it finished";
 
 // Purpose: Hold the rows a read returned, or why it could not finish.
+// @param rows are complete only when error is empty.
+// @param error is set when the read failed or stopped early; rows is then
+// incomplete and must not be used.
+// @param denied_capability is set with error when the user has not granted
+// access: the Windows capability that would grant it, such as "contacts".
+// @returns Nothing; this is a data type.
+// @throws Nothing.
 struct RowsResult {
   std::vector<flutter::EncodableMap> rows;
-  // Set when the read failed or stopped early; rows is then incomplete and
-  // must not be used.
   std::optional<std::string> error;
-  // Set with error when the read failed because the user has not granted
-  // access: the Windows capability that would grant it, such as "contacts".
   std::optional<std::string> denied_capability;
 };
 
 // Purpose: Report a read the user has not granted access to, naming the
 // Windows capability that would grant it.
+// @param none; its constructor documents its own parameters.
+// @returns Nothing; this is a class.
+// @throws Nothing; its members document what they throw.
 class ReadDeniedError : public OwnedMessageError<std::runtime_error> {
  public:
   // Purpose: Build the error.

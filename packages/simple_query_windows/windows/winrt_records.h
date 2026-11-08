@@ -21,6 +21,9 @@ inline constexpr std::chrono::milliseconds kStopCheckInterval{50};
 // object lives. Apartments belong to threads, so every thread that reads a
 // store needs its own. A thread that already joined a single-threaded
 // apartment keeps it.
+// @param none; its constructor documents its own parameters.
+// @returns Nothing; this is a class.
+// @throws Nothing; its members document what they throw.
 class WinRtApartmentScope {
  public:
   // Purpose: Join the multithreaded apartment unless the thread is already in

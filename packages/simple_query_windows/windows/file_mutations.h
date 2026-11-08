@@ -11,14 +11,19 @@
 
 namespace simple_query_windows {
 
-// Purpose: Name one files or media mutation.
+// Purpose: Name one files or media mutation. Every field is borrowed, so
+// a mutation must not outlive the call that builds it.
+// @param request is Dart's decoded request. Its "type" picks insert, update
+// or delete.
+// @param domain picks the key a filtered step reads from each row:
+// uriOrPath for "media", path for any other domain.
+// @param resolve_root finds the folder a filtered delete or update searches.
+// It throws std::system_error when the folder cannot be read.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
 struct FileMutation {
-  // The mutation request: type, values, filters and platformData.
   const flutter::EncodableMap& request;
-  // "files" or "media".
   const std::string& domain;
-  // Finds the directory a filtered delete or update searches; it throws
-  // std::system_error when the directory cannot be read.
   const std::function<std::filesystem::path()>& resolve_root;
 };
 

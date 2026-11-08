@@ -13,6 +13,7 @@
 #include "file_records.h"
 #include "query_shaping.h"
 #include "request_values.h"
+#include "owned_message_error.h"
 
 namespace simple_query_windows {
 
@@ -23,16 +24,11 @@ using flutter::EncodableValue;
 namespace fs = std::filesystem;
 
 // Purpose: Describe a failed filesystem step as an unavailable error.
-// @param operation names the step, such as "delete".
-// @param path is the path the step acted on.
-// @param error is the system error.
+// @param failure names the step, the path and the system error.
 // @returns The error.
 // @throws std::system_error when the path is not valid Unicode.
-FlutterError FilesystemError(const char* operation, const fs::path& path,
-                             const std::error_code& error) {
-  return FlutterError("unavailable", "simple_query: windows filesystem " +
-                                         std::string(operation) + " failed for " +
-                                         PathToUtf8(path) + " - " + error.message());
+FlutterError FilesystemError(const FilesystemFailure& failure) {
+  return FlutterError("unavailable", DescribeFilesystemFailure(failure));
 }
 
 // Purpose: Build the result of a mutation that changed some records.
@@ -57,7 +53,7 @@ std::optional<FlutterError> CreateParent(const fs::path& path) {
   std::error_code error;
   fs::create_directories(parent, error);
   if (error) {
-    return FilesystemError("create directory", parent, error);
+    return FilesystemError({"create directory", parent, error});
   }
   return std::nullopt;
 }
@@ -118,7 +114,7 @@ ErrorOr<EncodableMap> Insert(const EncodableMap& request) {
     std::error_code error;
     fs::create_directories(path, error);
     if (error) {
-      return FilesystemError("create directory", path, error);
+      return FilesystemError({"create directory", path, error});
     }
   } else {
     auto contents = NewContents(*values);
@@ -186,7 +182,7 @@ ErrorOr<EncodableMap> Delete(const FileMutation& mutation) {
     // removes nothing.
     const auto removed = fs::remove_all(target, error);
     if (error) {
-      return FilesystemError("delete", target, error);
+      return FilesystemError({"delete", target, error});
     }
     if (removed > 0) {
       ++deleted;
@@ -216,7 +212,7 @@ ErrorOr<bool> MoveTarget(fs::path* target, const EncodableMap& values) {
   std::error_code error;
   fs::rename(*target, new_path, error);
   if (error) {
-    return FilesystemError("rename", *target, error);
+    return FilesystemError({"rename", *target, error});
   }
   *target = new_path;
   return true;
@@ -233,7 +229,7 @@ ErrorOr<bool> UpdateOne(const fs::path& original, const EncodableMap& values) {
   std::error_code error;
   const bool exists = fs::exists(original, error);
   if (error) {
-    return FilesystemError("metadata read", original, error);
+    return FilesystemError({"metadata read", original, error});
   }
   if (!exists) {
     return false;
@@ -245,7 +241,7 @@ ErrorOr<bool> UpdateOne(const fs::path& original, const EncodableMap& values) {
   }
   const bool is_directory = fs::is_directory(target, error);
   if (error) {
-    return FilesystemError("metadata read", target, error);
+    return FilesystemError({"metadata read", target, error});
   }
   if (is_directory) {
     return moved.value();
@@ -331,7 +327,7 @@ ErrorOr<EncodableMap> MutateFiles(const FileMutation& mutation) {
     // directory.
     return FlutterError("unavailable",
                         std::string("simple_query: windows filesystem mutation failed - ") +
-                            error.what());
+                            ExceptionText(error));
   }
   return FlutterError("invalid-query",
                       "simple_query: unknown mutation type " + type.value_or("(none)"));

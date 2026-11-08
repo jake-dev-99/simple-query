@@ -44,6 +44,9 @@ enum class EnqueueResult {
 // still running finishes on its own and its finishing step is dropped.
 //
 // Create, call and destroy this object on the platform thread.
+// @param none; its constructor documents its own parameters.
+// @returns Nothing; this is a class.
+// @throws Nothing; its members document what they throw.
 class BackgroundCalls {
  public:
   // Purpose: Start the worker and the platform-thread wake.

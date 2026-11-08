@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include "observe_event.h"
 #include "platform_thread_dispatcher.h"
 #include "stop_requested.h"
 
@@ -25,32 +26,33 @@ namespace simple_query_windows {
 using Snapshot = std::map<std::string, int64_t>;
 
 // Purpose: Describe one polled observation.
+// @param domain is the query domain reported in each event, such as "files".
+// @param polling_interval is counted from the end of each snapshot, so a
+// slow scan delays the next one.
+// @param take_snapshot lists the watched records. It runs on the observer's
+// worker thread, which can outlive the caller, so it must hold by copy
+// everything it reads. It throws a std::exception when the records could
+// not be read; that poll is then skipped. Its stop check turns true once
+// the observer is stopping, so a long scan can end early; a snapshot taken
+// then is discarded.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
 struct ObserverSpec {
-  // The query domain reported in each event, such as "files".
   std::string domain;
-  // How long the worker waits between snapshots.
   std::chrono::milliseconds polling_interval;
-  // Lists the watched records. Runs on the observer's worker thread, which
-  // can outlive the caller, so it must hold by copy everything it reads.
-  // Throws a std::exception when the records could not be read; that poll
-  // is then skipped. Its stop check turns true once the observer is
-  // stopping, so a long scan can end early; a snapshot taken then is
-  // discarded.
   std::function<Snapshot(const StopRequested&)> take_snapshot;
 };
 
 // Purpose: Give PollingObservers its effects, so tests can supply their own.
+// @param send_event sends one event. It runs only on the thread that created
+// PollingObservers. Until the event's on_settled runs, the observer keeps
+// folding new changes into one pending change.
+// @param now_epoch_ms gives the current time in milliseconds since the Unix
+// epoch. Worker threads call it, so it must be safe from any thread.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
 struct PollingObserverEffects {
-  // Sends one event. Runs only on the thread that created PollingObservers.
-  // on_settled must run on that thread once Dart has accepted or rejected
-  // the event; until then the observer sends nothing more and keeps
-  // folding new changes into one pending change.
-  std::function<void(const std::string& observer_id,
-                     const flutter::EncodableMap& event,
-                     std::function<void()> on_settled)>
-      send_event;
-  // Returns the current time in milliseconds since the Unix epoch. Called on
-  // worker threads, so it must be safe to call from any thread.
+  std::function<void(ObserveEvent)> send_event;
   std::function<int64_t()> now_epoch_ms;
 };
 
@@ -75,6 +77,9 @@ struct PollingObserverEffects {
 // ownership, finishes on its own and then discards what it read.
 //
 // Create, call and destroy this object on the platform thread.
+// @param none; its constructor documents its own parameters.
+// @returns Nothing; this is a class.
+// @throws Nothing; its members document what they throw.
 class PollingObservers {
  public:
   // Purpose: Prepare to deliver events through effects.send_event.
@@ -101,9 +106,11 @@ class PollingObservers {
   // @param spec describes what to poll and how often.
   // @param baseline is the snapshot the caller took before acknowledging the
   // start; the first event reports what changed since it.
-  // @returns The new observer's id, used in its events and to stop it.
+  // @returns The new observer's id, used in its events and to stop it; or
+  // nothing when the process already runs kMaxDetachedThreads, counting
+  // stopped observers whose snapshot has not returned yet.
   // @throws std::system_error when the worker thread cannot be started.
-  std::string Start(ObserverSpec spec, Snapshot baseline);
+  [[nodiscard]] std::optional<std::string> Start(ObserverSpec spec, Snapshot baseline);
 
   // Purpose: Stop one observer without waiting for its worker. Its
   // undelivered change is dropped. An unknown id does nothing.
@@ -125,12 +132,22 @@ class PollingObservers {
 
   // Purpose: Remember which failures a worker has logged. A failure that
   // repeats on every poll is logged once, then again only after it clears.
+  // @param snapshot_failing is true while snapshots keep failing.
+  // @param wake_failing is true while platform-thread wakes keep failing.
+  // @returns Nothing; this is a data type.
+  // @throws Nothing.
   struct FailureStreaks {
     bool snapshot_failing = false;
     bool wake_failing = false;
   };
 
-  // Purpose: A change detected but not yet delivered.
+  // Purpose: Hold a change detected but not yet delivered.
+  // @param ids are the ids that differ from the delivered snapshot.
+  // @param snapshot becomes the delivered baseline once this change is sent.
+  // @param detected_at_epoch_ms is when the latest differing snapshot was
+  // recorded, in milliseconds since the Unix epoch.
+  // @returns Nothing; this is a data type.
+  // @throws Nothing.
   struct PendingChange {
     flutter::EncodableList ids;
     Snapshot snapshot;

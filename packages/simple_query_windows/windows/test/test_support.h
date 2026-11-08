@@ -130,6 +130,9 @@ inline std::vector<std::string> IdsOf(const flutter::EncodableMap& event) {
 
 // Purpose: Capture standard error until destroyed. Destroy it only after
 // every thread that writes to it has been joined.
+// @param none; its constructor documents its own parameters.
+// @returns Nothing; this is a class.
+// @throws Nothing; its members document what they throw.
 class StandardErrorCapture {
  public:
   // Purpose: Start sending standard error to this capture.
@@ -167,6 +170,9 @@ class StandardErrorCapture {
 // after everything a worker reads, such as a temp directory or a snapshot
 // source, and before what starts the workers; those objects are then
 // destroyed only once no worker can touch them.
+// @param none; its constructor documents its own parameters.
+// @returns Nothing; this is a class.
+// @throws Nothing; its members document what they throw.
 class DetachedThreadsDrain {
  public:
   // Purpose: Prepare to wait for detached workers.
@@ -195,6 +201,9 @@ class DetachedThreadsDrain {
 };
 
 // Purpose: Own an empty directory for one test, removed afterwards.
+// @param none; its constructor documents its own parameters.
+// @returns Nothing; this is a class.
+// @throws Nothing; its members document what they throw.
 class TempDirectory {
  public:
   // Purpose: Create a new empty directory under the system temp directory.

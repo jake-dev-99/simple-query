@@ -25,16 +25,26 @@ enum class FilterOperator {
 };
 
 // Purpose: Hold one parsed query filter.
+// @param field is looked up as one key of the row map.
+// @param op is parsed from its wire name, so it is always a known
+// operator.
+// @param value is the value compared with. It is a copy, not a pointer into
+// the request, because the query runs on the background worker after the
+// request is gone. Empty when the filter has no value.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
 struct QueryFilter {
   std::string field;
   FilterOperator op = FilterOperator::kEquals;
-  // A copy, not a pointer into the request: the query runs on the background
-  // worker after the request that carried it is gone. Empty when the filter
-  // has no value.
   std::optional<flutter::EncodableValue> value;
 };
 
 // Purpose: Hold the parsed sort key of a query.
+// @param field is one key of the row map. Rows without it, or with null,
+// sort first in ascending order.
+// @param ascending is false only when the request asks for "descending".
+// @returns Nothing; this is a data type.
+// @throws Nothing.
 struct QuerySort {
   std::string field;
   bool ascending = true;
@@ -42,12 +52,20 @@ struct QuerySort {
 
 // Purpose: Hold how a query filters, sorts, pages and projects its rows,
 // parsed and checked once from the request.
+// @param filters must all match for a row to stay.
+// @param sort is empty when the request gives none; rows then keep the
+// source's order.
+// @param offset is how many rows to skip; a negative value counts as zero.
+// @param limit caps the rows returned. Empty means no cap; a negative
+// value returns none.
+// @param projection lists the fields to keep. Empty means every field.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
 struct QueryShape {
   std::vector<QueryFilter> filters;
   std::optional<QuerySort> sort;
   int64_t offset = 0;
   std::optional<int64_t> limit;
-  // Empty means every field.
   std::vector<std::string> projection;
 };
 

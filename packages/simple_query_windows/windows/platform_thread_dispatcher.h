@@ -30,6 +30,9 @@ namespace simple_query_windows {
 // The window class is registered for the module that holds this code, and
 // the last dispatcher destroyed unregisters it, so an unloaded plugin leaves
 // no class pointing at its code.
+// @param none; its constructor documents its own parameters.
+// @returns Nothing; this is a class.
+// @throws Nothing; its members document what they throw.
 class PlatformThreadDispatcher {
  public:
   // Purpose: Create the message-only window that receives wake requests.
@@ -76,6 +79,7 @@ class PlatformThreadDispatcher {
   // @param lparam is the message's second parameter.
   // @returns 0 for a wake message, otherwise the default window result.
   // @throws Nothing.
+  // Windows fixes this signature for every window procedure.
   static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam,
                                      LPARAM lparam);
 

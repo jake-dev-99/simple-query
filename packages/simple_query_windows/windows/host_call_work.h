@@ -58,6 +58,10 @@ FlutterError PermissionDeniedError(const std::string& message, const std::string
 // Purpose: Hold a request's root, resolved on the platform thread, or why it
 // could not be resolved. The failure is kept rather than reported at once,
 // because only a read or a filtered mutation needs the root.
+// @param path is set exactly when error is empty.
+// @param error is set exactly when path is empty.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
 struct ResolvedRoot {
   std::optional<std::filesystem::path> path;
   std::optional<std::system_error> error;
@@ -78,6 +82,12 @@ ErrorOr<std::optional<flutter::EncodableMap>> StoresReply(const std::string& key
 ErrorOr<flutter::EncodableMap> ReadCapabilities(const StopRequested& stop_requested);
 
 // Purpose: Name one query that was validated on the platform thread.
+// @param domain is copied from the request, so the query outlives it.
+// @param shape was parsed and checked on the platform thread, before the
+// call was queued.
+// @param root is the files or media root, or why it did not resolve.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
 struct ValidatedQuery {
   std::string domain;
   QueryShape shape;
@@ -100,6 +110,11 @@ ErrorOr<flutter::EncodableMap> RunQuery(const ValidatedQuery& query, const StopR
 ErrorOr<flutter::EncodableMap> MutateRequest(const flutter::EncodableMap& request, const ResolvedRoot& root);
 
 // Purpose: Hold one batch operation and its root.
+// @param request is owned by the operation. It is built from one batch
+// entry on the platform thread, so the worker never reads Dart's message.
+// @param root is the files or media root, or why it did not resolve.
+// @returns Nothing; this is a data type.
+// @throws Nothing.
 struct BatchOperation {
   flutter::EncodableMap request;
   ResolvedRoot root;

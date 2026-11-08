@@ -12,7 +12,9 @@
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
+#include <optional>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #include "boundary_formats.h"
@@ -339,6 +341,30 @@ TEST(OwnedMessageErrorTest, KeepsItsMessageAfterItsSourceIsDestroyed) {
   } catch (const std::invalid_argument& error) {
     EXPECT_STREQ(error.what(), "built at run time");
   }
+}
+
+// Purpose: A std::system_error built from run-time text, then copied, reads
+// as its code's message. Under Flutter's _HAS_EXCEPTIONS=0, its what() would
+// point at the freed text.
+TEST(ExceptionTextTest, GivesASystemErrorsCodeMessage) {
+  const std::error_code code = std::make_error_code(std::errc::illegal_byte_sequence);
+  std::optional<std::system_error> copied;
+  try {
+    std::string context = "built at ";
+    context += "run time";
+    throw std::system_error(code, context);
+  } catch (const std::system_error& error) {
+    copied = error;
+  }
+  ASSERT_TRUE(copied.has_value());
+  EXPECT_EQ(ExceptionText(*copied), code.message());
+}
+
+// Purpose: Any other exception reads as its own what().
+TEST(ExceptionTextTest, GivesAnyOtherErrorsMessage) {
+  EXPECT_EQ(ExceptionText(std::invalid_argument("a literal message")), "a literal message");
+  EXPECT_EQ(ExceptionText(OwnedMessageError<std::runtime_error>("an owned message")),
+            "an owned message");
 }
 
 // Purpose: A domain observe does not support fails with a message naming it.
