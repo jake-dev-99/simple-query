@@ -14,9 +14,9 @@ namespace simple_query_windows {
 std::vector<flutter::EncodableMap> RowsOrThrow(RowsResult result) {
   if (result.error.has_value()) {
     if (result.denied_capability.has_value()) {
-      throw ReadDeniedError(*result.error, *result.denied_capability);
+      throw ReadDeniedError(std::move(*result.error), std::move(*result.denied_capability));
     }
-    throw std::runtime_error(*result.error);
+    throw OwnedMessageError<std::runtime_error>(std::move(*result.error));
   }
   return std::move(result.rows);
 }

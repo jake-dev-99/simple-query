@@ -28,8 +28,10 @@ enum class FilterOperator {
 struct QueryFilter {
   std::string field;
   FilterOperator op = FilterOperator::kEquals;
-  // Points into the request, which outlives the query.
-  const flutter::EncodableValue* value = nullptr;
+  // A copy, not a pointer into the request: the query runs on the background
+  // worker after the request that carried it is gone. Empty when the filter
+  // has no value.
+  std::optional<flutter::EncodableValue> value;
 };
 
 // Purpose: Hold the parsed sort key of a query.

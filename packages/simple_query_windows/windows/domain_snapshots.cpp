@@ -3,6 +3,7 @@
 #include <stdexcept>
 
 #include "file_records.h"
+#include "owned_message_error.h"
 #include "rows_result.h"
 #include "winrt_records.h"
 
@@ -26,8 +27,8 @@ Snapshot BuildSnapshotForDomain(const SnapshotRequest& source) {
                                               ? ListContactRecords(source.stop_requested)
                                               : ListCalendarRecords(source.stop_requested)));
   }
-  throw std::invalid_argument("simple_query: windows observe has no snapshot for domain " +
-                              domain);
+  throw OwnedMessageError<std::invalid_argument>(
+      "simple_query: windows observe has no snapshot for domain " + domain);
 }
 
 }  // namespace simple_query_windows

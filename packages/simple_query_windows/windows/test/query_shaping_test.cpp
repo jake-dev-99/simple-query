@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <variant>
 #include <vector>
@@ -119,6 +120,24 @@ TEST(QueryShapingTest, MatchesContainsInTextAndLists) {
                                                  .op = "contains",
                                                  .value = EncodableValue("report")}))),
             (std::vector<std::string>{"report", "tagged"}));
+}
+
+// Purpose: A parsed shape keeps filtering correctly after its request is
+// destroyed, since queries run on the background worker after the request
+// that carried them is gone.
+TEST(QueryShapingTest, FiltersAfterItsRequestIsDestroyed) {
+  auto request = std::make_unique<EncodableMap>(
+      RequestWithFilter({.field = "name", .op = "equals", .value = EncodableValue("kept")}));
+  QueryShape shape = std::get<QueryShape>(ParseQueryShape(*request));
+  // Overwrite, then free, the request so a shape still pointing into it
+  // would compare against different or freed values.
+  (*request)[EncodableValue("filters")] = EncodableValue(EncodableList{});
+  request.reset();
+  std::vector<EncodableMap> rows{Row("kept", "name", EncodableValue("kept")),
+                                 Row("dropped", "name", EncodableValue("dropped"))};
+
+  EXPECT_EQ(IdsOf(ShapeQueryResult(std::move(rows), shape)),
+            (std::vector<std::string>{"kept"}));
 }
 
 // Purpose: Large integers compare exactly, not through a rounded double.

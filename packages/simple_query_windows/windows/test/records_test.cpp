@@ -16,8 +16,11 @@
 #include <vector>
 
 #include "boundary_formats.h"
+#include "domain_snapshots.h"
 #include "file_records.h"
+#include "owned_message_error.h"
 #include "polling_observers.h"
+#include "stop_requested.h"
 #include "test/test_support.h"
 
 namespace simple_query_windows {
@@ -320,6 +323,35 @@ TEST(RowsOrThrowTest, FailsADeniedReadWithItsPermission) {
   } catch (const ReadDeniedError& error) {
     EXPECT_STREQ(error.what(), "contacts access is denied");
     EXPECT_EQ(error.capability(), "contacts");
+  }
+}
+
+// Purpose: An error keeps its message after the string it was built from is
+// gone. Under Flutter's _HAS_EXCEPTIONS=0, a plain MSVC std::invalid_argument
+// would point at freed memory here.
+TEST(OwnedMessageErrorTest, KeepsItsMessageAfterItsSourceIsDestroyed) {
+  try {
+    {
+      std::string message = "built at ";
+      message += "run time";
+      throw OwnedMessageError<std::invalid_argument>(message);
+    }
+  } catch (const std::invalid_argument& error) {
+    EXPECT_STREQ(error.what(), "built at run time");
+  }
+}
+
+// Purpose: A domain observe does not support fails with a message naming it.
+TEST(BuildSnapshotForDomainTest, NamesADomainItCannotSnapshot) {
+  const std::filesystem::path root;
+  const std::string domain = "sms";
+  const StopRequested never_stop = []() { return false; };
+
+  try {
+    BuildSnapshotForDomain({.root = root, .domain = domain, .stop_requested = never_stop});
+    ADD_FAILURE() << "an unsupported domain returned a snapshot";
+  } catch (const std::invalid_argument& error) {
+    EXPECT_STREQ(error.what(), "simple_query: windows observe has no snapshot for domain sms");
   }
 }
 

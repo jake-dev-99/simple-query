@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <optional>
 #include <utility>
 
 #include "file_records.h"
@@ -53,7 +54,10 @@ std::variant<QueryFilter, std::string> ParseFilter(const EncodableValue& value) 
   if (*op == FilterOperator::kInList && AsList(expected) == nullptr) {
     return std::string("simple_query: the inList filter needs a list value");
   }
-  return QueryFilter{.field = *field, .op = *op, .value = expected};
+  return QueryFilter{.field = *field,
+                     .op = *op,
+                     .value = expected == nullptr ? std::nullopt
+                                                  : std::optional<EncodableValue>(*expected)};
 }
 
 // Purpose: Order two values that are both integers.
@@ -144,16 +148,17 @@ bool Contains(const EncodableValue* actual, const EncodableValue* expected) {
 // @throws Nothing.
 bool Passes(const EncodableMap& row, const QueryFilter& filter) {
   const auto* actual = FindValue(row, filter.field);
+  const EncodableValue* expected = filter.value.has_value() ? &*filter.value : nullptr;
   if (filter.op == FilterOperator::kContains) {
-    return Contains(actual, filter.value);
+    return Contains(actual, expected);
   }
   if (filter.op == FilterOperator::kInList) {
-    const auto* options = AsList(filter.value);
+    const auto* options = AsList(expected);
     return std::any_of(options->begin(), options->end(), [&](const EncodableValue& option) {
       return CompareValues(actual, &option) == 0;
     });
   }
-  const auto order = CompareValues(actual, filter.value);
+  const auto order = CompareValues(actual, expected);
   switch (filter.op) {
     case FilterOperator::kEquals:
       return order == 0;

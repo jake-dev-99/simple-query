@@ -505,6 +505,31 @@ TEST(SimpleQueryWindowsPluginTest, RejectsAQueryWithAnUnknownOperator) {
   EXPECT_EQ(ErrorCodeOf(reply), "invalid-query");
 }
 
+// Purpose: A filtered query applies its filter on the background worker,
+// after the decoded request has gone, and keeps only the matching file.
+TEST(SimpleQueryWindowsPluginTest, FiltersAQueryOnTheBackgroundWorker) {
+  FakeMessenger messenger;
+  TempDirectory directory;
+  directory.WriteFile("kept.txt");
+  directory.WriteFile("dropped.txt");
+  DetachedThreadsDrain drain;
+  SimpleQueryWindowsPlugin plugin(&messenger);
+  EncodableMap request = FilesQuery(directory.path());
+  request[EncodableValue("filters")] = EncodableValue(EncodableList{EncodableValue(
+      EncodableMap{{EncodableValue("field"), EncodableValue("name")},
+                   {EncodableValue("operator"), EncodableValue("equals")},
+                   {EncodableValue("value"), EncodableValue("kept.txt")}})});
+
+  const EncodableList reply = messenger.CallHost("query", EncodableList{EncodableValue(request)});
+
+  ASSERT_EQ(reply.size(), 1u) << ErrorCodeOf(reply);
+  const auto& result = std::get<EncodableMap>(reply.at(0));
+  const auto& records = std::get<EncodableList>(result.at(EncodableValue("records")));
+  ASSERT_EQ(records.size(), 1u);
+  EXPECT_EQ(std::get<std::string>(std::get<EncodableMap>(records.at(0)).at(EncodableValue("name"))),
+            "kept.txt");
+}
+
 // Purpose: A files query reads a UTF-8 root, returns UTF-8 paths, and pages
 // with the total count and the next offset.
 TEST(SimpleQueryWindowsPluginTest, QueriesAUtf8RootAPageAtATime) {

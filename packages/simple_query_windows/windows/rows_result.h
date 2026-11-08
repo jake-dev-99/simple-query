@@ -9,6 +9,8 @@
 #include <utility>
 #include <vector>
 
+#include "owned_message_error.h"
+
 namespace simple_query_windows {
 
 // The error a read reports when it stops before it finishes, so its partial
@@ -29,15 +31,16 @@ struct RowsResult {
 
 // Purpose: Report a read the user has not granted access to, naming the
 // Windows capability that would grant it.
-class ReadDeniedError : public std::runtime_error {
+class ReadDeniedError : public OwnedMessageError<std::runtime_error> {
  public:
   // Purpose: Build the error.
   // @param message says what was denied and how to allow it.
   // @param capability is the Windows capability, such as "contacts".
   // @returns Nothing.
   // @throws std::bad_alloc when memory runs out.
-  ReadDeniedError(const std::string& message, std::string capability)
-      : std::runtime_error(message), capability_(std::move(capability)) {}
+  ReadDeniedError(std::string message, std::string capability)
+      : OwnedMessageError<std::runtime_error>(std::move(message)),
+        capability_(std::move(capability)) {}
 
   // Purpose: Name the capability that would grant the read.
   // @returns The Windows capability, such as "contacts".
