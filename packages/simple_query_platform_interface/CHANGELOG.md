@@ -1,3 +1,7 @@
+## Unreleased
+
+- Updates the minimum supported SDK version to Flutter 3.47.7/Dart 3.13 (UNFY-412).
+
 ## 0.2.2
 
 - chore(release): reset versions to align with pub.dev (smallest iteration)

@@ -760,7 +760,7 @@ class LocalFileSystemFallback {
         details: <String, Object?>{
           if (error.path != null) 'path': error.path!,
           if (error.osError?.message != null) 'osError': error.osError!.message,
-          if (errno != null) 'errno': errno,
+          'errno': ?errno,
         },
       );
     }

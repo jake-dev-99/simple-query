@@ -38,7 +38,10 @@ class SimpleQueryMacos extends DarwinQueryPlatform
   }
 
   @override
-  void onObserveEvent(String observerId, Map<String?, Object?> event) {
+  Future<void> onObserveEvent(
+    String observerId,
+    Map<String?, Object?> event,
+  ) async {
     onObserveEventFromNative(observerId, event);
   }
 

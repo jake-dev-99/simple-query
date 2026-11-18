@@ -1,3 +1,8 @@
+## Unreleased
+
+- Updates the minimum supported SDK version to Flutter 3.47.7/Dart 3.13 (UNFY-412).
+- Regenerates the platform channel code with Pigeon 30 (UNFY-412).
+
 ## 0.3.0
 
 - chore(release): reset versions to align with pub.dev (smallest iteration)

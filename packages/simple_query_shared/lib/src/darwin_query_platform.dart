@@ -272,7 +272,7 @@ abstract class DarwinQueryPlatform extends BaseNonAndroidSimpleQueryPlatform {
           QueryRequest(
             domain: QueryDomain.media,
             platformData: <String, Object?>{
-              if (rootPathArg != null) 'rootPath': rootPathArg,
+              'rootPath': ?rootPathArg,
             },
           ),
         );

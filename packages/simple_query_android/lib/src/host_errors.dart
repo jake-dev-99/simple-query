@@ -85,7 +85,7 @@ iface.SimpleQueryError mapHostError(
     domain: domain,
     operation: operation,
     details: <String, Object?>{
-      if (failingUri != null) 'contentUri': failingUri,
+      'contentUri': ?failingUri,
       'code': error.code,
       if (nativeType is String) 'nativeType': nativeType,
       'details': nativeDetails,

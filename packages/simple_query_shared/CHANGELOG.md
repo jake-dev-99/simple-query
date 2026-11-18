@@ -1,3 +1,7 @@
+## Unreleased
+
+- Updates the minimum supported SDK version to Flutter 3.47.7/Dart 3.13 (UNFY-412).
+
 ## 0.3.0
 
 - fix(UNFY-265): release cancelled pending observer starts

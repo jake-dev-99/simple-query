@@ -426,82 +426,82 @@ class ProviderCallResponse {
 abstract class QueryHostApi {
   // --- Query Operations ---
 
-  @async
+  @asyncCallback
   QueryResponse query(QueryRequest request);
 
-  @async
+  @asyncCallback
   JoinQueryResponse queryWithJoins(JoinQueryRequest request);
 
   // --- Write Operations ---
 
   /// Insert a row. Returns URI of inserted row.
-  @async
+  @asyncCallback
   String? insert(InsertRequest request);
 
   /// Insert multiple rows. Returns count of inserted rows.
-  @async
+  @asyncCallback
   int bulkInsert(BulkInsertRequest request);
 
   /// Update rows. Returns count of updated rows.
-  @async
+  @asyncCallback
   int update(UpdateRequest request);
 
   /// Delete rows. Returns count of deleted rows.
-  @async
+  @asyncCallback
   int delete(DeleteRequest request);
 
   // --- Batch Operations ---
 
   /// Apply batch operations atomically.
-  @async
+  @asyncCallback
   List<BatchOperationResult?> applyBatch(BatchRequest request);
 
   // --- Streaming ---
 
   /// Open a stream for reading binary content.
   /// Returns StreamDescriptor with pipe path for zero-copy reading.
-  @async
+  @asyncCallback
   StreamDescriptor openStream(String contentUri);
 
   /// Extract content to a temp file.
   /// Returns file:// URI to the temp file.
-  @async
+  @asyncCallback
   String? extractToFile(String contentUri);
 
   /// Close an open stream and release resources.
-  @async
+  @asyncCallback
   void closeStream(String streamId);
 
   // --- Observers ---
 
   /// Register a ContentObserver. Returns observer ID.
-  @async
+  @asyncCallback
   String registerObserver(ObserverRequest request);
 
   /// Unregister a ContentObserver.
-  @async
+  @asyncCallback
   void unregisterObserver(String observerId);
 
   /// Unregister all observers.
-  @async
+  @asyncCallback
   void unregisterAllObservers();
 
   // --- Metadata ---
 
   /// Get MIME type for a content URI.
-  @async
+  @asyncCallback
   TypeResponse getType(String contentUri);
 
   /// Canonicalize a URI for cross-device portability.
-  @async
+  @asyncCallback
   String? canonicalize(String contentUri);
 
   /// Reverse canonicalization.
-  @async
+  @asyncCallback
   String? uncanonicalize(String contentUri);
 
   /// Call a provider-defined method.
-  @async
+  @asyncCallback
   ProviderCallResponse call(ProviderCallRequest request);
 
   // --- Permissions ---
@@ -511,13 +511,13 @@ abstract class QueryHostApi {
   /// `android.permission.READ_CONTACTS`). Implemented via
   /// `Context.checkSelfPermission`. Synchronous on the native side; pigeon
   /// makes it async on the Dart side.
-  @async
+  @asyncCallback
   bool hasPermission(String permissionName);
 
   /// Returns the device's `Build.VERSION.SDK_INT`. Used by the Dart-side
   /// permission catalog to pick between legacy and modern media permissions
   /// (`READ_EXTERNAL_STORAGE` vs `READ_MEDIA_*`).
-  @async
+  @asyncCallback
   int getAndroidSdkInt();
 }
 
@@ -528,5 +528,6 @@ abstract class QueryHostApi {
 @FlutterApi()
 abstract class QueryFlutterApi {
   /// Called when observed content changes.
+  @asyncCallback
   void onContentChange(ContentChangeEvent event);
 }

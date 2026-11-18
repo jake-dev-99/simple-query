@@ -576,7 +576,7 @@ void main() {
           details: <Object?, Object?>{
             'reason': 'nullCursor',
             'contentUri': contentUri,
-            if (join != null) 'join': join,
+            'join': ?join,
           },
         );
 
@@ -2164,7 +2164,7 @@ void main() {
           .listen(events.add);
       addTearDown(subscription.cancel);
       await Future<void>.delayed(Duration.zero);
-      api.onContentChange(p.ContentChangeEvent(
+      await api.onContentChange(p.ContentChangeEvent(
         observerId: 'obs_1',
         uri: uri,
         changeType: changeType,
@@ -2234,7 +2234,7 @@ void main() {
           .listen(events.add);
       addTearDown(subscription.cancel);
       await Future<void>.delayed(Duration.zero);
-      api.onContentChange(p.ContentChangeEvent(
+      await api.onContentChange(p.ContentChangeEvent(
         observerId: 'no-such-observer',
         uri: 'content://sms/1',
         changeType: p.ContentChangeType.insert,

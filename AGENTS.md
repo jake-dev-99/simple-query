@@ -32,11 +32,8 @@ implements it, and `simple_query` is the public surface.
 ## Build · test · verify
 
 Use released stable Flutter **3.47 or later** for workspace verification;
-**melos** drives the workspace. SDK floors are package-specific:
-`simple_query_android` requires Dart `^3.12.0` / Flutter `>=3.44.0`, and
-the built-in-Kotlin example requires Dart `^3.12.0` / Flutter `>=3.47.0`.
-Untouched packages retain their own declared floors (generally Dart `^3.6.0`);
-consult each `pubspec.yaml` rather than applying one workspace-wide floor.
+**melos** drives the workspace. Every package and the example require Dart `^3.13.0` / Flutter `>=3.47.7`
+(UNFY-412).
 
 The example's Android toolchain is declared in
 `example/android/settings.gradle.kts` and the Gradle wrapper properties.

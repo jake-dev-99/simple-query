@@ -29,5 +29,6 @@ abstract class NativeQueryHostApi {
 
 @FlutterApi()
 abstract class NativeQueryFlutterApi {
+  @asyncCallback
   void onObserveEvent(String observerId, Map<String?, Object?> event);
 }

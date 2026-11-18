@@ -26,7 +26,7 @@ NonAndroidNativeBridge _bridge({
       observeStop: stop,
       openBinary: (_) async => <String?, Object?>{},
       closeBinary: (_) async {},
-      callExtension: (_, __, ___) async => null,
+      callExtension: (_, _, _) async => null,
       nativeDomainSupported: (_) => true,
     );
 

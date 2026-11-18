@@ -37,7 +37,7 @@ void main() {
         'localPath': '/tmp/h',
       },
       closeBinary: (_) async {},
-      callExtension: (_, __, ___) async => null,
+      callExtension: (_, _, _) async => null,
       nativeDomainSupported: (_) => true,
     );
 
@@ -113,7 +113,7 @@ void main() {
       observeStop: (_) async {},
       openBinary: (_) async => <String?, Object?>{},
       closeBinary: (_) async {},
-      callExtension: (_, __, ___) async => null,
+      callExtension: (_, _, _) async => null,
       nativeDomainSupported: (_) => true,
     );
 
