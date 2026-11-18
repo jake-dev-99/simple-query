@@ -1,6 +1,6 @@
 ## Unreleased
 
-- Updates the minimum supported SDK version to Flutter 3.47.7/Dart 3.13 (UNFY-412).
+- **Breaking:** Requires Flutter 3.47.7 / Dart 3.13. Release as a breaking version (the next 0.x minor) (UNFY-412).
 
 ## 0.2.2
 

@@ -1,6 +1,6 @@
 ## Unreleased
 
-- Updates the minimum supported SDK version to Flutter 3.47.7/Dart 3.13 (UNFY-412).
+- **Breaking:** Requires Flutter 3.47.7 / Dart 3.13. Release as a breaking version (the next 0.x minor) (UNFY-412).
 - Regenerates the platform channel code with Pigeon 30 (UNFY-412).
 - **Behavior change (Android):** `openBinary()` now opens the provider content before it returns, so a failure to open it (`permissionDenied`, `unavailable`, or `unavailable` with `reason: noStream`) throws from `openBinary()` instead of yielding an empty stream (UNFY-364).
 - A host query with a `limit` and no sort order now sorts by `_id ASC`, instead of sending the provider invalid SQL that failed as `invalidQuery`. This fixes `queryWithJoins` with a `limit` and no `sortOrder` (UNFY-301).
