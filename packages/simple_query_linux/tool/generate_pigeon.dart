@@ -536,6 +536,23 @@ String _patchFlutterMethodDocumentation(String source) {
   );
 }
 
+/// Purpose: Replace one pinned generator fragment through named arguments.
+///
+/// @param source is the resolved Pigeon generator source.
+/// @param before is the exact upstream fragment expected once.
+/// @param after is the corrected fragment written to the temporary copy.
+/// @param description identifies the repair when validation fails.
+/// @returns The source with exactly one replacement.
+/// @throws StateError when the pinned upstream source no longer matches.
+String _replaceFragment({
+  required String source,
+  required String before,
+  required String after,
+  required String description,
+}) {
+  return _replaceExactlyOnce(source, before, after, description);
+}
+
 /// Purpose: Document the value equality, hashing, and description helpers
 /// that Pigeon emits ahead of the generated codec.
 ///
@@ -543,48 +560,49 @@ String _patchFlutterMethodDocumentation(String source) {
 /// @returns Source whose value helper templates emit API documentation.
 /// @throws StateError when the pinned generator source has drifted.
 String _patchValueHelperDocumentation(String source) {
-  var patched = _replaceExactlyOnce(
-    source,
-    r'''  indent.writeScoped('static guint G_GNUC_UNUSED flpigeon_hash_double(double v) {', '}', () {''',
-    r'''  indent.writeln(
+  var patched = _replaceFragment(
+    source: source,
+    before: r'''  indent.writeScoped('static guint G_GNUC_UNUSED flpigeon_hash_double(double v) {', '}', () {''',
+    after: r'''  indent.writeln(
       '/** Purpose: Hash one double so equal values share a hash. @param v is the value to hash. @returns The hash of v. @throws Nothing. */');
   indent.writeScoped('static guint G_GNUC_UNUSED flpigeon_hash_double(double v) {', '}', () {''',
-    'generated double hash documentation',
+    description: 'generated double hash documentation',
   );
-  patched = _replaceExactlyOnce(
-    patched,
-    r'''  indent.writeScoped(
+  patched = _replaceFragment(
+    source: patched,
+    before: r'''  indent.writeScoped(
     'static gboolean G_GNUC_UNUSED flpigeon_equals_double(double a, double b) {',''',
-    r'''  indent.writeln(
+    after: r'''  indent.writeln(
       '/** Purpose: Compare two doubles, treating NaN as equal to NaN. @param a is the first value. @param b is the second value. @returns TRUE when the values are equal. @throws Nothing. */');
   indent.writeScoped(
     'static gboolean G_GNUC_UNUSED flpigeon_equals_double(double a, double b) {',''',
-    'generated double equality documentation',
+    description: 'generated double equality documentation',
   );
-  patched = _replaceExactlyOnce(
-    patched,
-    r'''  indent.writeScoped(
+  patched = _replaceFragment(
+    source: patched,
+    before: r'''  indent.writeScoped(
     'static gboolean G_GNUC_UNUSED flpigeon_deep_equals(FlValue* a, FlValue* b) {',''',
-    r'''  indent.writeln(
+    after: r'''  indent.writeln(
       '/** Purpose: Compare two channel values structurally. @param a is the first value. @param b is the second value. @returns TRUE when both hold equal content. @throws Nothing. */');
   indent.writeScoped(
     'static gboolean G_GNUC_UNUSED flpigeon_deep_equals(FlValue* a, FlValue* b) {',''',
-    'generated deep equality documentation',
+    description: 'generated deep equality documentation',
   );
-  patched = _replaceExactlyOnce(
-    patched,
-    r'''  indent.writeScoped('static guint G_GNUC_UNUSED flpigeon_deep_hash(FlValue* value) {', '}', () {''',
-    r'''  indent.writeln(
+  patched = _replaceFragment(
+    source: patched,
+    before: r'''  indent.writeScoped('static guint G_GNUC_UNUSED flpigeon_deep_hash(FlValue* value) {', '}', () {''',
+    after: r'''  indent.writeln(
       '/** Purpose: Hash one channel value structurally. @param value is the value to hash. @returns A hash consistent with structural equality. @throws Nothing. */');
   indent.writeScoped('static guint G_GNUC_UNUSED flpigeon_deep_hash(FlValue* value) {', '}', () {''',
-    'generated deep hash documentation',
+    description: 'generated deep hash documentation',
   );
-  return _replaceExactlyOnce(
-    patched,
-    'static gchar* G_GNUC_UNUSED flpigeon_to_string(FlValue* value) {',
-    '/** Purpose: Describe one channel value as text. @param value is the value to describe. @returns A newly allocated string the caller frees. @throws Nothing. */\n'
+  return _replaceFragment(
+    source: patched,
+    before: 'static gchar* G_GNUC_UNUSED flpigeon_to_string(FlValue* value) {',
+    after:
+        '/** Purpose: Describe one channel value as text. @param value is the value to describe. @returns A newly allocated string the caller frees. @throws Nothing. */\n'
         'static gchar* G_GNUC_UNUSED flpigeon_to_string(FlValue* value) {',
-    'generated value description documentation',
+    description: 'generated value description documentation',
   );
 }
 
@@ -641,8 +659,8 @@ Future<File> _createPatchedPackageConfig(
   final resolvedRoot = Directory.fromUri(
     packageConfig.uri.resolve(pigeon['rootUri']! as String),
   );
-  final pubspec =
-      await File('${resolvedRoot.path}/pubspec.yaml').readAsString();
+  final pubspec = await File('${resolvedRoot.path}/pubspec.yaml')
+      .readAsString();
   final pinned = RegExp(
     '^version:\\s*${RegExp.escape(_pigeonVersion)}(?:\\s|\$)',
     multiLine: true,
@@ -658,8 +676,9 @@ Future<File> _createPatchedPackageConfig(
     File('${patchedRoot.path}/lib/src/gobject/gobject_generator.dart'),
   );
   for (final package in packages) {
-    package['rootUri'] =
-        packageConfig.uri.resolve(package['rootUri']! as String).toString();
+    package['rootUri'] = packageConfig.uri
+        .resolve(package['rootUri']! as String)
+        .toString();
   }
   pigeon['rootUri'] = patchedRoot.uri.toString();
   final patchedConfig = File('${temporaryRoot.path}/package_config.json');
@@ -695,9 +714,7 @@ Directory _parseOutputRoot(List<String> arguments, Directory packageRoot) {
 Future<void> _formatDartOutput(Directory outputRoot) async {
   final output = '${outputRoot.path}/lib/src/generated/native_query.g.dart';
   final file = File(output);
-  final formatter = DartFormatter(
-    languageVersion: _dartLanguageVersion,
-  );
+  final formatter = DartFormatter(languageVersion: _dartLanguageVersion);
   await file.writeAsString(
     formatter.format(await file.readAsString(), uri: file.uri),
   );
@@ -723,8 +740,9 @@ Future<void> main(List<String> arguments) async {
   }
   await outputRoot.create(recursive: true);
 
-  final temporaryRoot =
-      await Directory.systemTemp.createTemp('simple_query_pigeon_');
+  final temporaryRoot = await Directory.systemTemp.createTemp(
+    'simple_query_pigeon_',
+  );
   try {
     final patchedRoot = Directory(
       '${temporaryRoot.path}/pigeon-$_pigeonVersion',
