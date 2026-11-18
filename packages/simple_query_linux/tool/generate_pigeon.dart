@@ -2,8 +2,13 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:dart_style/dart_style.dart';
+import 'package:pub_semver/pub_semver.dart';
 
 const _pigeonVersion = '30.0.4';
+
+// The package language version, which is what `dart format` applies to the
+// checked-in output. Keep it equal to the SDK floor in pubspec.yaml.
+final _dartLanguageVersion = Version(3, 13, 0);
 
 /// Purpose: Replace one pinned generator fragment and fail closed on drift.
 ///
@@ -612,7 +617,7 @@ Future<void> _patchGenerator(File generatorFile) async {
 /// @param patchedRoot is the isolated Pigeon package root.
 /// @param temporaryRoot owns the rewritten package_config.json.
 /// @returns The rewritten package-config file.
-/// @throws StateError when Pigeon is absent or not pinned to 30.0.4.
+/// @throws StateError when Pigeon is absent or not pinned to the expected version.
 Future<File> _createPatchedPackageConfig(
   File packageConfig,
   Directory patchedRoot,
@@ -638,8 +643,11 @@ Future<File> _createPatchedPackageConfig(
   );
   final pubspec =
       await File('${resolvedRoot.path}/pubspec.yaml').readAsString();
-  if (!RegExp(r'^version:\s*30\.0\.4(?:\s|$)', multiLine: true)
-      .hasMatch(pubspec)) {
+  final pinned = RegExp(
+    '^version:\\s*${RegExp.escape(_pigeonVersion)}(?:\\s|\$)',
+    multiLine: true,
+  );
+  if (!pinned.hasMatch(pubspec)) {
     throw StateError(
       'Expected Pigeon $_pigeonVersion at ${resolvedRoot.path}.',
     );
@@ -688,7 +696,7 @@ Future<void> _formatDartOutput(Directory outputRoot) async {
   final output = '${outputRoot.path}/lib/src/generated/native_query.g.dart';
   final file = File(output);
   final formatter = DartFormatter(
-    languageVersion: DartFormatter.latestLanguageVersion,
+    languageVersion: _dartLanguageVersion,
   );
   await file.writeAsString(
     formatter.format(await file.readAsString(), uri: file.uri),
