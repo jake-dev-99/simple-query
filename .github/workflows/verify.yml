@@ -72,17 +72,17 @@ jobs:
         run: bash tool/build_linux_consumer.sh
 
   linux-minimum-sdk-consumer:
-    name: Linux minimum-SDK tests + consumer (Dart 3.6)
+    name: Linux minimum-SDK tests + consumer (Dart 3.13)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      # Flutter 3.27.0 ships Dart 3.6.0, the package's declared SDK minimum.
+      # Flutter 3.47.7 ships Dart 3.13, the package's declared SDK minimum.
       # Build the same real consumer fixture rather than duplicating pub syntax.
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           channel: stable
-          flutter-version: '3.27.0'
+          flutter-version: '3.47.7'
 
       - name: Install Linux build and native test dependencies
         run: |
@@ -93,7 +93,7 @@ jobs:
         run: flutter precache --linux
 
       # Bootstrap the Linux dependency closure only: Android and its example
-      # have newer SDK floors and are covered by the stable/native jobs.
+      # are covered by the stable/native jobs.
       - name: Link Linux workspace dependencies
         run: dart run melos bootstrap --scope=simple_query_linux --include-dependencies
 

@@ -1,3 +1,7 @@
+## Unreleased
+
+- **Breaking:** Requires Flutter 3.47.7 / Dart 3.13. Release as a breaking version (the next 0.x minor) (UNFY-412).
+
 ## 0.2.2
 
 - chore(release): reset versions to align with pub.dev (smallest iteration)

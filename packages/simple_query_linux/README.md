@@ -12,7 +12,7 @@ Current implementation:
 
 ## Generated Linux bindings
 
-Linux uses Pigeon's GObject backend. The package pins Pigeon 22.7.4, whose
+Linux uses Pigeon's GObject backend. The package pins Pigeon 30.0.4, whose
 GObject generator transfers `GTask` and `GAsyncResult` ownership incorrectly
 for asynchronous Flutter API calls. Older supported Flutter engines also rely
 on their channel `finish` call to release an initial task, while newer engines
@@ -33,10 +33,9 @@ After `flutter pub get`, regenerate the bindings from this package directory:
 dart run tool/generate_pigeon.dart
 ```
 
-The wrapper uses the package-pinned `dart_style` 3.0.1 library in its 3.6 short
-style so the checked-in output is byte-reproducible across supported Flutter
-SDKs. This avoids formatter command-line flags that are unavailable in the
-minimum Dart 3.6 SDK. The repository-level `tool/regen_pigeon.sh` delegates
+The wrapper formats with the package-pinned `dart_style` 3.1.14 library so the
+checked-in output is byte-reproducible across supported Flutter SDKs and
+matches `dart format`. The repository-level `tool/regen_pigeon.sh` delegates
 Linux generation to the same wrapper.
 
 ## Native tests
@@ -83,7 +82,7 @@ application, selects the current local Linux package, and overrides its shared
 and platform-interface dependencies with the local workspace packages. It
 builds the real Flutter runner and verifies the generated plugin registrar,
 then removes the fixture without editing the checkout. Continuous integration
-runs this build on the minimum supported Flutter 3.27.0 / Dart 3.6 toolchain;
+runs this build on the minimum supported Flutter 3.47.7 / Dart 3.13 toolchain;
 the current stable toolchain is also covered by the ordinary verification job.
 This proves compilation and registration wiring, not application deployment or
 runtime behavior.

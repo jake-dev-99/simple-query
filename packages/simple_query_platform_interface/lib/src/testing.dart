@@ -18,7 +18,7 @@ class FakeSimpleQueryPlatform extends SimpleQueryPlatform {
     BatchResult? batchResult,
     BinaryContentHandle? binaryContentHandle,
     Stream<ObserveEvent>? observeStream,
-    Map<String, Object?>? extensionResult,
+    this._extensionResult,
   })  : _capabilities = capabilities ?? _defaultCapabilities(),
         _queryResult = queryResult ?? const QueryResult(records: <QueryRecord>[]),
         _mutationResult =
@@ -26,8 +26,7 @@ class FakeSimpleQueryPlatform extends SimpleQueryPlatform {
         _batchResult = batchResult ?? const BatchResult(results: <MutationResult>[]),
         _binaryContentHandle = binaryContentHandle ??
             const BinaryContentHandle(handleId: 'h', localPath: '/tmp/h'),
-        _observeStream = observeStream ?? const Stream<ObserveEvent>.empty(),
-        _extensionResult = extensionResult;
+        _observeStream = observeStream ?? const Stream<ObserveEvent>.empty();
 
   final CapabilitySnapshot _capabilities;
   final QueryResult _queryResult;

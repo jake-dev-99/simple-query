@@ -1,5 +1,6 @@
 ## Unreleased
 
+- **Breaking:** Requires Flutter 3.47.7 / Dart 3.13. Release as a breaking version (the next 0.x minor) (UNFY-412).
 - **Behavior change (Android):** `openBinary()` now opens the provider content before it returns, so a failure to open it (`permissionDenied`, `unavailable`, or `unavailable` with `reason: noStream`) throws from `openBinary()` instead of yielding an empty stream (UNFY-364).
 - **Behavior change (Android):** `closeBinary()`, `BinaryContent.close()` and `withBinaryContent` throw a failed background copy as `SimpleQueryError` (UNFY-365).
 

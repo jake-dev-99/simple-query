@@ -542,7 +542,7 @@ class SimpleQueryAndroidApi implements p.QueryFlutterApi {
   }
 
   @override
-  void onContentChange(p.ContentChangeEvent event) {
+  Future<void> onContentChange(p.ContentChangeEvent event) async {
     final registration = _activeObservers[event.observerId];
     if (registration == null) return;
 

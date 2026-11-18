@@ -2,8 +2,13 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:dart_style/dart_style.dart';
+import 'package:pub_semver/pub_semver.dart';
 
-const _pigeonVersion = '22.7.4';
+const _pigeonVersion = '30.0.4';
+
+// The package language version, which is what `dart format` applies to the
+// checked-in output. Keep it equal to the SDK floor in pubspec.yaml.
+final _dartLanguageVersion = Version(3, 13, 0);
 
 /// Purpose: Replace one pinned generator fragment and fail closed on drift.
 ///
@@ -13,12 +18,12 @@ const _pigeonVersion = '22.7.4';
 /// @param description identifies the repair when validation fails.
 /// @returns The source with exactly one replacement.
 /// @throws StateError when the pinned upstream source no longer matches.
-String _replaceExactlyOnce(
-  String source,
-  String before,
-  String after,
-  String description,
-) {
+String _replaceExactlyOnce({
+  required String source,
+  required String before,
+  required String after,
+  required String description,
+}) {
   final matches = before.allMatches(source).length;
   if (matches != 1) {
     throw StateError(
@@ -58,14 +63,16 @@ Future<void> _copyDirectory(Directory source, Directory destination) async {
 /// @throws StateError when the pinned generator source has drifted.
 String _patchFlutterApiCallback(String source) {
   return _replaceExactlyOnce(
-    source,
-    r'''      indent.writeScoped(
-          'static void ${methodPrefix}_${methodName}_cb(GObject* object, GAsyncResult* result, gpointer user_data) {',
-          '}', () {
-        indent.writeln('GTask* task = G_TASK(user_data);');
-        indent.writeln('g_task_return_pointer(task, result, g_object_unref);');
-      });''',
-    r'''      indent.writeln(
+    source: source,
+    before: r'''      indent.writeScoped(
+        'static void ${methodPrefix}_${methodName}_cb(GObject* object, GAsyncResult* result, gpointer user_data) {',
+        '}',
+        () {
+          indent.writeln('GTask* task = G_TASK(user_data);');
+          indent.writeln('g_task_return_pointer(task, result, g_object_unref);');
+        },
+      );''',
+    after: r'''      indent.writeln(
           '/** Purpose: Finish one generated FlutterApi transport send. @param object is the messenger. @param result is its asynchronous response. @param user_data owns the forwarding task. @returns Nothing. @throws Nothing. */');
       indent.writeScoped(
           'static void ${methodPrefix}_${methodName}_cb(GObject* object, GAsyncResult* result, gpointer user_data) {',
@@ -107,7 +114,7 @@ String _patchFlutterApiCallback(String source) {
         indent.writeln(
             'g_task_return_pointer(task, response, reinterpret_cast<GDestroyNotify>(fl_value_unref));');
       });''',
-    'FlutterApi transport callback',
+    description: 'FlutterApi transport callback',
   );
 }
 
@@ -118,15 +125,16 @@ String _patchFlutterApiCallback(String source) {
 /// @throws StateError when the pinned generator source has drifted.
 String _patchFlutterApiSend(String source) {
   return _replaceExactlyOnce(
-    source,
-    r'''        indent.writeln(
-            'FlBasicMessageChannel* channel = fl_basic_message_channel_new(self->messenger, channel_name, FL_MESSAGE_CODEC(codec));');
-        indent.writeln(
-            'GTask* task = g_task_new(self, cancellable, callback, user_data);');
+    source: source,
+    before: r'''        indent.writeln(
+          'FlBasicMessageChannel* channel = fl_basic_message_channel_new(self->messenger, channel_name, FL_MESSAGE_CODEC(codec));',
+        );
+        indent.writeln('GTask* task = g_task_new(self, cancellable, callback, user_data);');
         indent.writeln('g_task_set_task_data(task, channel, g_object_unref);');
         indent.writeln(
-            'fl_basic_message_channel_send(channel, args, cancellable, ${methodPrefix}_${methodName}_cb, task);');''',
-    r'''        indent.writeln('g_autoptr(GError) error = nullptr;');
+          'fl_basic_message_channel_send(channel, args, cancellable, ${methodPrefix}_${methodName}_cb, task);',
+        );''',
+    after: r'''        indent.writeln('g_autoptr(GError) error = nullptr;');
         indent.writeln(
             'g_autoptr(GBytes) message = fl_message_codec_encode_message(FL_MESSAGE_CODEC(codec), args, &error);');
         indent.writeln(
@@ -145,7 +153,7 @@ String _patchFlutterApiSend(String source) {
         });
         indent.writeln(
             'fl_binary_messenger_send_on_channel(self->messenger, channel_name, message, cancellable, ${methodPrefix}_${methodName}_cb, g_steal_pointer(&task));');''',
-    'FlutterApi messenger send',
+    description: 'FlutterApi messenger send',
   );
 }
 
@@ -156,24 +164,28 @@ String _patchFlutterApiSend(String source) {
 /// @throws StateError when the pinned generator source has drifted.
 String _patchFlutterApiFinish(String source) {
   return _replaceExactlyOnce(
-    source,
-    r'''        indent.writeln('g_autoptr(GTask) task = G_TASK(result);');
-        indent.writeln(
-            'GAsyncResult* r = G_ASYNC_RESULT(g_task_propagate_pointer(task, nullptr));');
-        indent.writeln(
-            'FlBasicMessageChannel* channel = FL_BASIC_MESSAGE_CHANNEL(g_task_get_task_data(task));');
-        indent.writeln(
-            'g_autoptr(FlValue) response = fl_basic_message_channel_send_finish(channel, r, error);');
-        indent.writeScoped('if (response == nullptr) { ', '}', () {
-          indent.writeln('return nullptr;');
-        });''',
-    r'''        indent.writeln('GTask* task = G_TASK(result);');
+    source: source,
+    before:
+        r'''          indent.writeln('g_autoptr(GTask) task = G_TASK(result);');
+          indent.writeln(
+            'GAsyncResult* r = G_ASYNC_RESULT(g_task_propagate_pointer(task, nullptr));',
+          );
+          indent.writeln(
+            'FlBasicMessageChannel* channel = FL_BASIC_MESSAGE_CHANNEL(g_task_get_task_data(task));',
+          );
+          indent.writeln(
+            'g_autoptr(FlValue) response = fl_basic_message_channel_send_finish(channel, r, error);',
+          );
+          indent.writeScoped('if (response == nullptr) { ', '}', () {
+            indent.writeln('return nullptr;');
+          });''',
+    after: r'''        indent.writeln('GTask* task = G_TASK(result);');
         indent.writeln(
             'g_autoptr(FlValue) response = static_cast<FlValue*>(g_task_propagate_pointer(task, error));');
         indent.writeScoped('if (response == nullptr) {', '}', () {
           indent.writeln('return nullptr;');
         });''',
-    'FlutterApi response finish',
+    description: 'FlutterApi response finish',
   );
 }
 
@@ -196,12 +208,12 @@ String _patchFlutterApiTransport(String source) {
 /// @throws StateError when the pinned generator source has drifted.
 String _patchStructureDocumentation(String source) {
   return _replaceExactlyOnce(
-    source,
-    r'''  indent.writeScoped('struct _$className {', '};', () {''',
-    r'''  indent.writeln(
+    source: source,
+    before: r'''  indent.writeScoped('struct _$className {', '};', () {''',
+    after: r'''  indent.writeln(
       '/** Purpose: Store generated $name state across its GObject lifecycle. @param parent_instance anchors the state in $parentClassName. @returns Instances retain generated channel data until disposal. @throws Nothing. */');
   indent.writeScoped('struct _$className {', '};', () {''',
-    'generated GObject structure documentation',
+    description: 'generated GObject structure documentation',
   );
 }
 
@@ -212,34 +224,28 @@ String _patchStructureDocumentation(String source) {
 /// @throws StateError when the pinned generator source has drifted.
 String _patchLifecycleDocumentation(String source) {
   var patched = _replaceExactlyOnce(
-    source,
-    r'''  indent.writeScoped(
-      'static void ${methodPrefix}_dispose(GObject* object) {', '}', () {''',
-    r'''  indent.writeln(
+    source: source,
+    before: r'''  indent.writeScoped('static void ${methodPrefix}_dispose(GObject* object) {', '}', () {''',
+    after: r'''  indent.writeln(
       '/** Purpose: Release generated $name resources. @param object owns the instance. @returns Nothing. @throws Nothing. */');
-  indent.writeScoped(
-      'static void ${methodPrefix}_dispose(GObject* object) {', '}', () {''',
-    'generated GObject disposal documentation',
+  indent.writeScoped('static void ${methodPrefix}_dispose(GObject* object) {', '}', () {''',
+    description: 'generated GObject disposal documentation',
   );
   patched = _replaceExactlyOnce(
-    patched,
-    r'''  indent.writeScoped(
-      'static void ${methodPrefix}_init($className* self) {', '}', () {''',
-    r'''  indent.writeln(
+    source: patched,
+    before: r'''  indent.writeScoped('static void ${methodPrefix}_init($className* self) {', '}', () {''',
+    after: r'''  indent.writeln(
       '/** Purpose: Initialize generated $name state. @param self is the new instance. @returns Nothing. @throws Nothing. */');
-  indent.writeScoped(
-      'static void ${methodPrefix}_init($className* self) {', '}', () {''',
-    'generated GObject initialization documentation',
+  indent.writeScoped('static void ${methodPrefix}_init($className* self) {', '}', () {''',
+    description: 'generated GObject initialization documentation',
   );
   return _replaceExactlyOnce(
-    patched,
-    r'''  indent.writeScoped(
-      'static void ${methodPrefix}_class_init(${className}Class* klass) {', '}',''',
-    r'''  indent.writeln(
+    source: patched,
+    before: r'''  indent.writeScoped('static void ${methodPrefix}_class_init(${className}Class* klass) {', '}', () {''',
+    after: r'''  indent.writeln(
       '/** Purpose: Bind generated $name lifecycle methods. @param klass is the generated class. @returns Nothing. @throws Nothing. */');
-  indent.writeScoped(
-      'static void ${methodPrefix}_class_init(${className}Class* klass) {', '}',''',
-    'generated GObject class documentation',
+  indent.writeScoped('static void ${methodPrefix}_class_init(${className}Class* klass) {', '}', () {''',
+    description: 'generated GObject class documentation',
   );
 }
 
@@ -250,34 +256,32 @@ String _patchLifecycleDocumentation(String source) {
 /// @throws StateError when the pinned generator source has drifted.
 String _patchCodecDocumentation(String source) {
   var patched = _replaceExactlyOnce(
-    source,
-    r'''    indent.writeScoped(
-        'static gboolean ${codecMethodPrefix}_write_value($_standardCodecName* codec, GByteArray* buffer, FlValue* value, GError** error) {',''',
-    r'''    indent.writeln(
+    source: source,
+    before: r'''    indent.writeScoped(
+      'static gboolean ${codecMethodPrefix}_write_value($_standardCodecName* codec, GByteArray* buffer, FlValue* value, GError** error) {',''',
+    after: r'''    indent.writeln(
         '/** Purpose: Encode one generated channel value. @param codec is the active codec. @param buffer receives bytes. @param value is encoded. @param error receives failure. @returns TRUE on success. @throws Nothing. */');
     indent.writeScoped(
-        'static gboolean ${codecMethodPrefix}_write_value($_standardCodecName* codec, GByteArray* buffer, FlValue* value, GError** error) {',''',
-    'generated codec writer documentation',
+      'static gboolean ${codecMethodPrefix}_write_value($_standardCodecName* codec, GByteArray* buffer, FlValue* value, GError** error) {',''',
+    description: 'generated codec writer documentation',
   );
   patched = _replaceExactlyOnce(
-    patched,
-    r'''    indent.writeScoped(
-        'static FlValue* ${codecMethodPrefix}_read_value_of_type($_standardCodecName* codec, GBytes* buffer, size_t* offset, int type, GError** error) {',''',
-    r'''    indent.writeln(
+    source: patched,
+    before: r'''    indent.writeScoped(
+      'static FlValue* ${codecMethodPrefix}_read_value_of_type($_standardCodecName* codec, GBytes* buffer, size_t* offset, int type, GError** error) {',''',
+    after: r'''    indent.writeln(
         '/** Purpose: Decode one generated channel value. @param codec is the active codec. @param buffer supplies bytes. @param offset advances after decoding. @param type selects the value codec. @param error receives failure. @returns A newly owned value or null. @throws Nothing. */');
     indent.writeScoped(
-        'static FlValue* ${codecMethodPrefix}_read_value_of_type($_standardCodecName* codec, GBytes* buffer, size_t* offset, int type, GError** error) {',''',
-    'generated codec reader documentation',
+      'static FlValue* ${codecMethodPrefix}_read_value_of_type($_standardCodecName* codec, GBytes* buffer, size_t* offset, int type, GError** error) {',''',
+    description: 'generated codec reader documentation',
   );
   return _replaceExactlyOnce(
-    patched,
-    r'''    indent.writeScoped(
-        'static $codecClassName* ${codecMethodPrefix}_new() {', '}', () {''',
-    r'''    indent.writeln(
+    source: patched,
+    before: r'''    indent.writeScoped('static $codecClassName* ${codecMethodPrefix}_new() {', '}', () {''',
+    after: r'''    indent.writeln(
         '/** Purpose: Create the generated channel codec. @param None. @returns A newly owned codec. @throws Nothing. */');
-    indent.writeScoped(
-        'static $codecClassName* ${codecMethodPrefix}_new() {', '}', () {''',
-    'generated codec constructor documentation',
+    indent.writeScoped('static $codecClassName* ${codecMethodPrefix}_new() {', '}', () {''',
+    description: 'generated codec constructor documentation',
   );
 }
 
@@ -288,10 +292,10 @@ String _patchCodecDocumentation(String source) {
 /// @throws StateError when the pinned generator source has drifted.
 String _patchHostResponseDocumentation(String source) {
   final patched = _replaceExactlyOnce(
-    source,
-    r'''      indent.writeScoped(
-          "${method.isAsynchronous ? 'static ' : ''}$responseClassName* ${responseMethodPrefix}_new(${constructorArgs.join(', ')}) {",''',
-    r'''      indent.writeln('/**');
+    source: source,
+    before: r'''      indent.writeScoped(
+        "${method.isAsynchronous ? 'static ' : ''}$responseClassName* ${responseMethodPrefix}_new(${constructorArgs.join(', ')}) {",''',
+    after: r'''      indent.writeln('/**');
       indent.writeln(
           ' * Purpose: Build a successful generated $responseName host response.');
       if (constructorArgs.isEmpty) {
@@ -308,18 +312,18 @@ String _patchHostResponseDocumentation(String source) {
       indent.writeln(' * @throws Nothing.');
       indent.writeln(' */');
       indent.writeScoped(
-          "${method.isAsynchronous ? 'static ' : ''}$responseClassName* ${responseMethodPrefix}_new(${constructorArgs.join(', ')}) {",''',
-    'generated HostApi success constructor documentation',
+        "${method.isAsynchronous ? 'static ' : ''}$responseClassName* ${responseMethodPrefix}_new(${constructorArgs.join(', ')}) {",''',
+    description: 'generated HostApi success constructor documentation',
   );
   return _replaceExactlyOnce(
-    patched,
-    r'''      indent.writeScoped(
-          '${method.isAsynchronous ? 'static ' : ''}$responseClassName* ${responseMethodPrefix}_new_error(const gchar* code, const gchar* message, FlValue* details) {',''',
-    r'''      indent.writeln(
+    source: patched,
+    before: r'''      indent.writeScoped(
+        '${method.isAsynchronous ? 'static ' : ''}$responseClassName* ${responseMethodPrefix}_new_error(const gchar* code, const gchar* message, FlValue* details) {',''',
+    after: r'''      indent.writeln(
           '/** Purpose: Build a generated $responseName host error. @param code identifies the stable error. @param message explains the failure. @param details carries optional structured context. @returns A newly owned $responseClassName. @throws Nothing. */');
       indent.writeScoped(
-          '${method.isAsynchronous ? 'static ' : ''}$responseClassName* ${responseMethodPrefix}_new_error(const gchar* code, const gchar* message, FlValue* details) {',''',
-    'generated HostApi error constructor documentation',
+        '${method.isAsynchronous ? 'static ' : ''}$responseClassName* ${responseMethodPrefix}_new_error(const gchar* code, const gchar* message, FlValue* details) {',''',
+    description: 'generated HostApi error constructor documentation',
   );
 }
 
@@ -330,14 +334,14 @@ String _patchHostResponseDocumentation(String source) {
 /// @throws StateError when the pinned generator source has drifted.
 String _patchHostCallbackDocumentation(String source) {
   return _replaceExactlyOnce(
-    source,
-    r'''      indent.writeScoped(
-          'static void ${methodPrefix}_${methodName}_cb(FlBasicMessageChannel* channel, FlValue* message_, FlBasicMessageChannelResponseHandle* response_handle, gpointer user_data) {',''',
-    r'''      indent.writeln(
+    source: source,
+    before: r'''      indent.writeScoped(
+        'static void ${methodPrefix}_${methodName}_cb(FlBasicMessageChannel* channel, FlValue* message_, FlBasicMessageChannelResponseHandle* response_handle, gpointer user_data) {',''',
+    after: r'''      indent.writeln(
           '/** Purpose: Decode and dispatch one generated host call. @param channel carries the call. @param message_ contains arguments. @param response_handle receives the reply. @param user_data owns API state. @returns Nothing. @throws Nothing. */');
       indent.writeScoped(
-          'static void ${methodPrefix}_${methodName}_cb(FlBasicMessageChannel* channel, FlValue* message_, FlBasicMessageChannelResponseHandle* response_handle, gpointer user_data) {',''',
-    'generated host callback documentation',
+        'static void ${methodPrefix}_${methodName}_cb(FlBasicMessageChannel* channel, FlValue* message_, FlBasicMessageChannelResponseHandle* response_handle, gpointer user_data) {',''',
+    description: 'generated host callback documentation',
   );
 }
 
@@ -348,34 +352,34 @@ String _patchHostCallbackDocumentation(String source) {
 /// @throws StateError when the pinned generator source has drifted.
 String _patchHostSetupDocumentation(String source) {
   var patched = _replaceExactlyOnce(
-    source,
-    r'''    indent.writeScoped(
-        'static $className* ${methodPrefix}_new(const $vtableName* vtable, gpointer user_data, GDestroyNotify user_data_free_func) {',''',
-    r'''    indent.writeln(
+    source: source,
+    before: r'''    indent.writeScoped(
+      'static $className* ${methodPrefix}_new(const $vtableName* vtable, gpointer user_data, GDestroyNotify user_data_free_func) {',''',
+    after: r'''    indent.writeln(
         '/** Purpose: Bind generated HostApi callbacks to their owned context. @param vtable dispatches host methods. @param user_data is passed to callbacks. @param user_data_free_func releases callback context. @returns A newly owned $className. @throws Nothing. */');
     indent.writeScoped(
-        'static $className* ${methodPrefix}_new(const $vtableName* vtable, gpointer user_data, GDestroyNotify user_data_free_func) {',''',
-    'generated HostApi state constructor documentation',
+      'static $className* ${methodPrefix}_new(const $vtableName* vtable, gpointer user_data, GDestroyNotify user_data_free_func) {',''',
+    description: 'generated HostApi state constructor documentation',
   );
   patched = _replaceExactlyOnce(
-    patched,
-    r'''    indent.writeScoped(
-        'void ${methodPrefix}_set_method_handlers(FlBinaryMessenger* messenger, const gchar* suffix, const $vtableName* vtable, gpointer user_data, GDestroyNotify user_data_free_func) {',''',
-    r'''    indent.writeln(
+    source: patched,
+    before: r'''    indent.writeScoped(
+      'void ${methodPrefix}_set_method_handlers(FlBinaryMessenger* messenger, const gchar* suffix, const $vtableName* vtable, gpointer user_data, GDestroyNotify user_data_free_func) {',''',
+    after: r'''    indent.writeln(
         '/** Purpose: Register every generated HostApi channel handler. @param messenger owns channel registrations. @param suffix scopes channel names. @param vtable dispatches host methods. @param user_data is passed to callbacks. @param user_data_free_func releases callback context. @returns Nothing. @throws Nothing. */');
     indent.writeScoped(
-        'void ${methodPrefix}_set_method_handlers(FlBinaryMessenger* messenger, const gchar* suffix, const $vtableName* vtable, gpointer user_data, GDestroyNotify user_data_free_func) {',''',
-    'generated HostApi handler registration documentation',
+      'void ${methodPrefix}_set_method_handlers(FlBinaryMessenger* messenger, const gchar* suffix, const $vtableName* vtable, gpointer user_data, GDestroyNotify user_data_free_func) {',''',
+    description: 'generated HostApi handler registration documentation',
   );
   return _replaceExactlyOnce(
-    patched,
-    r'''    indent.writeScoped(
-        'void ${methodPrefix}_clear_method_handlers(FlBinaryMessenger* messenger, const gchar* suffix) {',''',
-    r'''    indent.writeln(
+    source: patched,
+    before: r'''    indent.writeScoped(
+      'void ${methodPrefix}_clear_method_handlers(FlBinaryMessenger* messenger, const gchar* suffix) {',''',
+    after: r'''    indent.writeln(
         '/** Purpose: Remove every generated HostApi channel handler. @param messenger owns channel registrations. @param suffix scopes channel names. @returns Nothing. @throws Nothing. */');
     indent.writeScoped(
-        'void ${methodPrefix}_clear_method_handlers(FlBinaryMessenger* messenger, const gchar* suffix) {',''',
-    'generated HostApi handler cleanup documentation',
+      'void ${methodPrefix}_clear_method_handlers(FlBinaryMessenger* messenger, const gchar* suffix) {',''',
+    description: 'generated HostApi handler cleanup documentation',
   );
 }
 
@@ -386,24 +390,24 @@ String _patchHostSetupDocumentation(String source) {
 /// @throws StateError when the pinned generator source has drifted.
 String _patchFlutterObjectDocumentation(String source) {
   final patched = _replaceExactlyOnce(
-    source,
-    r'''    indent.writeScoped(
-        '$className* ${methodPrefix}_new(FlBinaryMessenger* messenger, const gchar* suffix) {',''',
-    r'''    indent.writeln(
+    source: source,
+    before: r'''    indent.writeScoped(
+      '$className* ${methodPrefix}_new(FlBinaryMessenger* messenger, const gchar* suffix) {',''',
+    after: r'''    indent.writeln(
         '/** Purpose: Create a generated FlutterApi transport client. @param messenger carries generated calls. @param suffix scopes channel names. @returns A newly owned $className. @throws Nothing. */');
     indent.writeScoped(
-        '$className* ${methodPrefix}_new(FlBinaryMessenger* messenger, const gchar* suffix) {',''',
-    'generated FlutterApi constructor documentation',
+      '$className* ${methodPrefix}_new(FlBinaryMessenger* messenger, const gchar* suffix) {',''',
+    description: 'generated FlutterApi constructor documentation',
   );
   return _replaceExactlyOnce(
-    patched,
-    r'''      indent.writeScoped(
-          'static $responseClassName* ${responseMethodPrefix}_new(FlValue* response) {',''',
-    r'''      indent.writeln(
+    source: patched,
+    before: r'''      indent.writeScoped(
+        'static $responseClassName* ${responseMethodPrefix}_new(FlValue* response) {',''',
+    after: r'''      indent.writeln(
           '/** Purpose: Decode one generated FlutterApi response envelope. @param response contains the returned value or error. @returns A newly owned $responseClassName. @throws Nothing. */');
       indent.writeScoped(
-          'static $responseClassName* ${responseMethodPrefix}_new(FlValue* response) {',''',
-    'generated FlutterApi response constructor documentation',
+        'static $responseClassName* ${responseMethodPrefix}_new(FlValue* response) {',''',
+    description: 'generated FlutterApi response constructor documentation',
   );
 }
 
@@ -414,44 +418,44 @@ String _patchFlutterObjectDocumentation(String source) {
 /// @throws StateError when the pinned generator source has drifted.
 String _patchFlutterAccessorDocumentation(String source) {
   var patched = _replaceExactlyOnce(
-    source,
-    r'''      indent.writeScoped(
-          'gboolean ${responseMethodPrefix}_is_error($responseClassName* self) {',''',
-    r'''      indent.writeln(
+    source: source,
+    before: r'''      indent.writeScoped(
+        'gboolean ${responseMethodPrefix}_is_error($responseClassName* self) {',''',
+    after: r'''      indent.writeln(
           '/** Purpose: Report whether a generated FlutterApi response is an error. @param self is the decoded response. @returns TRUE for an error envelope. @throws Nothing. */');
       indent.writeScoped(
-          'gboolean ${responseMethodPrefix}_is_error($responseClassName* self) {',''',
-    'generated FlutterApi error predicate documentation',
+        'gboolean ${responseMethodPrefix}_is_error($responseClassName* self) {',''',
+    description: 'generated FlutterApi error predicate documentation',
   );
   patched = _replaceExactlyOnce(
-    patched,
-    r'''      indent.writeScoped(
-          'const gchar* ${responseMethodPrefix}_get_error_code($responseClassName* self) {',''',
-    r'''      indent.writeln(
+    source: patched,
+    before: r'''      indent.writeScoped(
+        'const gchar* ${responseMethodPrefix}_get_error_code($responseClassName* self) {',''',
+    after: r'''      indent.writeln(
           '/** Purpose: Read the stable code from a generated FlutterApi error. @param self is an error response. @returns A borrowed error code. @throws Nothing; self must contain an error. */');
       indent.writeScoped(
-          'const gchar* ${responseMethodPrefix}_get_error_code($responseClassName* self) {',''',
-    'generated FlutterApi error code documentation',
+        'const gchar* ${responseMethodPrefix}_get_error_code($responseClassName* self) {',''',
+    description: 'generated FlutterApi error code documentation',
   );
   patched = _replaceExactlyOnce(
-    patched,
-    r'''      indent.writeScoped(
-          'const gchar* ${responseMethodPrefix}_get_error_message($responseClassName* self) {',''',
-    r'''      indent.writeln(
+    source: patched,
+    before: r'''      indent.writeScoped(
+        'const gchar* ${responseMethodPrefix}_get_error_message($responseClassName* self) {',''',
+    after: r'''      indent.writeln(
           '/** Purpose: Read the message from a generated FlutterApi error. @param self is an error response. @returns A borrowed error message. @throws Nothing; self must contain an error. */');
       indent.writeScoped(
-          'const gchar* ${responseMethodPrefix}_get_error_message($responseClassName* self) {',''',
-    'generated FlutterApi error message documentation',
+        'const gchar* ${responseMethodPrefix}_get_error_message($responseClassName* self) {',''',
+    description: 'generated FlutterApi error message documentation',
   );
   return _replaceExactlyOnce(
-    patched,
-    r'''      indent.writeScoped(
-          'FlValue* ${responseMethodPrefix}_get_error_details($responseClassName* self) {',''',
-    r'''      indent.writeln(
+    source: patched,
+    before: r'''      indent.writeScoped(
+        'FlValue* ${responseMethodPrefix}_get_error_details($responseClassName* self) {',''',
+    after: r'''      indent.writeln(
           '/** Purpose: Read structured details from a generated FlutterApi error. @param self is an error response. @returns Borrowed error details. @throws Nothing; self must contain an error. */');
       indent.writeScoped(
-          'FlValue* ${responseMethodPrefix}_get_error_details($responseClassName* self) {',''',
-    'generated FlutterApi error details documentation',
+        'FlValue* ${responseMethodPrefix}_get_error_details($responseClassName* self) {',''',
+    description: 'generated FlutterApi error details documentation',
   );
 }
 
@@ -462,10 +466,10 @@ String _patchFlutterAccessorDocumentation(String source) {
 /// @throws StateError when the pinned generator source has drifted.
 String _patchFlutterReturnDocumentation(String source) {
   return _replaceExactlyOnce(
-    source,
-    r'''        indent.writeScoped(
-            '$returnType ${responseMethodPrefix}_get_return_value($responseClassName* self${_isNumericListType(method.returnType) ? ', size_t* return_value_length' : ''}) {',''',
-    r'''        indent.writeln('/**');
+    source: source,
+    before: r'''        indent.writeScoped(
+          '$returnType ${responseMethodPrefix}_get_return_value($responseClassName* self${_isNumericListType(method.returnType) ? ', size_t* return_value_length' : ''}) {',''',
+    after: r'''        indent.writeln('/**');
         indent.writeln(
             ' * Purpose: Read the successful value from a generated FlutterApi response.');
         indent.writeln(' * @param self is a successful response.');
@@ -478,8 +482,8 @@ String _patchFlutterReturnDocumentation(String source) {
             ' * @throws Nothing; self must contain a successful response.');
         indent.writeln(' */');
         indent.writeScoped(
-            '$returnType ${responseMethodPrefix}_get_return_value($responseClassName* self${_isNumericListType(method.returnType) ? ', size_t* return_value_length' : ''}) {',''',
-    'generated FlutterApi return value documentation',
+          '$returnType ${responseMethodPrefix}_get_return_value($responseClassName* self${_isNumericListType(method.returnType) ? ', size_t* return_value_length' : ''}) {',''',
+    description: 'generated FlutterApi return value documentation',
   );
 }
 
@@ -490,12 +494,10 @@ String _patchFlutterReturnDocumentation(String source) {
 /// @throws StateError when the pinned generator source has drifted.
 String _patchFlutterMethodDocumentation(String source) {
   final patched = _replaceExactlyOnce(
-    source,
-    r'''      indent.newln();
-      indent.writeScoped(
-          "void ${methodPrefix}_$methodName(${asyncArgs.join(', ')}) {", '}',
-          () {''',
-    r'''      indent.newln();
+    source: source,
+    before: r'''      indent.newln();
+      indent.writeScoped("void ${methodPrefix}_$methodName(${asyncArgs.join(', ')}) {", '}', () {''',
+    after: r'''      indent.newln();
       indent.writeln('/**');
       indent.writeln(
           ' * Purpose: Send one generated ${api.name}.${method.name} call to Flutter.');
@@ -514,24 +516,77 @@ String _patchFlutterMethodDocumentation(String source) {
       indent.writeln(
           ' * @throws Nothing; transport errors complete callback.');
       indent.writeln(' */');
-      indent.writeScoped(
-          "void ${methodPrefix}_$methodName(${asyncArgs.join(', ')}) {", '}',
-          () {''',
-    'generated FlutterApi send documentation',
+      indent.writeScoped("void ${methodPrefix}_$methodName(${asyncArgs.join(', ')}) {", '}', () {''',
+    description: 'generated FlutterApi send documentation',
   );
   return _replaceExactlyOnce(
-    patched,
-    r'''      indent.newln();
+    source: patched,
+    before: r'''      indent.newln();
       indent.writeScoped(
-          "$responseClassName* ${methodPrefix}_${methodName}_finish(${finishArgs.join(', ')}) {",
-          '}', () {''',
-    r'''      indent.newln();
+        "$responseClassName* ${methodPrefix}_${methodName}_finish(${finishArgs.join(', ')}) {",
+        '}',
+        () {''',
+    after: r'''      indent.newln();
       indent.writeln(
           '/** Purpose: Finish one generated ${api.name}.${method.name} call. @param self owns the FlutterApi transport. @param result is the completed forwarding task. @param error receives transport or codec failure. @returns A newly owned response or null. @throws Nothing. */');
       indent.writeScoped(
-          "$responseClassName* ${methodPrefix}_${methodName}_finish(${finishArgs.join(', ')}) {",
-          '}', () {''',
-    'generated FlutterApi finish documentation',
+        "$responseClassName* ${methodPrefix}_${methodName}_finish(${finishArgs.join(', ')}) {",
+        '}',
+        () {''',
+    description: 'generated FlutterApi finish documentation',
+  );
+}
+
+/// Purpose: Document the value equality, hashing, and description helpers
+/// that Pigeon emits ahead of the generated codec.
+///
+/// @param source is the pinned GObject generator source.
+/// @returns Source whose value helper templates emit API documentation.
+/// @throws StateError when the pinned generator source has drifted.
+String _patchValueHelperDocumentation(String source) {
+  var patched = _replaceExactlyOnce(
+    source: source,
+    before: r'''  indent.writeScoped('static guint G_GNUC_UNUSED flpigeon_hash_double(double v) {', '}', () {''',
+    after: r'''  indent.writeln(
+      '/** Purpose: Hash one double so equal values share a hash. @param v is the value to hash. @returns The hash of v. @throws Nothing. */');
+  indent.writeScoped('static guint G_GNUC_UNUSED flpigeon_hash_double(double v) {', '}', () {''',
+    description: 'generated double hash documentation',
+  );
+  patched = _replaceExactlyOnce(
+    source: patched,
+    before: r'''  indent.writeScoped(
+    'static gboolean G_GNUC_UNUSED flpigeon_equals_double(double a, double b) {',''',
+    after: r'''  indent.writeln(
+      '/** Purpose: Compare two doubles, treating NaN as equal to NaN. @param a is the first value. @param b is the second value. @returns TRUE when the values are equal. @throws Nothing. */');
+  indent.writeScoped(
+    'static gboolean G_GNUC_UNUSED flpigeon_equals_double(double a, double b) {',''',
+    description: 'generated double equality documentation',
+  );
+  patched = _replaceExactlyOnce(
+    source: patched,
+    before: r'''  indent.writeScoped(
+    'static gboolean G_GNUC_UNUSED flpigeon_deep_equals(FlValue* a, FlValue* b) {',''',
+    after: r'''  indent.writeln(
+      '/** Purpose: Compare two channel values structurally. @param a is the first value. @param b is the second value. @returns TRUE when both hold equal content. @throws Nothing. */');
+  indent.writeScoped(
+    'static gboolean G_GNUC_UNUSED flpigeon_deep_equals(FlValue* a, FlValue* b) {',''',
+    description: 'generated deep equality documentation',
+  );
+  patched = _replaceExactlyOnce(
+    source: patched,
+    before: r'''  indent.writeScoped('static guint G_GNUC_UNUSED flpigeon_deep_hash(FlValue* value) {', '}', () {''',
+    after: r'''  indent.writeln(
+      '/** Purpose: Hash one channel value structurally. @param value is the value to hash. @returns A hash consistent with structural equality. @throws Nothing. */');
+  indent.writeScoped('static guint G_GNUC_UNUSED flpigeon_deep_hash(FlValue* value) {', '}', () {''',
+    description: 'generated deep hash documentation',
+  );
+  return _replaceExactlyOnce(
+    source: patched,
+    before: 'static gchar* G_GNUC_UNUSED flpigeon_to_string(FlValue* value) {',
+    after:
+        '/** Purpose: Describe one channel value as text. @param value is the value to describe. @returns A newly allocated string the caller frees. @throws Nothing. */\n'
+        'static gchar* G_GNUC_UNUSED flpigeon_to_string(FlValue* value) {',
+    description: 'generated value description documentation',
   );
 }
 
@@ -553,6 +608,7 @@ Future<void> _patchGenerator(File generatorFile) async {
   source = _patchFlutterAccessorDocumentation(source);
   source = _patchFlutterReturnDocumentation(source);
   source = _patchFlutterMethodDocumentation(source);
+  source = _patchValueHelperDocumentation(source);
   await generatorFile.writeAsString(source);
 }
 
@@ -563,7 +619,7 @@ Future<void> _patchGenerator(File generatorFile) async {
 /// @param patchedRoot is the isolated Pigeon package root.
 /// @param temporaryRoot owns the rewritten package_config.json.
 /// @returns The rewritten package-config file.
-/// @throws StateError when Pigeon is absent or not pinned to 22.7.4.
+/// @throws StateError when Pigeon is absent or not pinned to the expected version.
 Future<File> _createPatchedPackageConfig(
   File packageConfig,
   Directory patchedRoot,
@@ -587,10 +643,13 @@ Future<File> _createPatchedPackageConfig(
   final resolvedRoot = Directory.fromUri(
     packageConfig.uri.resolve(pigeon['rootUri']! as String),
   );
-  final pubspec =
-      await File('${resolvedRoot.path}/pubspec.yaml').readAsString();
-  if (!RegExp(r'^version:\s*22\.7\.4(?:\s|$)', multiLine: true)
-      .hasMatch(pubspec)) {
+  final pubspec = await File('${resolvedRoot.path}/pubspec.yaml')
+      .readAsString();
+  final pinned = RegExp(
+    '^version:\\s*${RegExp.escape(_pigeonVersion)}(?:\\s|\$)',
+    multiLine: true,
+  );
+  if (!pinned.hasMatch(pubspec)) {
     throw StateError(
       'Expected Pigeon $_pigeonVersion at ${resolvedRoot.path}.',
     );
@@ -598,11 +657,12 @@ Future<File> _createPatchedPackageConfig(
 
   await _copyDirectory(resolvedRoot, patchedRoot);
   await _patchGenerator(
-    File('${patchedRoot.path}/lib/gobject_generator.dart'),
+    File('${patchedRoot.path}/lib/src/gobject/gobject_generator.dart'),
   );
   for (final package in packages) {
-    package['rootUri'] =
-        packageConfig.uri.resolve(package['rootUri']! as String).toString();
+    package['rootUri'] = packageConfig.uri
+        .resolve(package['rootUri']! as String)
+        .toString();
   }
   pigeon['rootUri'] = patchedRoot.uri.toString();
   final patchedConfig = File('${temporaryRoot.path}/package_config.json');
@@ -638,9 +698,7 @@ Directory _parseOutputRoot(List<String> arguments, Directory packageRoot) {
 Future<void> _formatDartOutput(Directory outputRoot) async {
   final output = '${outputRoot.path}/lib/src/generated/native_query.g.dart';
   final file = File(output);
-  final formatter = DartFormatter(
-    languageVersion: DartFormatter.latestShortStyleLanguageVersion,
-  );
+  final formatter = DartFormatter(languageVersion: _dartLanguageVersion);
   await file.writeAsString(
     formatter.format(await file.readAsString(), uri: file.uri),
   );
@@ -666,8 +724,9 @@ Future<void> main(List<String> arguments) async {
   }
   await outputRoot.create(recursive: true);
 
-  final temporaryRoot =
-      await Directory.systemTemp.createTemp('simple_query_pigeon_');
+  final temporaryRoot = await Directory.systemTemp.createTemp(
+    'simple_query_pigeon_',
+  );
   try {
     final patchedRoot = Directory(
       '${temporaryRoot.path}/pigeon-$_pigeonVersion',

@@ -63,6 +63,13 @@ common_flags=(
   -Wl,-rpath,"${engine_root}"
   -Wl,--wrap=g_cancellable_new
   -Wl,--wrap=g_dbus_connection_call_sync
+  # Flutter 3.50's engine library exports LLVM libunwind's _Unwind_* symbols.
+  # Listed first, they would replace libgcc's unwinder for libstdc++
+  # exceptions, which then find no handler and terminate (UNFY-418). Load
+  # libgcc_s ahead of the engine so the plugin's exceptions unwind normally.
+  -Wl,--push-state,--no-as-needed
+  -lgcc_s
+  -Wl,--pop-state
   -lflutter_linux_gtk
   "${gtk_flags[@]}"
 )

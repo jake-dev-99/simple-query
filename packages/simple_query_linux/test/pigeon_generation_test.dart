@@ -132,7 +132,7 @@ void main() {
     final linuxSources = '$header\n$source';
     expect(
       expectGeneratedDocumentation(source),
-      (functions: 80, structures: 13),
+      (functions: 85, structures: 13),
       reason: 'Generated definition inventory changed; audit every new entry.',
     );
 

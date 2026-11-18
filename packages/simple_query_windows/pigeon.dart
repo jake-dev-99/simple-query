@@ -15,18 +15,18 @@ import 'package:pigeon/pigeon.dart';
 abstract class NativeQueryHostApi {
   // Every call that reads a store or the filesystem is @async, so Windows
   // runs it off the platform thread and replies when it finishes.
-  @async
+  @asyncCallback
   Map<String?, Object?> getCapabilities();
-  @async
+  @asyncCallback
   Map<String?, Object?> query(Map<String?, Object?> request);
-  @async
+  @asyncCallback
   Map<String?, Object?> mutate(Map<String?, Object?> request);
-  @async
+  @asyncCallback
   Map<String?, Object?> batch(Map<String?, Object?> request);
-  @async
+  @asyncCallback
   String observeStart(Map<String?, Object?> request);
   void observeStop(String observerId);
-  @async
+  @asyncCallback
   Map<String?, Object?> openBinary(Map<String?, Object?> request);
   void closeBinary(String handleId);
   /// Purpose: Calls a namespaced Windows-only extension.
@@ -34,7 +34,7 @@ abstract class NativeQueryHostApi {
   /// @param extensionNamespace selects the registered Windows extension namespace.
   /// It is not named `namespace`, a C++ keyword, and carries no trailing
   /// underscore, which Pigeon would turn into a reserved C++ identifier.
-  @async
+  @asyncCallback
   Map<String?, Object?>? callExtension(
     String extensionNamespace,
     String method,

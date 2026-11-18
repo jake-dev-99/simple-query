@@ -1,3 +1,8 @@
+## Unreleased
+
+- **Breaking:** Requires Flutter 3.47.7 / Dart 3.13. Release as a breaking version (the next 0.x minor) (UNFY-412).
+- Regenerates the platform channel code with Pigeon 30 (UNFY-412).
+
 ## 0.3.0
 
 - fix(UNFY-265): enforce native filesystem mutation scope
