@@ -32,11 +32,6 @@ migrate_working_dir/
 .pub/
 build/
 **/build/
-# Lockfiles for federated library packages — consumers' lockfile
-# is what matters; ours would mask reproducibility drift in CI.
-# Keep in sync with simple-permissions / simple-sms / simple-telephony /
-# simple-messages, all of which gitignore pubspec.lock.
-pubspec.lock
 
 # Symbolication / obfuscation
 app.*.symbols

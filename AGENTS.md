@@ -56,6 +56,12 @@ flutter test
 
 See `melos.yaml` for the workspace scripts.
 
+Every package and the example commits its `pubspec.lock` (CQS-DEP-02),
+resolved after `melos bootstrap`, as CI resolves it. When `flutter pub get`
+or `flutter pub upgrade` changes a lockfile, including after a release
+changes the linked package versions, commit it. pub leaves `pubspec.lock`
+out of published packages.
+
 **When you touch `packages/simple_query_android/android/` (Kotlin), also run
 the native gate.** `flutter test` never compiles or tests that Kotlin. The
 native unit tests run through the *example app's* Gradle (a bare
