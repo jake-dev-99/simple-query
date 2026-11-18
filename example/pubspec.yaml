@@ -11,8 +11,8 @@ dependencies:
     sdk: flutter
   simple_query:
     path: ../packages/simple_query
-
   material_ui: 1.11.1
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
